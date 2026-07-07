@@ -11,6 +11,7 @@ const SHEET_NAMES = {
 
 const ASSIGNMENTS_TRAILING_BLANK_ROWS = 1000;
 const MANUAL_SHEET_NAME = '수동추가';
+const MANUAL_RESET_ROWS = 1000;
 const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 
 const DASHBOARD_SHEET_NAME = '현황판';
@@ -822,10 +823,10 @@ function setupSheets() {
     ['AUTO_NEXT_DELAY_MS', '30000', ''],
     ['PROMPT_1', defaultRecordDraftPrompt_(), '생기부초안 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['PROMPT_2', defaultStudentFinalRecordPrompt_(), '학생별생기부 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
-    ['MANUAL_START_ROW', '2', '수동추가 시트에서 생성을 시작할 데이터 행 번호'],
-    ['MANUAL_INPUT_COLS', '', '수동추가 시트에서 API로 보낼 열. 쉼표로 여러 열 입력 가능. 예: E,F'],
-    ['MANUAL_OUTPUT_COL', '', '수동추가 시트에서 생성된 생기부를 기록할 열. 바로 오른쪽 열에는 바이트 계산식이 입력됩니다.'],
-    ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가 데이터로 생기부를 만들 때 사용할 프롬프트'],
+    ['MANUAL_START_ROW', '2', '수동추가를 위한 설정\n학생 데이터가 시작하는 행번호(ex. 2)'],
+    ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능'],
+    ['MANUAL_OUTPUT_COL', '', '수동추가를 위한 설정\n인공지능에게 받아올 생기부를 적을 열(ex. C)'],
+    ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침'],
     ['SYSTEM_GUIDE', defaultSystemGuide_(), '생활기록부 작성 지침. 선생님 기준에 맞게 수정하시되\n\n반드시 JSON 형식으로만 답한다.\n{"evidence_summary":"", "record_draft":"", "caution":""}\n\n이 두 문장은 남겨주세요.']
   ];
 
@@ -1897,12 +1898,9 @@ function deleteActiveSheetStudentData() {
 }
 
 function clearManualSheetData_(sh, ui) {
-  const maxRows = sh.getMaxRows();
-  const maxCols = sh.getMaxColumns();
-
   const confirm = ui.alert(
     '수동추가 시트 데이터 삭제',
-    '수동추가 시트의 모든 내용, 메모, 서식, 데이터 검증을 삭제하고 빈 시트로 만듭니다.\n계속할까요?',
+    `수동추가 시트의 모든 내용, 메모, 서식, 데이터 검증을 삭제하고 빈 ${MANUAL_RESET_ROWS}행을 남깁니다.\n계속할까요?`,
     ui.ButtonSet.OK_CANCEL
   );
 
@@ -1922,16 +1920,16 @@ function clearManualSheetData_(sh, ui) {
   sh.setFrozenRows(0);
   sh.setFrozenColumns(0);
 
-  if (maxRows > 1) {
-    sh.deleteRows(2, maxRows - 1);
+  const maxRows = sh.getMaxRows();
+
+  if (maxRows < MANUAL_RESET_ROWS) {
+    sh.insertRowsAfter(maxRows, MANUAL_RESET_ROWS - maxRows);
+  } else if (maxRows > MANUAL_RESET_ROWS) {
+    sh.deleteRows(MANUAL_RESET_ROWS + 1, maxRows - MANUAL_RESET_ROWS);
   }
 
-  if (maxCols > 1) {
-    sh.deleteColumns(2, maxCols - 1);
-  }
-
-  log_('deleteActiveSheetStudentData', 'OK', `${MANUAL_SHEET_NAME}: 전체 시트 비움`);
-  ui.alert('수동추가 시트를 빈 시트로 만들었습니다.');
+  log_('deleteActiveSheetStudentData', 'OK', `${MANUAL_SHEET_NAME}: 전체 데이터 삭제, ${MANUAL_RESET_ROWS}행 유지`);
+  ui.alert(`수동추가 시트의 데이터를 삭제하고 빈 ${MANUAL_RESET_ROWS}행을 남겼습니다.`);
 }
 
 function upsertByKey_(sheetName, keyHeader, rows) {
@@ -4593,6 +4591,7 @@ function processManualAddedRecordsCore_() {
         .setValue(recordDraft)
         .setNote(buildManualOutputNote_(recordDraft ? '처리완료' : '근거부족', caution, evidenceSummary, `${provider}:${model}`));
       setManualByteFormula_(sh, row, manualConfig.outputCol);
+      formatManualProcessedRow_(sh, row, manualConfig);
 
       processed++;
       Utilities.sleep(1200);
@@ -4602,6 +4601,7 @@ function processManualAddedRecordsCore_() {
 
       failed++;
       outputCell.setNote(`[수동추가 오류]\n${errorInfo.reason}: ${message}`);
+      formatManualProcessedRow_(sh, row, manualConfig);
       log_(
         'processManualAddedRecordsCore_',
         errorInfo.shouldStop ? 'STOP' : 'ERROR',
@@ -4808,6 +4808,14 @@ function setManualByteFormula_(sh, row, outputCol) {
 
   sh.getRange(row, outputCol + 1)
     .setFormula(`=IF($${outputColA1}${row}="","",2*LENB($${outputColA1}${row})-LEN($${outputColA1}${row}))`);
+}
+
+function formatManualProcessedRow_(sh, row, manualConfig) {
+  const lastCol = Math.max(sh.getLastColumn(), manualConfig.byteCol);
+
+  sh.getRange(row, 1, 1, lastCol)
+    .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP)
+    .setVerticalAlignment('top');
 }
 
 function scheduleNextAutoManualRecordTrigger_(delayMs) {
