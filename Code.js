@@ -10,6 +10,8 @@ const SHEET_NAMES = {
 };
 
 const ASSIGNMENTS_TRAILING_BLANK_ROWS = 1000;
+const MANUAL_SHEET_NAME = '수동추가';
+const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 
 const DASHBOARD_SHEET_NAME = '현황판';
 
@@ -122,7 +124,8 @@ function onOpen() {
     //.addItem('7-1. 공통문구 중복검사', 'checkCommonPhraseDuplicates')
     .addSeparator()
     .addItem('8. 보고있는 시트의 학생 데이터 삭제', 'deleteActiveSheetStudentData')
-    //.addSeparator()
+    .addSeparator()
+    .addItem('9. 수동추가 데이터 생기부 생성', 'generateManualAddedRecords')
     //.addItem('생기부초안 열 재배열', 'reorganizeRecordsSheetLayout_')
     //.addItem('화면 정리 / 서식 적용', 'applyFrontendLayout')
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
@@ -819,6 +822,10 @@ function setupSheets() {
     ['AUTO_NEXT_DELAY_MS', '30000', ''],
     ['PROMPT_1', defaultRecordDraftPrompt_(), '생기부초안 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['PROMPT_2', defaultStudentFinalRecordPrompt_(), '학생별생기부 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
+    ['MANUAL_START_ROW', '2', '수동추가 시트에서 생성을 시작할 데이터 행 번호'],
+    ['MANUAL_INPUT_COLS', '', '수동추가 시트에서 API로 보낼 열. 쉼표로 여러 열 입력 가능. 예: E,F'],
+    ['MANUAL_OUTPUT_COL', '', '수동추가 시트에서 생성된 생기부를 기록할 열. 바로 오른쪽 열에는 바이트 계산식이 입력됩니다.'],
+    ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가 데이터로 생기부를 만들 때 사용할 프롬프트'],
     ['SYSTEM_GUIDE', defaultSystemGuide_(), '생활기록부 작성 지침. 선생님 기준에 맞게 수정하시되\n\n반드시 JSON 형식으로만 답한다.\n{"evidence_summary":"", "record_draft":"", "caution":""}\n\n이 두 문장은 남겨주세요.']
   ];
 
@@ -1843,13 +1850,14 @@ function deleteActiveSheetStudentData() {
     [SHEET_NAMES.records]: 2,
     [SHEET_NAMES.studentFinalRecords]: 2,
     [SHEET_NAMES.commonPhrases]: 3,
+    [MANUAL_SHEET_NAME]: getManualStartRowForDelete_(),
   };
   const startRow = startRowsBySheetName[sheetName];
 
   if (!startRow) {
     ui.alert(
       '활성화된 시트 학생 데이터 삭제',
-      `${sheetName} 시트는 이 기능으로 삭제할 수 없습니다.\n과제목록, 제출물, 생기부초안, 학생별생기부, 공통문구생성 시트에서만 실행할 수 있습니다.`,
+      `${sheetName} 시트는 이 기능으로 삭제할 수 없습니다.\n과제목록, 제출물, 생기부초안, 학생별생기부, 공통문구생성, 수동추가 시트에서만 실행할 수 있습니다.`,
       ui.ButtonSet.OK
     );
     log_('deleteActiveSheetStudentData', 'BLOCKED', `${sheetName}: 삭제 허용 시트 아님`);
@@ -1881,6 +1889,15 @@ function deleteActiveSheetStudentData() {
   refreshDashboard();
   log_('deleteActiveSheetStudentData', 'OK', `${sheetName}: ${startRow}-${lastRow}행 삭제`);
   ui.alert(`${sheetName} 시트의 데이터 행 ${rowsToDelete}개를 삭제했습니다.`);
+}
+
+function getManualStartRowForDelete_() {
+  try {
+    const config = getConfigMap_();
+    return Math.max(Number(config.MANUAL_START_ROW || 2), 1);
+  } catch (err) {
+    return 2;
+  }
 }
 
 function upsertByKey_(sheetName, keyHeader, rows) {
@@ -2176,6 +2193,21 @@ function defaultStudentFinalRecordPrompt_() {
     '',
     '[과제별 근거 묶음]',
     '{{evidencePack}}',
+  ].join('\n');
+}
+
+function defaultManualRecordPrompt_() {
+  return [
+    '[수동추가 데이터]',
+    '{{manualInput}}',
+    '',
+    '[작성 조건]',
+    '위 수동추가 데이터에서 확인되는 학생의 직접 수행, 활동 결과, 사고 과정, 탐구 내용만 근거로 삼는다.',
+    '자료에 없는 사실, 성격, 태도, 역량을 추정하지 않는다.',
+    'record_draft 값만 공백 포함 {{recordDraftMinChars}}자 이상 {{recordDraftMaxChars}}자 이하로 작성한다.',
+    '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
+    '반드시 JSON 형식으로만 답한다.',
+    '{"evidence_summary":"", "record_draft":"", "caution":""}',
   ].join('\n');
 }
 
@@ -4213,15 +4245,17 @@ function stopAutoRecordDraftTrigger(showUi) {
   deleteAutoRecordDraftTriggers_();
   deleteAutoStudentFinalRecordTriggers_();
   deleteAutoCommonPhraseTriggers_();
+  deleteAutoManualRecordTriggers_();
 
   PropertiesService.getUserProperties().setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
+  PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
 
   log_('stopAutoRecordDraftTrigger', 'OK', '자동 생성 트리거 중지');
 
   if (showUi !== false) {
-    SpreadsheetApp.getUi().alert('생기부초안/학생별 최종 생기부/공통문구 자동 생성 트리거를 중지했습니다.');
+    SpreadsheetApp.getUi().alert('생기부초안/학생별 최종 생기부/공통문구/수동추가 자동 생성 트리거를 중지했습니다.');
   }
 }
 
@@ -4306,6 +4340,462 @@ function deleteAutoRecordDraftTriggers_() {
 
   triggers.forEach(trigger => {
     if (trigger.getHandlerFunction() === 'autoProcessPendingRecordDrafts') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
+function generateManualAddedRecords() {
+  const ui = SpreadsheetApp.getUi();
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
+    return;
+  }
+
+  try {
+    deleteAutoManualRecordTriggers_();
+    PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'ON');
+
+    const result = processManualAddedRecordsCore_();
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoManualRecordTriggers_();
+      ui.alert(buildRecordDraftResultMessage_('수동추가 생기부 생성을 중단했습니다.', result, '행'));
+      return;
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoManualRecordTriggers_();
+      ui.alert(buildRecordDraftResultMessage_('수동추가 생기부 생성을 완료했습니다.', result, '행'));
+      return;
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    scheduleNextAutoManualRecordTrigger_(nextDelayMs);
+
+    ui.alert(
+      buildRecordDraftResultMessage_('수동추가 첫 배치 처리 결과', result, '행') +
+      `\n\n남은 행은 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingManualAddedRows_(),
+      blocked: true,
+      blockingReason: '수동추가 처리 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoManualRecordTriggers_();
+    log_('generateManualAddedRecords', 'ERROR', message);
+    ui.alert(buildRecordDraftResultMessage_('수동추가 생기부 생성 중 오류가 발생했습니다.', result, '행'));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function autoProcessPendingManualAddedRecords() {
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    log_('autoProcessPendingManualAddedRecords', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    return;
+  }
+
+  try {
+    deleteAutoManualRecordTriggers_();
+
+    const status = PropertiesService.getUserProperties().getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF';
+
+    if (status !== 'ON') {
+      log_('autoProcessPendingManualAddedRecords', 'STOP', '자동 생성 상태가 OFF라 실행하지 않음');
+      return;
+    }
+
+    const result = processManualAddedRecordsCore_();
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+      toastAutoRecordDraft_(result.blockingMessage || '수동추가 생성을 중단했습니다.', result.blockingReason || '수동추가 생성 중단');
+      log_('autoProcessPendingManualAddedRecords', 'BLOCKED', `${result.blockingReason}: ${result.blockingMessage}`);
+      return;
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+      toastAutoRecordDraft_(
+        `생성 완료 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행`,
+        '수동추가 생성 완료'
+      );
+      log_('autoProcessPendingManualAddedRecords', 'DONE', '남은 수동추가 행이 없어 종료했습니다.');
+      return;
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+
+    scheduleNextAutoManualRecordTrigger_(nextDelayMs);
+    log_(
+      'autoProcessPendingManualAddedRecords',
+      'NEXT',
+      `남은 수동추가 ${result.remaining}행. ${Math.round(nextDelayMs / 1000)}초 뒤 다음 실행 예약`
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+    toastAutoRecordDraft_(message, '수동추가 자동 처리 오류');
+    log_('autoProcessPendingManualAddedRecords', 'ERROR', message);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function processManualAddedRecordsCore_() {
+  const config = getConfigMap_();
+  const manualConfig = getManualRecordConfig_(config);
+  const sh = getSheet_(MANUAL_SHEET_NAME);
+  ensureManualOutputColumns_(sh, manualConfig);
+
+  const batchSize = Number(config.BATCH_SIZE || 5);
+  const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
+  const startedAt = Date.now();
+  const ai = getAiProviderAndModel_(config);
+  const provider = ai.provider;
+  const model = ai.model;
+  const reasoning = ai.reasoning;
+  const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
+  const recordDraftMinChars = Number(config.RECORD_DRAFT_MIN_CHARS || 350);
+  const recordDraftMaxChars = Number(
+    config.RECORD_DRAFT_MAX_CHARS || config.MAX_RECORD_CHARS || 500
+  );
+  const systemGuide = getSystemGuide_(config);
+  const lastRow = sh.getLastRow();
+  const lastCol = Math.max(sh.getLastColumn(), manualConfig.byteCol);
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+
+  let processed = 0;
+  let skipped = 0;
+  let failed = 0;
+  let blocked = false;
+  let blockingReason = '';
+  let blockingMessage = '';
+
+  if (lastRow < manualConfig.startRow) {
+    return {
+      processed,
+      skipped,
+      failed,
+      remaining: 0,
+      blocked,
+      blockingReason,
+      blockingMessage,
+    };
+  }
+
+  for (let row = manualConfig.startRow; row <= lastRow; row++) {
+    const elapsedSeconds = (Date.now() - startedAt) / 1000;
+
+    if (elapsedSeconds > maxRunSeconds) {
+      log_(
+        'processManualAddedRecordsCore_',
+        'STOP',
+        `실행 시간 제한 접근으로 중단. 처리 ${processed}행, 실패 ${failed}행`
+      );
+      break;
+    }
+
+    if (processed >= batchSize) break;
+
+    const outputCell = sh.getRange(row, manualConfig.outputCol);
+    const outputValue = String(outputCell.getValue() || '').trim();
+    const outputNote = String(outputCell.getNote() || '').trim();
+
+    if (outputValue || isManualOutputHandledNote_(outputNote)) {
+      continue;
+    }
+
+    const manualInput = buildManualInputForRow_(sh, row, headers, manualConfig.inputCols);
+
+    if (manualInput.length < 20) {
+      skipped++;
+      continue;
+    }
+
+    const userPrompt = buildManualRecordPrompt_({
+      promptTemplate: manualConfig.prompt,
+      rowNumber: row,
+      manualInput: truncate_(manualInput, maxInputChars),
+      inputColumns: manualConfig.inputCols.map(colToA1_).join(', '),
+      recordDraftMinChars,
+      recordDraftMaxChars,
+    });
+
+    try {
+      const generated = createRecordDraftWithLength_(
+        provider,
+        model,
+        systemGuide,
+        userPrompt,
+        recordDraftMinChars,
+        recordDraftMaxChars,
+        reasoning
+      );
+
+      const parsed = generated.parsed;
+      const recordDraft = normalizeAiText_(parsed.record_draft);
+      const caution = normalizeAiText_(parsed.caution);
+      const evidenceSummary = normalizeAiText_(parsed.evidence_summary);
+
+      outputCell
+        .setValue(recordDraft)
+        .setNote(buildManualOutputNote_(recordDraft ? '처리완료' : '근거부족', caution, evidenceSummary, `${provider}:${model}`));
+      setManualByteFormula_(sh, row, manualConfig.outputCol);
+
+      processed++;
+      Utilities.sleep(1200);
+    } catch (err) {
+      const message = String(err.message || '');
+      const errorInfo = classifyRecordDraftError_(message);
+
+      failed++;
+      outputCell.setNote(`[수동추가 오류]\n${errorInfo.reason}: ${message}`);
+      log_(
+        'processManualAddedRecordsCore_',
+        errorInfo.shouldStop ? 'STOP' : 'ERROR',
+        `${row}행: ${errorInfo.reason} / ${message}`
+      );
+
+      if (errorInfo.shouldStop) {
+        blocked = true;
+        blockingReason = errorInfo.reason;
+        blockingMessage = errorInfo.userMessage;
+        break;
+      }
+    }
+  }
+
+  const remaining = countPendingManualAddedRows_();
+
+  log_(
+    'processManualAddedRecordsCore_',
+    'OK',
+    `처리 ${processed}행, 실패 ${failed}행, 스킵 ${skipped}행, 남은 대기 ${remaining}행`
+  );
+
+  return {
+    processed,
+    skipped,
+    failed,
+    remaining,
+    blocked,
+    blockingReason,
+    blockingMessage,
+  };
+}
+
+function countPendingManualAddedRows_() {
+  try {
+    const config = getConfigMap_();
+    const manualConfig = getManualRecordConfig_(config);
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MANUAL_SHEET_NAME);
+
+    if (!sh) return 0;
+
+    return countPendingManualRowsInSheet_(sh, manualConfig);
+  } catch (err) {
+    return 0;
+  }
+}
+
+function countPendingManualRowsInSheet_(sh, manualConfig) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < manualConfig.startRow) return 0;
+
+  const rowCount = lastRow - manualConfig.startRow + 1;
+  const lastCol = Math.max(sh.getLastColumn(), manualConfig.outputCol);
+  const values = sh.getRange(manualConfig.startRow, 1, rowCount, lastCol).getValues();
+  const outputNotes = sh.getRange(manualConfig.startRow, manualConfig.outputCol, rowCount, 1).getNotes();
+  let count = 0;
+
+  values.forEach((row, index) => {
+    const outputValue = String(row[manualConfig.outputCol - 1] || '').trim();
+    const outputNote = String(outputNotes[index][0] || '').trim();
+
+    if (outputValue || isManualOutputHandledNote_(outputNote)) return;
+
+    const input = manualConfig.inputCols
+      .map(col => String(row[col - 1] || '').trim())
+      .filter(Boolean)
+      .join('\n');
+
+    if (input.length >= 20) count++;
+  });
+
+  return count;
+}
+
+function getManualRecordConfig_(config) {
+  const inputCols = parseManualColumnList_(config.MANUAL_INPUT_COLS);
+  const outputCol = parseManualColumn_(config.MANUAL_OUTPUT_COL, 'MANUAL_OUTPUT_COL');
+  const byteCol = outputCol + 1;
+
+  if (inputCols.length === 0) {
+    throw new Error('설정 시트의 MANUAL_INPUT_COLS에 API로 보낼 열을 입력하세요. 예: E,F');
+  }
+
+  if (inputCols.includes(outputCol)) {
+    throw new Error('MANUAL_OUTPUT_COL은 MANUAL_INPUT_COLS에 포함될 수 없습니다.');
+  }
+
+  if (inputCols.includes(byteCol)) {
+    throw new Error('MANUAL_OUTPUT_COL 바로 오른쪽 바이트 계산 열은 MANUAL_INPUT_COLS에 포함될 수 없습니다.');
+  }
+
+  return {
+    startRow: Math.max(Number(config.MANUAL_START_ROW || 2), 1),
+    inputCols,
+    outputCol,
+    byteCol,
+    prompt: getConfigPromptTemplate_(config, 'MANUAL_PROMPT', defaultManualRecordPrompt_()),
+  };
+}
+
+function parseManualColumnList_(value) {
+  return String(value || '')
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => parseManualColumn_(part, 'MANUAL_INPUT_COLS'));
+}
+
+function parseManualColumn_(value, key) {
+  const text = String(value || '').trim().toUpperCase();
+
+  if (!text) {
+    throw new Error(`설정 시트의 ${key} 값을 입력하세요.`);
+  }
+
+  if (/^\d+$/.test(text)) {
+    const col = Number(text);
+    if (col > 0) return col;
+  }
+
+  if (/^[A-Z]+$/.test(text)) {
+    return text.split('').reduce((col, ch) => col * 26 + ch.charCodeAt(0) - 64, 0);
+  }
+
+  throw new Error(`${key} 값은 열 문자 또는 숫자로 입력하세요: ${value}`);
+}
+
+function ensureManualOutputColumns_(sh, manualConfig) {
+  const maxInputCol = Math.max.apply(null, manualConfig.inputCols);
+
+  if (sh.getMaxColumns() < maxInputCol) {
+    throw new Error(`수동추가 시트에 MANUAL_INPUT_COLS 열(${manualConfig.inputCols.map(colToA1_).join(', ')})이 없습니다.`);
+  }
+
+  if (sh.getMaxColumns() < manualConfig.byteCol) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), manualConfig.byteCol - sh.getMaxColumns());
+  }
+}
+
+function buildManualInputForRow_(sh, row, headers, inputCols) {
+  return inputCols.map(col => {
+    const label = String(headers[col - 1] || '').trim() || `열 ${colToA1_(col)}`;
+    const value = String(sh.getRange(row, col).getValue() || '').trim();
+
+    if (!value) return '';
+
+    return `[${label}]\n${value}`;
+  }).filter(Boolean).join('\n\n');
+}
+
+function buildManualRecordPrompt_(data) {
+  const template = data.promptTemplate || defaultManualRecordPrompt_();
+  const renderedPrompt = renderPromptTemplate_(template, data);
+  const parts = [renderedPrompt];
+  const missingInputLines = buildMissingPromptLines_(template, [
+    ['rowNumber', `수동추가 시트 행: ${data.rowNumber}`],
+    ['inputColumns', `입력 열: ${data.inputColumns}`],
+  ]);
+
+  if (missingInputLines.length > 0) {
+    parts.push(['[입력 정보]'].concat(missingInputLines).join('\n'));
+  }
+
+  if (
+    !promptTemplateHasPlaceholder_(template, 'recordDraftMinChars') ||
+    !promptTemplateHasPlaceholder_(template, 'recordDraftMaxChars')
+  ) {
+    parts.push([
+      '[기본 출력 조건]',
+      `record_draft 값만 공백 포함 ${data.recordDraftMinChars}자 이상 ${data.recordDraftMaxChars}자 이하로 작성한다.`,
+      '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
+      '반드시 JSON 형식으로만 답한다.',
+    ].join('\n'));
+  }
+
+  if (!promptTemplateHasPlaceholder_(template, 'manualInput')) {
+    parts.push([
+      '[수동추가 데이터]',
+      data.manualInput,
+    ].join('\n'));
+  }
+
+  parts.push(buildRecordDraftNoEvidenceRule_());
+
+  return parts.filter(part => String(part || '').trim()).join('\n\n');
+}
+
+function buildManualOutputNote_(status, caution, evidenceSummary, model) {
+  return [
+    `[수동추가 ${status}]`,
+    model ? `model: ${model}` : '',
+    caution ? `[caution]\n${caution}` : '',
+    evidenceSummary ? `[evidence_summary]\n${evidenceSummary}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function isManualOutputHandledNote_(note) {
+  return /^\[수동추가 (처리완료|근거부족|오류)\]/.test(String(note || '').trim());
+}
+
+function setManualByteFormula_(sh, row, outputCol) {
+  const outputColA1 = colToA1_(outputCol);
+
+  sh.getRange(row, outputCol + 1)
+    .setFormula(`=IF($${outputColA1}${row}="","",2*LENB($${outputColA1}${row})-LEN($${outputColA1}${row}))`);
+}
+
+function scheduleNextAutoManualRecordTrigger_(delayMs) {
+  deleteAutoManualRecordTriggers_();
+
+  ScriptApp.newTrigger('autoProcessPendingManualAddedRecords')
+    .timeBased()
+    .after(delayMs)
+    .create();
+
+  log_(
+    'scheduleNextAutoManualRecordTrigger_',
+    'OK',
+    `${Math.round(delayMs / 1000)}초 뒤 다음 수동추가 자동 생성 예약`
+  );
+}
+
+function deleteAutoManualRecordTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'autoProcessPendingManualAddedRecords') {
       ScriptApp.deleteTrigger(trigger);
     }
   });
