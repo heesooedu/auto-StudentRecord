@@ -1916,7 +1916,9 @@ function clearManualSheetData_(sh, ui) {
     // 필터 제거 실패는 삭제 자체를 막지 않는다.
   }
 
+  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).clearNote();
   sh.clear();
+  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).clearNote();
   sh.setFrozenRows(0);
   sh.setFrozenColumns(0);
 
