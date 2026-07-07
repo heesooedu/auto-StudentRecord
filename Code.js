@@ -2098,6 +2098,52 @@ function truncate_(text, maxChars) {
   return text.slice(0, maxChars) + '\n\n[이하 글자수 제한으로 생략됨]';
 }
 
+function sanitizePromptText_(text, options) {
+  let sanitized = String(text || '')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[이메일 제거]');
+  const opts = options || {};
+
+  sanitized = replaceLiteralInPrompt_(sanitized, opts.email, '[이메일 제거]', 3);
+  sanitized = replaceLiteralInPrompt_(sanitized, opts.studentName, '[학생명 제거]', 2);
+  sanitized = replaceLiteralInPrompt_(sanitized, opts.studentNo, '[학번 제거]', 3);
+
+  return sanitized;
+}
+
+function replaceLiteralInPrompt_(text, value, replacement, minLength) {
+  const literal = String(value || '').trim();
+  if (literal.length < minLength) return text;
+
+  return String(text || '').replace(new RegExp(escapeRegExp_(literal), 'g'), replacement);
+}
+
+function escapeRegExp_(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isPersonalInfoHeader_(header) {
+  const normalized = String(header || '')
+    .toLowerCase()
+    .replace(/[\s_\-.()[\]{}]/g, '');
+
+  if (!normalized) return false;
+
+  const likelyNonStudentName = /(과제|파일|학교|수업|활동|탐구|주제|제목|문항|단원|모둠)/.test(normalized);
+  const nameLike =
+    (/^(이름|성명|학생명|학생이름|name|fullname|studentname)/.test(normalized) ||
+      /(학생명|학생이름|성명|studentname)/.test(normalized)) &&
+    !likelyNonStudentName;
+  const studentNumberLike =
+    /^(학번|출석번호|학생번호|번호|studentno|studentnumber|studentid|userid|classroomuserid)/.test(normalized) ||
+    /(학번|출석번호|학생번호|studentno|studentnumber|studentid|userid|classroomuserid)/.test(normalized);
+
+  return (
+    nameLike ||
+    /(이메일|메일|email|e-mail|mail)/.test(normalized) ||
+    studentNumberLike
+  );
+}
+
 function normalizeAiText_(text) {
   const normalized = String(text || '')
     .replace(/[‘’‚‛′＇ꞌ]/g, "'")
@@ -2142,6 +2188,7 @@ function defaultSystemGuide_() {
     '과제에 없는 사실, 성격, 태도, 역량을 추정해서 쓰지 않는다.',
     '“이 학생은”이라는 표현은 쓰지 않는다.',
     '학생 이름은 본문에 넣지 않는다.',
+    '학생 이름, 학번, 이메일 등 개인정보는 근거로 사용하거나 record_draft 본문에 쓰지 않는다.',
     '문장 끝은 주로 “~함”, “~하였음”, “~보임” 형식으로 정리한다.',
     '반드시 JSON 형식으로만 답한다.',
     '{"evidence_summary":"", "record_draft":"", "caution":""}',
@@ -2170,6 +2217,10 @@ function ensureJsonResponseGuide_(systemGuide) {
     requiredLines.push('{"evidence_summary":"", "record_draft":"", "caution":""}');
   }
 
+  if (!/(개인정보|이메일|학번)/.test(guide)) {
+    requiredLines.push('학생 이름, 학번, 이메일 등 개인정보는 근거로 사용하거나 record_draft 본문에 쓰지 않는다.');
+  }
+
   return [guide]
     .concat(requiredLines)
     .filter(line => String(line || '').trim())
@@ -2178,8 +2229,6 @@ function ensureJsonResponseGuide_(systemGuide) {
 
 function defaultRecordDraftPrompt_() {
   return [
-    '학생명: {{studentName}}',
-    '학번: {{studentNo}}',
     '수업명: {{courseName}}',
     '과제명: {{assignmentTitle}}',
     '제출상태: {{state}}',
@@ -2207,9 +2256,6 @@ function defaultRecordDraftPrompt_() {
 
 function defaultStudentFinalRecordPrompt_() {
   return [
-    '학생명: {{studentName}}',
-    '학번: {{studentNo}}',
-    '이메일: {{email}}',
     '수업명: {{courseName}}',
     '반영 과제 수: {{assignmentCount}}',
     '',
@@ -4029,18 +4075,20 @@ function processPendingRecordDraftsCore_(showUi) {
       continue;
     }
 
+    const promptSanitizeOptions = { studentName, studentNo, email };
     const userPrompt = buildRecordDraftPrompt_({
       promptTemplate: recordPromptTemplate,
-      studentName,
-      studentNo,
       courseName,
       assignmentTitle,
       state,
       late,
-      assignmentDescription: assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
+      assignmentDescription: sanitizePromptText_(
+        assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
+        promptSanitizeOptions
+      ),
       recordDraftMinChars,
       recordDraftMaxChars,
-      extractedText: truncate_(extractedText, maxInputChars),
+      extractedText: truncate_(sanitizePromptText_(extractedText, promptSanitizeOptions), maxInputChars),
     });
 
     try {
@@ -4656,6 +4704,7 @@ function countPendingManualRowsInSheet_(sh, manualConfig) {
 
   const rowCount = lastRow - manualConfig.startRow + 1;
   const lastCol = Math.max(sh.getLastColumn(), manualConfig.outputCol);
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
   const values = sh.getRange(manualConfig.startRow, 1, rowCount, lastCol).getValues();
   const outputNotes = sh.getRange(manualConfig.startRow, manualConfig.outputCol, rowCount, 1).getNotes();
   let count = 0;
@@ -4667,7 +4716,11 @@ function countPendingManualRowsInSheet_(sh, manualConfig) {
     if (outputValue || isManualOutputHandledNote_(outputNote)) return;
 
     const input = manualConfig.inputCols
-      .map(col => String(row[col - 1] || '').trim())
+      .map(col => {
+        const label = String(headers[col - 1] || '').trim();
+        if (isPersonalInfoHeader_(label)) return '';
+        return sanitizePromptText_(row[col - 1]).trim();
+      })
       .filter(Boolean)
       .join('\n');
 
@@ -4745,7 +4798,9 @@ function ensureManualOutputColumns_(sh, manualConfig) {
 function buildManualInputForRow_(sh, row, headers, inputCols) {
   return inputCols.map(col => {
     const label = String(headers[col - 1] || '').trim() || `열 ${colToA1_(col)}`;
-    const value = String(sh.getRange(row, col).getValue() || '').trim();
+    if (isPersonalInfoHeader_(label)) return '';
+
+    const value = sanitizePromptText_(sh.getRange(row, col).getValue()).trim();
 
     if (!value) return '';
 
@@ -5398,14 +5453,12 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       continue;
     }
 
+    const promptSanitizeOptions = { studentName, studentNo, email };
     const userPrompt = buildStudentFinalRecordPrompt_({
       promptTemplate: studentFinalPromptTemplate,
-      studentNo,
-      studentName,
-      email,
       courseName,
       assignmentCount,
-      evidencePack,
+      evidencePack: sanitizePromptText_(evidencePack, promptSanitizeOptions),
       recordDraftMinChars,
       recordDraftMaxChars,
     });
@@ -5498,8 +5551,6 @@ function buildRecordDraftPrompt_(data) {
   const renderedPrompt = renderPromptTemplate_(template, data);
   const parts = [renderedPrompt];
   const missingInputLines = buildMissingPromptLines_(template, [
-    ['studentName', `학생명: ${data.studentName}`],
-    ['studentNo', `학번: ${data.studentNo}`],
     ['courseName', `수업명: ${data.courseName}`],
     ['assignmentTitle', `과제명: ${data.assignmentTitle}`],
     ['state', `제출상태: ${data.state}`],
@@ -5546,9 +5597,6 @@ function buildStudentFinalRecordPrompt_(data) {
   const renderedPrompt = renderPromptTemplate_(template, data);
   const parts = [renderedPrompt];
   const missingInputLines = buildMissingPromptLines_(template, [
-    ['studentName', `학생명: ${data.studentName}`],
-    ['studentNo', `학번: ${data.studentNo}`],
-    ['email', `이메일: ${data.email}`],
     ['courseName', `수업명: ${data.courseName}`],
     ['assignmentCount', `반영 과제 수: ${data.assignmentCount}`],
   ]);
