@@ -1844,13 +1844,18 @@ function deleteActiveSheetStudentData() {
   if (!sh) return;
 
   const sheetName = sh.getName();
+
+  if (sheetName === MANUAL_SHEET_NAME) {
+    clearManualSheetData_(sh, ui);
+    return;
+  }
+
   const startRowsBySheetName = {
     [SHEET_NAMES.assignments]: 2,
     [SHEET_NAMES.submissions]: 2,
     [SHEET_NAMES.records]: 2,
     [SHEET_NAMES.studentFinalRecords]: 2,
     [SHEET_NAMES.commonPhrases]: 3,
-    [MANUAL_SHEET_NAME]: getManualStartRowForDelete_(),
   };
   const startRow = startRowsBySheetName[sheetName];
 
@@ -1891,13 +1896,42 @@ function deleteActiveSheetStudentData() {
   ui.alert(`${sheetName} 시트의 데이터 행 ${rowsToDelete}개를 삭제했습니다.`);
 }
 
-function getManualStartRowForDelete_() {
+function clearManualSheetData_(sh, ui) {
+  const maxRows = sh.getMaxRows();
+  const maxCols = sh.getMaxColumns();
+
+  const confirm = ui.alert(
+    '수동추가 시트 데이터 삭제',
+    '수동추가 시트의 모든 내용, 메모, 서식, 데이터 검증을 삭제하고 빈 시트로 만듭니다.\n계속할까요?',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (confirm !== ui.Button.OK) return;
+
+  deleteAutoManualRecordTriggers_();
+  PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+
   try {
-    const config = getConfigMap_();
-    return Math.max(Number(config.MANUAL_START_ROW || 2), 1);
+    const filter = sh.getFilter();
+    if (filter) filter.remove();
   } catch (err) {
-    return 2;
+    // 필터 제거 실패는 삭제 자체를 막지 않는다.
   }
+
+  sh.clear();
+  sh.setFrozenRows(0);
+  sh.setFrozenColumns(0);
+
+  if (maxRows > 1) {
+    sh.deleteRows(2, maxRows - 1);
+  }
+
+  if (maxCols > 1) {
+    sh.deleteColumns(2, maxCols - 1);
+  }
+
+  log_('deleteActiveSheetStudentData', 'OK', `${MANUAL_SHEET_NAME}: 전체 시트 비움`);
+  ui.alert('수동추가 시트를 빈 시트로 만들었습니다.');
 }
 
 function upsertByKey_(sheetName, keyHeader, rows) {
