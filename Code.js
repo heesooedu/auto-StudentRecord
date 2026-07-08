@@ -30,6 +30,7 @@ const HEADERS = {
     'updateTime',
     'alternateLink',
     'assignmentDescription',
+    'maxPoints',
     'includeInFinal',
     'weight',
     'category',
@@ -41,6 +42,7 @@ const HEADERS = {
     'submissionKey', 'studentNo', 'studentName', 'email',
     'courseId', 'courseName', 'courseWorkId', 'assignmentTitle',
     'submissionId', 'state', 'late', 'draftGrade', 'assignedGrade',
+    'maxPoints',
     'updateTime', 'submissionLink',
     'fileTitles', 'fileLinks',
     'extractedText', 'textChars',
@@ -783,15 +785,9 @@ function commonPhraseSystemGuide_() {
 }
 
 function setupSheets() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-
   Object.keys(HEADERS).forEach(sheetName => {
-    let sh = ss.getSheetByName(sheetName);
-    if (!sh) sh = ss.insertSheet(sheetName);
-
+    const sh = ensureSheetHeaders_(sheetName);
     const headers = HEADERS[sheetName];
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sh.setFrozenRows(1);
 
     // 생기부초안, 학생별생기부는 전용 서식이 있으므로 자동 너비 조정 제외
     if (
@@ -897,6 +893,7 @@ function importClassroomAssignments() {
         w.updateTime || '',
         w.alternateLink || '',
         w.description || '',
+        w.maxPoints ?? '',
         option.includeInFinal === true ? true : false,
         option.weight || 1,
         option.category || '',
@@ -923,24 +920,7 @@ function importClassroomAssignments() {
 }
 
 function ensureAssignmentsSheetForImport_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sh = ss.getSheetByName(SHEET_NAMES.assignments);
-
-  if (!sh) {
-    sh = ss.insertSheet(SHEET_NAMES.assignments);
-  }
-
-  const headers = HEADERS[SHEET_NAMES.assignments];
-  const currentHeaders = sh.getRange(1, 1, 1, headers.length).getValues()[0]
-    .map(value => String(value || '').trim());
-  const needsHeader = headers.some((header, index) => currentHeaders[index] !== header);
-
-  if (needsHeader) {
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-  }
-
-  sh.setFrozenRows(1);
-  return sh;
+  return ensureSheetHeaders_(SHEET_NAMES.assignments);
 }
 
 
@@ -997,6 +977,7 @@ function collectSubmissionsForSelectedAssignment() {
   const courseName = valueAt_(sh, row, h.courseName);
   const courseWorkId = valueAt_(sh, row, h.courseWorkId);
   const assignmentTitle = valueAt_(sh, row, h.assignmentTitle);
+  const maxPoints = h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '';
   const assignmentDescription = valueAt_(sh, row, h.assignmentDescription);
 
   if (!isMyTeacherCourse_(courseId)) {
@@ -1041,6 +1022,7 @@ function collectSubmissionsForSelectedAssignment() {
         sub.late === true ? 'TRUE' : 'FALSE',
         sub.draftGrade ?? '',
         sub.assignedGrade ?? '',
+        maxPoints,
         sub.updateTime || '',
         sub.alternateLink || '',
         extracted.fileTitles.join('\n'),
@@ -1056,6 +1038,7 @@ function collectSubmissionsForSelectedAssignment() {
     }
   });
 
+  ensureSheetHeaders_(SHEET_NAMES.submissions);
   upsertByKey_(SHEET_NAMES.submissions, 'submissionKey', rows);
 
   log_('collectSubmissionsForSelectedAssignment', 'OK', `${rows.length}개 제출물 수집`);
@@ -1839,6 +1822,38 @@ function clearData_(sh) {
   }
 }
 
+function ensureSheetHeaders_(sheetName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(sheetName);
+  if (!sh) sh = ss.insertSheet(sheetName);
+
+  const headers = HEADERS[sheetName];
+  if (!headers || headers.length === 0) return sh;
+
+  const currentWidth = Math.max(sh.getLastColumn(), 1);
+  const currentHeaders = sh.getRange(1, 1, 1, currentWidth).getValues()[0]
+    .map(value => String(value || '').trim());
+
+  headers.forEach((header, index) => {
+    const targetCol = index + 1;
+
+    if (currentHeaders[index] === header) return;
+    if (currentHeaders.indexOf(header) !== -1) return;
+
+    if (targetCol <= sh.getMaxColumns()) {
+      sh.insertColumnBefore(targetCol);
+    } else {
+      sh.insertColumnsAfter(sh.getMaxColumns(), 1);
+    }
+
+    currentHeaders.splice(index, 0, header);
+  });
+
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sh.setFrozenRows(1);
+  return sh;
+}
+
 function deleteActiveSheetStudentData() {
   const ui = SpreadsheetApp.getUi();
   const sh = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
@@ -2235,6 +2250,7 @@ function defaultRecordDraftPrompt_() {
     '과제명: {{assignmentTitle}}',
     '제출상태: {{state}}',
     '지각제출: {{late}}',
+    '점수 정보: {{gradeText}}',
     '',
     '[과제 문항/교사 지시사항]',
     '{{assignmentDescription}}',
@@ -2244,6 +2260,7 @@ function defaultRecordDraftPrompt_() {
     '교사 지시문, 문항, 예시문, 평가 기준을 학생의 수행 근거처럼 쓰지 않는다.',
     '학생 제출물 원문 안에는 교사가 미리 작성한 문항, 템플릿, 예시문이 포함될 수 있다.',
     '문항, 템플릿, 예시문은 학생 수행 근거로 사용하지 말고, 학생이 작성한 답변 부분만 근거로 삼는다.',
+    '점수 정보는 수행 수준을 참고하기 위한 보조 정보로만 사용하고, record_draft에 점수나 등급을 직접 쓰지 않는다.',
     '학생의 수행 근거는 반드시 아래 [학생 제출물 원문]에서 확인되는 내용만 사용한다.',
     '',
     '[record_draft 작성 조건]',
@@ -2316,6 +2333,30 @@ function buildStudentFinalNoEvidenceRule_() {
     '근거 부족 상황에서는 record_draft 최소 글자수 조건을 무시하고 record_draft를 반드시 빈 문자열로 둔다.',
     'record_draft에 "작성하지 않음", "근거 부족", "제출물 없음" 같은 설명 문장을 쓰지 않는다.',
   ].join('\n');
+}
+
+function buildGradeContextRule_() {
+  return [
+    '[점수 정보 사용 규칙]',
+    '점수 정보는 제출물의 수행 수준을 판단하기 위한 보조 정보로만 참고한다.',
+    'record_draft에는 점수, 만점, 등급, 점수 비율을 직접 쓰지 않는다.',
+    'evidence_summary에는 필요한 경우 점수 정보를 내부 참고용으로 간단히 남길 수 있다.',
+    '점수 정보가 없으면 학생 제출물 원문에서 확인되는 내용만 근거로 작성한다.',
+  ].join('\n');
+}
+
+function formatGradeContext_(draftGrade, assignedGrade, maxPoints) {
+  const draft = String(draftGrade ?? '').trim();
+  const assigned = String(assignedGrade ?? '').trim();
+  const max = String(maxPoints ?? '').trim();
+  const gradeParts = [];
+
+  if (draft) gradeParts.push(`초안점수 ${draft}${max ? `/${max}` : ''}`);
+  if (assigned) gradeParts.push(`확정점수 ${assigned}${max ? `/${max}` : ''}`);
+
+  if (gradeParts.length > 0) return gradeParts.join(', ');
+  if (max) return `만점 ${max}, 학생 점수 없음`;
+  return '점수 정보 없음';
 }
 
 function getConfigPromptTemplate_(config, key, fallback) {
@@ -2734,6 +2775,7 @@ function styleAssignmentsSheet_() {
     dueAt: 140,
     updateTime: 160,
     alternateLink: 220,
+    maxPoints: 80,
     includeInFinal: 100,
     weight: 70,
     category: 120,
@@ -2769,7 +2811,7 @@ function styleAssignmentsSheet_() {
     range.setValues(values).setHorizontalAlignment('center');
   }
 
-  ['includeInFinal', 'weight', 'collectStatus'].forEach(header => {
+  ['includeInFinal', 'weight', 'maxPoints', 'collectStatus'].forEach(header => {
     if (h[header] && lastRow > 1) {
       sh.getRange(2, h[header], lastRow - 1, 1)
         .setHorizontalAlignment('center')
@@ -2882,6 +2924,7 @@ function styleSubmissionsSheet_() {
     late: 70,
     draftGrade: 80,
     assignedGrade: 80,
+    maxPoints: 80,
     updateTime: 150,
     submissionLink: 220,
     fileTitles: 260,
@@ -2900,6 +2943,14 @@ function styleSubmissionsSheet_() {
     if (h.fileTitles) sh.getRange(2, h.fileTitles, lastRow - 1, 1).setWrap(true);
     if (h.fileLinks) sh.getRange(2, h.fileLinks, lastRow - 1, 1).setWrap(true);
     if (h.extractedText) sh.getRange(2, h.extractedText, lastRow - 1, 1).setWrap(true);
+
+    ['late', 'draftGrade', 'assignedGrade', 'maxPoints', 'textChars', 'aiStatus'].forEach(header => {
+      if (h[header]) {
+        sh.getRange(2, h[header], lastRow - 1, 1)
+          .setHorizontalAlignment('center')
+          .setVerticalAlignment('middle');
+      }
+    });
 
     sh.setRowHeights(2, lastRow - 1, 21);
   }
@@ -4068,6 +4119,9 @@ function processPendingRecordDraftsCore_(showUi) {
       : '';
     const state = valueAt_(sh, row, h.state);
     const late = valueAt_(sh, row, h.late);
+    const draftGrade = h.draftGrade ? valueAt_(sh, row, h.draftGrade) : '';
+    const assignedGrade = h.assignedGrade ? valueAt_(sh, row, h.assignedGrade) : '';
+    const maxPoints = h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '';
     const extractedText = valueAt_(sh, row, h.extractedText);
 
     if (!submissionKey || !extractedText || String(extractedText).length < 20) {
@@ -4084,6 +4138,7 @@ function processPendingRecordDraftsCore_(showUi) {
       assignmentTitle,
       state,
       late,
+      gradeText: formatGradeContext_(draftGrade, assignedGrade, maxPoints),
       assignmentDescription: sanitizePromptText_(
         assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
         promptSanitizeOptions
@@ -5031,6 +5086,7 @@ function collectSubmissionsForIncludedAssignments() {
       courseName: valueAt_(sh, row, h.courseName),
       courseWorkId: valueAt_(sh, row, h.courseWorkId),
       assignmentTitle: valueAt_(sh, row, h.assignmentTitle),
+      maxPoints: h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '',
       assignmentDescription: h.assignmentDescription
         ? valueAt_(sh, row, h.assignmentDescription)
         : '',
@@ -5067,6 +5123,7 @@ function collectSubmissionsForIncludedAssignments() {
   }
 
   if (allRows.length > 0) {
+    ensureSheetHeaders_(SHEET_NAMES.submissions);
     upsertByKey_(SHEET_NAMES.submissions, 'submissionKey', allRows);
     sortSubmissionsSheet_();
     styleSubmissionsSheet_();
@@ -5110,6 +5167,7 @@ function buildSubmissionRowsForAssignment_(assignment) {
   const courseName = assignment.courseName;
   const courseWorkId = assignment.courseWorkId;
   const assignmentTitle = assignment.assignmentTitle;
+  const maxPoints = assignment.maxPoints || '';
   const assignmentDescription = assignment.assignmentDescription || '';
 
 
@@ -5144,6 +5202,7 @@ function buildSubmissionRowsForAssignment_(assignment) {
         sub.late === true ? 'TRUE' : 'FALSE',
         sub.draftGrade ?? '',
         sub.assignedGrade ?? '',
+        maxPoints,
         sub.updateTime || '',
         sub.alternateLink || '',
         extracted.fileTitles.join('\n'),
@@ -5557,6 +5616,7 @@ function buildRecordDraftPrompt_(data) {
     ['assignmentTitle', `과제명: ${data.assignmentTitle}`],
     ['state', `제출상태: ${data.state}`],
     ['late', `지각제출: ${data.late}`],
+    ['gradeText', `점수 정보: ${data.gradeText}`],
   ]);
 
   if (missingInputLines.length > 0) {
@@ -5590,6 +5650,7 @@ function buildRecordDraftPrompt_(data) {
   }
 
   parts.push(buildRecordDraftNoEvidenceRule_());
+  parts.push(buildGradeContextRule_());
 
   return parts.filter(part => String(part || '').trim()).join('\n\n');
 }
@@ -5627,6 +5688,7 @@ function buildStudentFinalRecordPrompt_(data) {
   }
 
   parts.push(buildStudentFinalNoEvidenceRule_());
+  parts.push(buildGradeContextRule_());
 
   return parts.filter(part => String(part || '').trim()).join('\n\n');
 }
