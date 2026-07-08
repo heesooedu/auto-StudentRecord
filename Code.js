@@ -2390,7 +2390,8 @@ function formatGradeContext_(draftGrade, assignedGrade, maxPoints, teacherGrade)
   const teacher = String(teacherGrade ?? '').trim();
 
   if (teacher) {
-    return `교사 입력 점수/수준: ${formatGradeValueWithMax_(teacher, max)} (Classroom 점수보다 우선 적용)`;
+    const teacherMax = max || (isPlainNumericGrade_(teacher) ? '100' : '');
+    return `교사 입력 점수/수준: ${formatGradeValueWithMax_(teacher, teacherMax)} (Classroom 점수보다 우선 적용)`;
   }
 
   const gradeParts = [];
@@ -2406,17 +2407,14 @@ function formatGradeContext_(draftGrade, assignedGrade, maxPoints, teacherGrade)
 function formatGradeValueWithMax_(grade, maxPoints) {
   const gradeText = String(grade ?? '').trim();
   const max = String(maxPoints ?? '').trim();
+
+  if (!gradeText) return '점수 없음';
+  if (!isPlainNumericGrade_(gradeText)) return gradeText;
+
   const ratioText = formatGradeRatio_(gradeText, max);
+  if (max) return `${gradeText}/${max}${ratioText}`;
 
-  if (max && isPlainNumericGrade_(gradeText)) {
-    return `${gradeText}/${max}${ratioText}`;
-  }
-
-  if (max && ratioText) {
-    return `${gradeText} (만점 ${max}, ${ratioText.replace(/[()]/g, '')})`;
-  }
-
-  return gradeText || '점수 없음';
+  return gradeText;
 }
 
 function formatGradeRatio_(grade, maxPoints) {
@@ -2860,7 +2858,7 @@ function styleAssignmentsSheet_() {
     alternateLink: 220,
     maxPoints: 80,
     teacherGrade: 120,
-    includeInFinal: 100,
+    includeInFinal: 115,
     weight: 70,
     category: 120,
     collectStatus: 130,
@@ -3009,7 +3007,7 @@ function styleSubmissionsSheet_() {
     submissionId: 80,
     state: 100,
     late: 70,
-    draftGrade: 80,
+    draftGrade: 90,
     assignedGrade: 80,
     maxPoints: 80,
     teacherGrade: 120,
@@ -3044,7 +3042,7 @@ function styleSubmissionsSheet_() {
 
   if (h.teacherGrade) {
     sh.getRange(1, h.teacherGrade).setNote(
-      '교사가 직접 판단한 점수를 입력합니다. 숫자만 입력하면 maxPoints 대비 점수로 처리됩니다. 예: 10, 8/10, 80%, 상, 중상. 입력값은 Classroom draftGrade보다 우선 적용됩니다.'
+      '[선택입력] 클래스룸에 과제를 채점하셔서 점수를 입력하지 않으셨거나, 클래스룸 점수와 다르게 점수를 입력하고 싶으시다면 기입해주세요. 클래스룸에 특별한 입력이 없다면 100점 만점 기준입니다.'
     );
   }
 
@@ -3163,6 +3161,9 @@ function styleRecordsSheet_() {
 
     // finalRecord가 보기 좋게 보이도록 행 높이 확보
     sh.setRowHeights(2, lastDataRow - 1, 135);
+    applyEvidenceSummaryNotesToFinalRecords_(
+      Array.from({ length: lastDataRow - 1 }, (_, index) => index + 2)
+    );
   }
 
   if (h.teacherChecked && lastDataRow > 1) {
@@ -3605,6 +3606,24 @@ function applyNeisByteFormulasToRecords_(targetRows) {
   );
 }
 
+function applyEvidenceSummaryNotesToFinalRecords_(targetRows) {
+  if (!targetRows || targetRows.length === 0) return;
+
+  const sh = getSheet_(SHEET_NAMES.records);
+  const h = headerMap_(sh);
+
+  if (!h.finalRecord || !h.evidenceSummary) return;
+
+  targetRows.forEach(row => {
+    if (row < 2) return;
+
+    const evidenceSummary = String(sh.getRange(row, h.evidenceSummary).getValue() || '').trim();
+    sh.getRange(row, h.finalRecord).setNote(
+      evidenceSummary ? `[evidence_summary]\n${evidenceSummary}` : ''
+    );
+  });
+}
+
 function showRecordsSheetAfterSave_(targetRows) {
   const sh = getSheet_(SHEET_NAMES.records);
 
@@ -3612,6 +3631,7 @@ function showRecordsSheetAfterSave_(targetRows) {
   if (filter) filter.remove();
 
   const h = headerMap_(sh);
+  applyEvidenceSummaryNotesToFinalRecords_(targetRows);
 
   if (targetRows && targetRows.length > 0) {
     targetRows.forEach(row => {
@@ -5647,8 +5667,11 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       const parsed = generated.parsed;
       const finalRecord = normalizeAiText_(parsed.record_draft);
       const caution = normalizeAiText_(parsed.caution);
+      const evidenceSummary = normalizeAiText_(parsed.evidence_summary);
 
-      sh.getRange(row, h.finalRecord).setValue(finalRecord);
+      sh.getRange(row, h.finalRecord)
+        .setValue(finalRecord)
+        .setNote(evidenceSummary ? `[evidence_summary]\n${evidenceSummary}` : '');
       sh.getRange(row, h.charCount).setValue(neisByteCount_(finalRecord));
       sh.getRange(row, h.caution).setValue(caution);
       sh.getRange(row, h.teacherChecked).setValue(false);
