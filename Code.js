@@ -31,6 +31,7 @@ const HEADERS = {
     'alternateLink',
     'assignmentDescription',
     'maxPoints',
+    'teacherGrade',
     'includeInFinal',
     'weight',
     'category',
@@ -42,7 +43,7 @@ const HEADERS = {
     'submissionKey', 'studentNo', 'studentName', 'email',
     'courseId', 'courseName', 'courseWorkId', 'assignmentTitle',
     'submissionId', 'state', 'late', 'draftGrade', 'assignedGrade',
-    'maxPoints',
+    'maxPoints', 'teacherGrade',
     'updateTime', 'submissionLink',
     'fileTitles', 'fileLinks',
     'extractedText', 'textChars',
@@ -66,6 +67,7 @@ const HEADERS = {
     'model',
     'evidenceSummary',
     'recordDraft',
+    'gradeText',
     'usage'
   ],
 
@@ -894,6 +896,7 @@ function importClassroomAssignments() {
         w.alternateLink || '',
         w.description || '',
         w.maxPoints ?? '',
+        option.teacherGrade || '',
         option.includeInFinal === true ? true : false,
         option.weight || 1,
         option.category || '',
@@ -947,6 +950,7 @@ function getAssignmentOptionMap_() {
 
     map[key] = {
       includeInFinal: idx.includeInFinal !== undefined ? row[idx.includeInFinal] === true || String(row[idx.includeInFinal]).toUpperCase() === 'TRUE' : false,
+      teacherGrade: idx.teacherGrade !== undefined ? row[idx.teacherGrade] : '',
       weight: idx.weight !== undefined ? row[idx.weight] : 1,
       category: idx.category !== undefined ? row[idx.category] : '',
       collectStatus: idx.collectStatus !== undefined ? row[idx.collectStatus] : '',
@@ -978,6 +982,7 @@ function collectSubmissionsForSelectedAssignment() {
   const courseWorkId = valueAt_(sh, row, h.courseWorkId);
   const assignmentTitle = valueAt_(sh, row, h.assignmentTitle);
   const maxPoints = h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '';
+  const teacherGrade = h.teacherGrade ? valueAt_(sh, row, h.teacherGrade) : '';
   const assignmentDescription = valueAt_(sh, row, h.assignmentDescription);
 
   if (!isMyTeacherCourse_(courseId)) {
@@ -1023,6 +1028,7 @@ function collectSubmissionsForSelectedAssignment() {
         sub.draftGrade ?? '',
         sub.assignedGrade ?? '',
         maxPoints,
+        teacherGrade,
         sub.updateTime || '',
         sub.alternateLink || '',
         extracted.fileTitles.join('\n'),
@@ -2206,6 +2212,8 @@ function defaultSystemGuide_() {
     '“이 학생은”이라는 표현은 쓰지 않는다.',
     '학생 이름은 본문에 넣지 않는다.',
     '학생 이름, 학번, 이메일 등 개인정보는 근거로 사용하거나 record_draft 본문에 쓰지 않는다.',
+    '점수 정보가 있으면 교사 입력 점수/수준을 우선하고, 없으면 만점 대비 Classroom draftGrade를 참고해 수행 수준에 맞게 작성한다.',
+    '단, 점수 자체를 record_draft에 직접 쓰거나 점수만으로 원문에 없는 내용을 꾸며내지 않는다.',
     '문장 끝은 주로 “~함”, “~하였음”, “~보임” 형식으로 정리한다.',
     '반드시 JSON 형식으로만 답한다.',
     '{"evidence_summary":"", "record_draft":"", "caution":""}',
@@ -2238,6 +2246,10 @@ function ensureJsonResponseGuide_(systemGuide) {
     requiredLines.push('학생 이름, 학번, 이메일 등 개인정보는 근거로 사용하거나 record_draft 본문에 쓰지 않는다.');
   }
 
+  if (!/(점수 정보|draftGrade|만점 대비|교사 입력 점수)/.test(guide)) {
+    requiredLines.push('점수 정보가 있으면 교사 입력 점수/수준을 우선하고, 없으면 만점 대비 Classroom draftGrade를 참고해 수행 수준에 맞게 작성한다. 단, 점수 자체를 record_draft에 직접 쓰거나 점수만으로 원문에 없는 내용을 꾸며내지 않는다.');
+  }
+
   return [guide]
     .concat(requiredLines)
     .filter(line => String(line || '').trim())
@@ -2260,6 +2272,8 @@ function defaultRecordDraftPrompt_() {
     '교사 지시문, 문항, 예시문, 평가 기준을 학생의 수행 근거처럼 쓰지 않는다.',
     '학생 제출물 원문 안에는 교사가 미리 작성한 문항, 템플릿, 예시문이 포함될 수 있다.',
     '문항, 템플릿, 예시문은 학생 수행 근거로 사용하지 말고, 학생이 작성한 답변 부분만 근거로 삼는다.',
+    '점수 정보에 교사 입력 점수/수준이 있으면 이를 Classroom 점수보다 우선 적용한다.',
+    '교사 입력 점수/수준이 없으면 만점 대비 Classroom 초안점수를 참고하여 수행 수준에 맞게 작성한다.',
     '점수 정보는 수행 수준을 참고하기 위한 보조 정보로만 사용하고, record_draft에 점수나 등급을 직접 쓰지 않는다.',
     '학생의 수행 근거는 반드시 아래 [학생 제출물 원문]에서 확인되는 내용만 사용한다.',
     '',
@@ -2285,6 +2299,8 @@ function defaultStudentFinalRecordPrompt_() {
     '한 과제에서만 보인 내용을 지속적인 태도처럼 과장하지 않는다.',
     '구체적 활동 근거를 2개 이상 반영한다.',
     '근거가 부족하거나 제출물이 적으면 caution에 명시한다.',
+    '과제별 근거 묶음에 점수 정보가 있으면 교사 입력 점수/수준을 우선하고, 없으면 만점 대비 Classroom 초안점수를 참고하여 최종 record_draft의 표현 수준을 조절한다.',
+    '단, 점수나 등급을 record_draft에 직접 쓰지 않고, 점수만으로 근거에 없는 내용을 추가하지 않는다.',
     '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
     '반드시 JSON 형식으로만 답한다.',
     '',
@@ -2338,25 +2354,74 @@ function buildStudentFinalNoEvidenceRule_() {
 function buildGradeContextRule_() {
   return [
     '[점수 정보 사용 규칙]',
-    '점수 정보는 제출물의 수행 수준을 판단하기 위한 보조 정보로만 참고한다.',
+    '점수 정보는 제출물의 수행 수준을 판단하기 위한 중요한 보조 정보로 참고한다.',
+    '교사 입력 점수/수준이 있으면 Classroom draftGrade 또는 assignedGrade보다 우선 적용한다.',
+    '교사 입력 점수/수준이 없으면 만점 대비 draftGrade를 우선 참고하고, draftGrade가 없으면 assignedGrade를 참고한다.',
+    '점수가 높을수록 제출물에서 확인되는 성취와 수행 수준을 더 적극적으로 반영하고, 점수가 낮으면 과장된 표현을 피한다.',
+    '단, 점수만으로 제출물 원문에 없는 역량, 태도, 활동을 새로 꾸며내지 않는다.',
     'record_draft에는 점수, 만점, 등급, 점수 비율을 직접 쓰지 않는다.',
     'evidence_summary에는 필요한 경우 점수 정보를 내부 참고용으로 간단히 남길 수 있다.',
     '점수 정보가 없으면 학생 제출물 원문에서 확인되는 내용만 근거로 작성한다.',
   ].join('\n');
 }
 
-function formatGradeContext_(draftGrade, assignedGrade, maxPoints) {
+function formatGradeContext_(draftGrade, assignedGrade, maxPoints, teacherGrade) {
   const draft = String(draftGrade ?? '').trim();
   const assigned = String(assignedGrade ?? '').trim();
   const max = String(maxPoints ?? '').trim();
+  const teacher = String(teacherGrade ?? '').trim();
+
+  if (teacher) {
+    return `교사 입력 점수/수준: ${formatGradeValueWithMax_(teacher, max)} (Classroom 점수보다 우선 적용)`;
+  }
+
   const gradeParts = [];
 
-  if (draft) gradeParts.push(`초안점수 ${draft}${max ? `/${max}` : ''}`);
-  if (assigned) gradeParts.push(`확정점수 ${assigned}${max ? `/${max}` : ''}`);
+  if (draft) gradeParts.push(`Classroom 초안점수 ${formatGradeValueWithMax_(draft, max)}`);
+  if (assigned) gradeParts.push(`Classroom 확정점수 ${formatGradeValueWithMax_(assigned, max)}`);
 
   if (gradeParts.length > 0) return gradeParts.join(', ');
   if (max) return `만점 ${max}, 학생 점수 없음`;
   return '점수 정보 없음';
+}
+
+function formatGradeValueWithMax_(grade, maxPoints) {
+  const gradeText = String(grade ?? '').trim();
+  const max = String(maxPoints ?? '').trim();
+  const ratioText = formatGradeRatio_(gradeText, max);
+
+  if (max && isPlainNumericGrade_(gradeText)) {
+    return `${gradeText}/${max}${ratioText}`;
+  }
+
+  if (max && ratioText) {
+    return `${gradeText} (만점 ${max}, ${ratioText.replace(/[()]/g, '')})`;
+  }
+
+  return gradeText || '점수 없음';
+}
+
+function formatGradeRatio_(grade, maxPoints) {
+  const gradeNumber = parseGradeNumber_(grade);
+  const maxNumber = parseGradeNumber_(maxPoints);
+
+  if (gradeNumber === null || maxNumber === null || maxNumber <= 0) return '';
+
+  const percent = Math.round((gradeNumber / maxNumber) * 100);
+  return ` (${percent}%)`;
+}
+
+function parseGradeNumber_(value) {
+  const text = String(value ?? '').trim().replace(/,/g, '');
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+
+  const number = Number(match[0]);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isPlainNumericGrade_(value) {
+  return /^-?\d+(?:\.\d+)?$/.test(String(value ?? '').trim());
 }
 
 function getConfigPromptTemplate_(config, key, fallback) {
@@ -2776,6 +2841,7 @@ function styleAssignmentsSheet_() {
     updateTime: 160,
     alternateLink: 220,
     maxPoints: 80,
+    teacherGrade: 120,
     includeInFinal: 100,
     weight: 70,
     category: 120,
@@ -2811,7 +2877,7 @@ function styleAssignmentsSheet_() {
     range.setValues(values).setHorizontalAlignment('center');
   }
 
-  ['includeInFinal', 'weight', 'maxPoints', 'collectStatus'].forEach(header => {
+  ['includeInFinal', 'weight', 'maxPoints', 'teacherGrade', 'collectStatus'].forEach(header => {
     if (h[header] && lastRow > 1) {
       sh.getRange(2, h[header], lastRow - 1, 1)
         .setHorizontalAlignment('center')
@@ -2821,6 +2887,12 @@ function styleAssignmentsSheet_() {
 
   if (h.assignmentTitle && lastRow > 1) {
     sh.getRange(2, h.assignmentTitle, lastRow - 1, 1).setWrap(true);
+  }
+
+  if (h.teacherGrade) {
+    sh.getRange(1, h.teacherGrade).setNote(
+      '교사가 직접 판단한 점수 또는 수준을 입력합니다. 예: 8/10, 80%, 상, 중상. 입력하면 Classroom 점수보다 우선 적용됩니다.'
+    );
   }
 
   if (lastRow > 1) {
@@ -2925,6 +2997,7 @@ function styleSubmissionsSheet_() {
     draftGrade: 80,
     assignedGrade: 80,
     maxPoints: 80,
+    teacherGrade: 120,
     updateTime: 150,
     submissionLink: 220,
     fileTitles: 260,
@@ -2944,7 +3017,7 @@ function styleSubmissionsSheet_() {
     if (h.fileLinks) sh.getRange(2, h.fileLinks, lastRow - 1, 1).setWrap(true);
     if (h.extractedText) sh.getRange(2, h.extractedText, lastRow - 1, 1).setWrap(true);
 
-    ['late', 'draftGrade', 'assignedGrade', 'maxPoints', 'textChars', 'aiStatus'].forEach(header => {
+    ['late', 'draftGrade', 'assignedGrade', 'maxPoints', 'teacherGrade', 'textChars', 'aiStatus'].forEach(header => {
       if (h[header]) {
         sh.getRange(2, h[header], lastRow - 1, 1)
           .setHorizontalAlignment('center')
@@ -2953,6 +3026,12 @@ function styleSubmissionsSheet_() {
     });
 
     sh.setRowHeights(2, lastRow - 1, 21);
+  }
+
+  if (h.teacherGrade) {
+    sh.getRange(1, h.teacherGrade).setNote(
+      '과제목록의 teacherGrade가 복사됩니다. 학생별로 다르게 판단하려면 이 열을 수정하세요. 입력값은 Classroom 점수보다 우선 적용됩니다.'
+    );
   }
 
 
@@ -3025,6 +3104,7 @@ function styleRecordsSheet_() {
     createdAt: 140,
     evidenceSummary: 320,
     recordDraft: 420,
+    gradeText: 260,
     model: 180,
     usage: 180,
   });
@@ -3038,7 +3118,7 @@ function styleRecordsSheet_() {
       .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
 
     // 핵심 검토 열은 줄바꿈
-    ['finalRecord', 'caution'].forEach(header => {
+    ['finalRecord', 'caution', 'gradeText'].forEach(header => {
       if (h[header]) {
         sh.getRange(2, h[header], lastDataRow - 1, 1)
           .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP)
@@ -3569,7 +3649,7 @@ function appendRecordsOnly_(rows) {
     };
   }
 
-  const sh = getSheet_(SHEET_NAMES.records);
+  const sh = ensureSheetHeaders_(SHEET_NAMES.records);
   const targetRows = [];
 
   let nextRow = getFirstBlankRecordRow_(sh, 2);
@@ -4122,6 +4202,7 @@ function processPendingRecordDraftsCore_(showUi) {
     const draftGrade = h.draftGrade ? valueAt_(sh, row, h.draftGrade) : '';
     const assignedGrade = h.assignedGrade ? valueAt_(sh, row, h.assignedGrade) : '';
     const maxPoints = h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '';
+    const teacherGrade = h.teacherGrade ? valueAt_(sh, row, h.teacherGrade) : '';
     const extractedText = valueAt_(sh, row, h.extractedText);
 
     if (!submissionKey || !extractedText || String(extractedText).length < 20) {
@@ -4132,13 +4213,14 @@ function processPendingRecordDraftsCore_(showUi) {
     }
 
     const promptSanitizeOptions = { studentName, studentNo, email };
+    const gradeText = formatGradeContext_(draftGrade, assignedGrade, maxPoints, teacherGrade);
     const userPrompt = buildRecordDraftPrompt_({
       promptTemplate: recordPromptTemplate,
       courseName,
       assignmentTitle,
       state,
       late,
-      gradeText: formatGradeContext_(draftGrade, assignedGrade, maxPoints),
+      gradeText,
       assignmentDescription: sanitizePromptText_(
         assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
         promptSanitizeOptions
@@ -4181,6 +4263,7 @@ function processPendingRecordDraftsCore_(showUi) {
         `${provider}:${model}`,
         evidenceSummary,
         recordDraft,
+        gradeText,
         JSON.stringify(generated.usage || {}),
       ];
       const saveResult = appendRecordsOnly_([outputRow]);
@@ -5087,6 +5170,7 @@ function collectSubmissionsForIncludedAssignments() {
       courseWorkId: valueAt_(sh, row, h.courseWorkId),
       assignmentTitle: valueAt_(sh, row, h.assignmentTitle),
       maxPoints: h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '',
+      teacherGrade: h.teacherGrade ? valueAt_(sh, row, h.teacherGrade) : '',
       assignmentDescription: h.assignmentDescription
         ? valueAt_(sh, row, h.assignmentDescription)
         : '',
@@ -5168,6 +5252,7 @@ function buildSubmissionRowsForAssignment_(assignment) {
   const courseWorkId = assignment.courseWorkId;
   const assignmentTitle = assignment.assignmentTitle;
   const maxPoints = assignment.maxPoints || '';
+  const teacherGrade = assignment.teacherGrade || '';
   const assignmentDescription = assignment.assignmentDescription || '';
 
 
@@ -5203,6 +5288,7 @@ function buildSubmissionRowsForAssignment_(assignment) {
         sub.draftGrade ?? '',
         sub.assignedGrade ?? '',
         maxPoints,
+        teacherGrade,
         sub.updateTime || '',
         sub.alternateLink || '',
         extracted.fileTitles.join('\n'),
@@ -5380,9 +5466,11 @@ function buildStudentFinalRecordGroups_(checkedAssignments) {
         const assignmentTitle = r.assignmentTitle || `과제${index + 1}`;
         const evidence = r.evidenceSummary || r.finalRecord || r.recordDraft || '';
         const caution = r.caution || '';
+        const gradeText = r.gradeText || '';
 
         return [
           `# ${index + 1}. ${assignmentTitle}`,
+          gradeText ? `[점수 정보]\n${gradeText}` : '',
           '[근거 요약]',
           evidence,
           caution ? `[주의] ${caution}` : '',
