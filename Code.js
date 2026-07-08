@@ -896,7 +896,7 @@ function importClassroomAssignments() {
         w.alternateLink || '',
         w.description || '',
         w.maxPoints ?? '',
-        option.teacherGrade || '',
+        '',
         option.includeInFinal === true ? true : false,
         option.weight || 1,
         option.category || '',
@@ -950,7 +950,6 @@ function getAssignmentOptionMap_() {
 
     map[key] = {
       includeInFinal: idx.includeInFinal !== undefined ? row[idx.includeInFinal] === true || String(row[idx.includeInFinal]).toUpperCase() === 'TRUE' : false,
-      teacherGrade: idx.teacherGrade !== undefined ? row[idx.teacherGrade] : '',
       weight: idx.weight !== undefined ? row[idx.weight] : 1,
       category: idx.category !== undefined ? row[idx.category] : '',
       collectStatus: idx.collectStatus !== undefined ? row[idx.collectStatus] : '',
@@ -982,7 +981,6 @@ function collectSubmissionsForSelectedAssignment() {
   const courseWorkId = valueAt_(sh, row, h.courseWorkId);
   const assignmentTitle = valueAt_(sh, row, h.assignmentTitle);
   const maxPoints = h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '';
-  const teacherGrade = h.teacherGrade ? valueAt_(sh, row, h.teacherGrade) : '';
   const assignmentDescription = valueAt_(sh, row, h.assignmentDescription);
 
   if (!isMyTeacherCourse_(courseId)) {
@@ -1028,7 +1026,7 @@ function collectSubmissionsForSelectedAssignment() {
         sub.draftGrade ?? '',
         sub.assignedGrade ?? '',
         maxPoints,
-        teacherGrade,
+        '',
         sub.updateTime || '',
         sub.alternateLink || '',
         extracted.fileTitles.join('\n'),
@@ -1998,6 +1996,7 @@ function upsertByKey_(sheetName, keyHeader, rows) {
 
     if (existing[key]) {
       const targetRow = existing[key];
+      row = preserveSubmissionEditableValues_(sh, actualHeaders, targetRow, row);
       sh.getRange(targetRow, 1, 1, row.length).setValues([row]);
       updated++;
       targetRows.push(targetRow);
@@ -2021,6 +2020,25 @@ function upsertByKey_(sheetName, keyHeader, rows) {
     updated,
     targetRows,
   };
+}
+
+function preserveSubmissionEditableValues_(sh, headers, targetRow, row) {
+  if (sh.getName() !== SHEET_NAMES.submissions) return row;
+
+  ['teacherGrade'].forEach(header => {
+    const col = headers.indexOf(header) + 1;
+    if (col < 1 || col > row.length) return;
+
+    const incoming = String(row[col - 1] || '').trim();
+    if (incoming) return;
+
+    const existing = sh.getRange(targetRow, col).getValue();
+    if (String(existing || '').trim()) {
+      row[col - 1] = existing;
+    }
+  });
+
+  return row;
 }
 
 function getLastNonEmptyRowInColumn_(sh, col) {
@@ -2889,12 +2907,6 @@ function styleAssignmentsSheet_() {
     sh.getRange(2, h.assignmentTitle, lastRow - 1, 1).setWrap(true);
   }
 
-  if (h.teacherGrade) {
-    sh.getRange(1, h.teacherGrade).setNote(
-      '교사가 직접 판단한 점수 또는 수준을 입력합니다. 예: 8/10, 80%, 상, 중상. 입력하면 Classroom 점수보다 우선 적용됩니다.'
-    );
-  }
-
   if (lastRow > 1) {
     sh.setRowHeights(2, lastRow - 1, 21);
   }
@@ -2916,6 +2928,8 @@ function styleAssignmentsSheet_() {
     'state',
     'dueAt',
     'updateTime',
+    'maxPoints',
+    'teacherGrade',
     'assignmentDescription',
     'alternateLink'
   ]);
@@ -2981,6 +2995,7 @@ function toSheetFormulaString_(value) {
 function styleSubmissionsSheet_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.submissions);
   if (!sh) return;
+  const h = headerMap_(sh);
 
   setColumnWidthsByHeader_(sh, {
     submissionKey: 80,
@@ -3012,7 +3027,6 @@ function styleSubmissionsSheet_() {
   if (lastRow > 1) {
     sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).setWrap(false);
 
-    const h = headerMap_(sh);
     if (h.fileTitles) sh.getRange(2, h.fileTitles, lastRow - 1, 1).setWrap(true);
     if (h.fileLinks) sh.getRange(2, h.fileLinks, lastRow - 1, 1).setWrap(true);
     if (h.extractedText) sh.getRange(2, h.extractedText, lastRow - 1, 1).setWrap(true);
@@ -3030,7 +3044,13 @@ function styleSubmissionsSheet_() {
 
   if (h.teacherGrade) {
     sh.getRange(1, h.teacherGrade).setNote(
-      '과제목록의 teacherGrade가 복사됩니다. 학생별로 다르게 판단하려면 이 열을 수정하세요. 입력값은 Classroom 점수보다 우선 적용됩니다.'
+      '교사가 직접 판단한 점수를 입력합니다. 숫자만 입력하면 maxPoints 대비 점수로 처리됩니다. 예: 10, 8/10, 80%, 상, 중상. 입력값은 Classroom draftGrade보다 우선 적용됩니다.'
+    );
+  }
+
+  if (h.maxPoints) {
+    sh.getRange(1, h.maxPoints).setNote(
+      'Classroom 과제의 만점입니다. teacherGrade에 숫자만 입력하면 이 만점 대비 점수로 해석됩니다.'
     );
   }
 
@@ -5170,7 +5190,6 @@ function collectSubmissionsForIncludedAssignments() {
       courseWorkId: valueAt_(sh, row, h.courseWorkId),
       assignmentTitle: valueAt_(sh, row, h.assignmentTitle),
       maxPoints: h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '',
-      teacherGrade: h.teacherGrade ? valueAt_(sh, row, h.teacherGrade) : '',
       assignmentDescription: h.assignmentDescription
         ? valueAt_(sh, row, h.assignmentDescription)
         : '',
@@ -5252,7 +5271,6 @@ function buildSubmissionRowsForAssignment_(assignment) {
   const courseWorkId = assignment.courseWorkId;
   const assignmentTitle = assignment.assignmentTitle;
   const maxPoints = assignment.maxPoints || '';
-  const teacherGrade = assignment.teacherGrade || '';
   const assignmentDescription = assignment.assignmentDescription || '';
 
 
@@ -5288,7 +5306,7 @@ function buildSubmissionRowsForAssignment_(assignment) {
         sub.draftGrade ?? '',
         sub.assignedGrade ?? '',
         maxPoints,
-        teacherGrade,
+        '',
         sub.updateTime || '',
         sub.alternateLink || '',
         extracted.fileTitles.join('\n'),
