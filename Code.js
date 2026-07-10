@@ -3188,6 +3188,10 @@ function styleRecordsSheet_() {
     sh.getRange(1, h.charCount).setBackground('#7f6000');
   }
 
+  if (h.caution) {
+    sh.getRange(1, h.caution).clearNote();
+  }
+
   applyNeisByteFormulasToRecords_();
   applyRecordConditionalFormats_(sh);
 
@@ -3617,6 +3621,10 @@ function applyNeisByteFormulasToRecords_(targetRows) {
   sh.getRange(1, h.charCount).setNote(
     'NEIS 바이트 계산값입니다. finalRecord 기준으로 =2*LENB(finalRecord)-LEN(finalRecord) 공식이 적용됩니다.'
   );
+
+  if (h.caution) {
+    sh.getRange(1, h.caution).clearNote();
+  }
 }
 
 function applyEvidenceSummaryNotesToFinalRecords_(targetRows) {
