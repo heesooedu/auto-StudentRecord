@@ -2047,51 +2047,85 @@ function upsertByKey_(sheetName, keyHeader, rows) {
   }
 
   const sh = getSheet_(sheetName);
-  const actualHeaders = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const lastRow = Math.max(sh.getLastRow(), 1);
+  const lastCol = Math.max(sh.getLastColumn(), 1);
+  const sheetValues = sh.getRange(1, 1, lastRow, lastCol).getValues();
+  const actualHeaders = sheetValues[0] || [];
   const keyCol = actualHeaders.indexOf(keyHeader) + 1;
 
   if (keyCol < 1) {
     throw new Error(`${sheetName} 시트에서 ${keyHeader} 헤더를 찾을 수 없습니다.`);
   }
 
-  const existing = {};
-  const lastDataRow = getLastNonEmptyRowInColumn_(sh, keyCol);
+  const existingValues = sheetValues.slice(1);
+  const existing = Object.create(null);
+  let lastDataRow = 1;
 
-  if (lastDataRow > 1) {
-    const keys = sh.getRange(2, keyCol, lastDataRow - 1, 1).getValues();
-    keys.forEach((r, i) => {
-      const key = String(r[0] || '').trim();
-      if (key) existing[key] = i + 2;
-    });
+  existingValues.forEach((row, i) => {
+    const key = String(row[keyCol - 1] || '').trim();
+    const rowNumber = i + 2;
+
+    if (key) {
+      existing[key] = {
+        rowNumber,
+        values: row,
+      };
+      lastDataRow = rowNumber;
+    }
+  });
+
+  const maxIncomingWidth = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const writeWidth = Math.max(maxIncomingWidth, 1);
+
+  if (writeWidth > sh.getMaxColumns()) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), writeWidth - sh.getMaxColumns());
   }
 
   let appended = 0;
   let updated = 0;
   const targetRows = [];
+  const writesByRow = Object.create(null);
 
   let nextAppendRow = Math.max(lastDataRow + 1, 2);
 
   rows.forEach(row => {
-    const key = String(row[keyCol - 1] || '').trim();
+    let outputRow = row.slice();
+    const key = String(outputRow[keyCol - 1] || '').trim();
 
     if (!key) {
       throw new Error(`${sheetName} 저장 실패: ${keyHeader} 값이 비어 있습니다.`);
     }
 
     if (existing[key]) {
-      const targetRow = existing[key];
-      row = preserveSubmissionEditableValues_(sh, actualHeaders, targetRow, row);
-      sh.getRange(targetRow, 1, 1, row.length).setValues([row]);
+      const targetRow = existing[key].rowNumber;
+      outputRow = preserveSubmissionEditableValues_(sh, actualHeaders, targetRow, outputRow, existing[key].values);
       updated++;
       targetRows.push(targetRow);
+      existing[key].values = outputRow.slice();
+      writesByRow[targetRow] = {
+        rowNumber: targetRow,
+        values: outputRow,
+      };
     } else {
-      sh.getRange(nextAppendRow, 1, 1, row.length).setValues([row]);
+      const targetRow = nextAppendRow;
       appended++;
-      targetRows.push(nextAppendRow);
-      existing[key] = nextAppendRow;
+      targetRows.push(targetRow);
+      existing[key] = {
+        rowNumber: targetRow,
+        values: outputRow.slice(),
+      };
+      writesByRow[targetRow] = {
+        rowNumber: targetRow,
+        values: outputRow,
+      };
       nextAppendRow++;
     }
   });
+
+  const writeItems = Object.keys(writesByRow).map(rowNumber => writesByRow[rowNumber]);
+  const maxTargetRow = writeItems.reduce((max, item) => Math.max(max, item.rowNumber), 0);
+  ensureSheetRows_(sh, maxTargetRow);
+  writeRowsInContiguousBlocks_(sh, writeItems);
 
   log_(
     'upsertByKey_',
@@ -2106,7 +2140,7 @@ function upsertByKey_(sheetName, keyHeader, rows) {
   };
 }
 
-function preserveSubmissionEditableValues_(sh, headers, targetRow, row) {
+function preserveSubmissionEditableValues_(sh, headers, targetRow, row, existingRow) {
   if (sh.getName() !== SHEET_NAMES.submissions) return row;
 
   ['teacherGrade'].forEach(header => {
@@ -2116,13 +2150,56 @@ function preserveSubmissionEditableValues_(sh, headers, targetRow, row) {
     const incoming = String(row[col - 1] || '').trim();
     if (incoming) return;
 
-    const existing = sh.getRange(targetRow, col).getValue();
+    const existing = existingRow ? existingRow[col - 1] : sh.getRange(targetRow, col).getValue();
     if (String(existing || '').trim()) {
       row[col - 1] = existing;
     }
   });
 
   return row;
+}
+
+function ensureSheetRows_(sh, requiredLastRow) {
+  if (!requiredLastRow || requiredLastRow <= sh.getMaxRows()) return;
+  sh.insertRowsAfter(sh.getMaxRows(), requiredLastRow - sh.getMaxRows());
+}
+
+function writeRowsInContiguousBlocks_(sh, writeItems) {
+  if (!writeItems || writeItems.length === 0) return;
+
+  const items = writeItems
+    .filter(item => item && item.rowNumber && item.values)
+    .sort((a, b) => a.rowNumber - b.rowNumber);
+
+  let blockStart = null;
+  let blockWidth = 0;
+  let blockValues = [];
+
+  const flush = () => {
+    if (!blockValues.length) return;
+    sh.getRange(blockStart, 1, blockValues.length, blockWidth).setValues(blockValues);
+    blockStart = null;
+    blockWidth = 0;
+    blockValues = [];
+  };
+
+  items.forEach(item => {
+    const values = item.values.slice();
+    const width = values.length;
+    const expectedRow = blockStart === null ? item.rowNumber : blockStart + blockValues.length;
+
+    if (blockStart !== null && item.rowNumber === expectedRow && width === blockWidth) {
+      blockValues.push(values);
+      return;
+    }
+
+    flush();
+    blockStart = item.rowNumber;
+    blockWidth = width;
+    blockValues = [values];
+  });
+
+  flush();
 }
 
 function getLastNonEmptyRowInColumn_(sh, col) {
@@ -2215,6 +2292,11 @@ function headerIndex_(headers) {
 function valueAt_(sh, row, col) {
   if (!col) return '';
   return sh.getRange(row, col).getValue();
+}
+
+function rowValueAt_(rowValues, col) {
+  if (!col) return '';
+  return rowValues[col - 1];
 }
 
 function truncate_(text, maxChars) {
@@ -4319,6 +4401,7 @@ function processPendingRecordDraftsCore_(showUi) {
   const recordPromptTemplate = getConfigPromptTemplate_(config, 'PROMPT_1', defaultRecordDraftPrompt_());
 
   const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
 
   let processed = 0;
   let skipped = 0;
@@ -4340,6 +4423,8 @@ function processPendingRecordDraftsCore_(showUi) {
     };
   }
 
+  const submissionValues = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
@@ -4356,28 +4441,29 @@ function processPendingRecordDraftsCore_(showUi) {
       break;
     }
 
-    const aiStatus = String(valueAt_(sh, row, h.aiStatus) || '').trim();
+    const rowValues = submissionValues[row - 2] || [];
+    const aiStatus = String(rowValueAt_(rowValues, h.aiStatus) || '').trim();
 
     if (aiStatus !== '대기' && aiStatus !== '재시도필요') {
       continue;
     }
 
-    const submissionKey = valueAt_(sh, row, h.submissionKey);
-    const studentNo = valueAt_(sh, row, h.studentNo);
-    const studentName = valueAt_(sh, row, h.studentName);
-    const email = valueAt_(sh, row, h.email);
-    const courseName = valueAt_(sh, row, h.courseName);
-    const assignmentTitle = valueAt_(sh, row, h.assignmentTitle);
+    const submissionKey = rowValueAt_(rowValues, h.submissionKey);
+    const studentNo = rowValueAt_(rowValues, h.studentNo);
+    const studentName = rowValueAt_(rowValues, h.studentName);
+    const email = rowValueAt_(rowValues, h.email);
+    const courseName = rowValueAt_(rowValues, h.courseName);
+    const assignmentTitle = rowValueAt_(rowValues, h.assignmentTitle);
     const assignmentDescription = h.assignmentDescription
-      ? valueAt_(sh, row, h.assignmentDescription)
+      ? rowValueAt_(rowValues, h.assignmentDescription)
       : '';
-    const state = valueAt_(sh, row, h.state);
-    const late = valueAt_(sh, row, h.late);
-    const draftGrade = h.draftGrade ? valueAt_(sh, row, h.draftGrade) : '';
-    const assignedGrade = h.assignedGrade ? valueAt_(sh, row, h.assignedGrade) : '';
-    const maxPoints = h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '';
-    const teacherGrade = h.teacherGrade ? valueAt_(sh, row, h.teacherGrade) : '';
-    const extractedText = valueAt_(sh, row, h.extractedText);
+    const state = rowValueAt_(rowValues, h.state);
+    const late = rowValueAt_(rowValues, h.late);
+    const draftGrade = h.draftGrade ? rowValueAt_(rowValues, h.draftGrade) : '';
+    const assignedGrade = h.assignedGrade ? rowValueAt_(rowValues, h.assignedGrade) : '';
+    const maxPoints = h.maxPoints ? rowValueAt_(rowValues, h.maxPoints) : '';
+    const teacherGrade = h.teacherGrade ? rowValueAt_(rowValues, h.teacherGrade) : '';
+    const extractedText = rowValueAt_(rowValues, h.extractedText);
 
     if (!submissionKey || !extractedText || String(extractedText).length < 20) {
       sh.getRange(row, h.aiStatus).setValue('오류');
@@ -4442,7 +4528,6 @@ function processPendingRecordDraftsCore_(showUi) {
       ];
       const saveResult = appendRecordsOnly_([outputRow]);
 
-      applyNeisByteFormulasToRecords_(saveResult.targetRows);
       savedRows.push(...saveResult.targetRows);
 
       sh.getRange(row, h.aiStatus).setValue(recordDraft ? '생성완료' : '근거부족');
