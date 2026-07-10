@@ -999,6 +999,7 @@ function collectSubmissionsForSelectedAssignment() {
   }
 
   const submissions = listAllStudentSubmissions_(courseId, courseWorkId);
+  const studentLookupIndex = buildStudentLookupIndex_();
 
   const rows = [];
 
@@ -1007,7 +1008,7 @@ function collectSubmissionsForSelectedAssignment() {
       const profile = getUserProfile_(sub.userId);
       const email = profile.emailAddress || '';
       const name = profile.name && profile.name.fullName ? profile.name.fullName : '';
-      const studentInfo = lookupStudent_(email, name, sub.userId);
+      const studentInfo = lookupStudent_(email, name, sub.userId, studentLookupIndex);
       const extracted = extractSubmissionText_(sub);
 
       const submissionKey = `${courseId}|${courseWorkId}|${sub.id}`;
@@ -1610,31 +1611,113 @@ function classroomGet_(path, params) {
 
 
 
-function lookupStudent_(email, name, classroomUserId) {
-  const sh = getSheet_(SHEET_NAMES.students);
-  const values = sh.getDataRange().getValues();
-  const h = headerIndex_(values[0]);
+function lookupStudent_(email, name, classroomUserId, studentLookupIndex) {
+  const index = studentLookupIndex || buildStudentLookupIndex_();
+  const lookupUserId = normalizeStudentLookupText_(classroomUserId);
+  const lookupEmail = normalizeStudentLookupEmail_(email);
+  const lookupName = normalizeStudentLookupText_(name);
 
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    const rowEmail = String(row[h.email] || '').trim();
-    const rowName = String(row[h.name] || '').trim();
-    const rowUserId = String(row[h.classroomUserId] || '').trim();
+  if (lookupUserId && index.byClassroomUserId[lookupUserId]) {
+    return index.byClassroomUserId[lookupUserId];
+  }
 
-    if (
-      (email && rowEmail && rowEmail === email) ||
-      (classroomUserId && rowUserId && rowUserId === classroomUserId) ||
-      (name && rowName && rowName === name)
-    ) {
-      return {
-        studentNo: row[h.studentNo] || '',
-        name: row[h.name] || name,
-        email: row[h.email] || email,
-      };
+  if (lookupEmail && index.byEmail[lookupEmail]) {
+    return index.byEmail[lookupEmail];
+  }
+
+  if (lookupName) {
+    const nameMatches = index.byName[lookupName] || [];
+
+    if (nameMatches.length === 1) {
+      return nameMatches[0];
+    }
+
+    if (nameMatches.length > 1) {
+      logAmbiguousStudentName_(index, lookupName, nameMatches.length);
     }
   }
 
-  return { studentNo: '', name, email };
+  return {
+    studentNo: '',
+    name: lookupName,
+    email: String(email || '').trim(),
+  };
+}
+
+function buildStudentLookupIndex_() {
+  const sh = getSheet_(SHEET_NAMES.students);
+  const values = sh.getDataRange().getValues();
+  return buildStudentLookupIndexFromValues_(values);
+}
+
+function buildStudentLookupIndexFromValues_(values) {
+  const index = {
+    byClassroomUserId: Object.create(null),
+    byEmail: Object.create(null),
+    byName: Object.create(null),
+    ambiguousNameLogged: Object.create(null),
+  };
+
+  if (!values || values.length < 2) return index;
+
+  const h = headerIndex_(values[0] || []);
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    const studentNo = studentLookupRowValue_(row, h.studentNo);
+    const studentName = normalizeStudentLookupText_(studentLookupRowValue_(row, h.name));
+    const studentEmail = String(studentLookupRowValue_(row, h.email) || '').trim();
+    const classroomUserId = normalizeStudentLookupText_(studentLookupRowValue_(row, h.classroomUserId));
+    const emailKey = normalizeStudentLookupEmail_(studentEmail);
+
+    if (!studentNo && !studentName && !studentEmail && !classroomUserId) continue;
+
+    const student = {
+      studentNo: studentNo || '',
+      name: studentName,
+      email: studentEmail,
+    };
+
+    if (classroomUserId && !index.byClassroomUserId[classroomUserId]) {
+      index.byClassroomUserId[classroomUserId] = student;
+    }
+
+    if (emailKey && !index.byEmail[emailKey]) {
+      index.byEmail[emailKey] = student;
+    }
+
+    if (studentName) {
+      if (!index.byName[studentName]) index.byName[studentName] = [];
+      index.byName[studentName].push(student);
+    }
+  }
+
+  return index;
+}
+
+function studentLookupRowValue_(row, index) {
+  if (index === undefined || index === null) return '';
+  return row[index];
+}
+
+function normalizeStudentLookupText_(value) {
+  return String(value || '').trim();
+}
+
+function normalizeStudentLookupEmail_(value) {
+  return normalizeStudentLookupText_(value).toLowerCase();
+}
+
+function logAmbiguousStudentName_(index, name, count) {
+  if (index.ambiguousNameLogged && index.ambiguousNameLogged[name]) return;
+
+  log_(
+    'lookupStudent_',
+    'AMBIGUOUS_NAME',
+    `동명이인 자동 연결 안 함: ${name} (학생명단 ${count}명)`
+  );
+
+  if (index.ambiguousNameLogged) index.ambiguousNameLogged[name] = true;
 }
 
 function getConfigMap_() {
@@ -5426,6 +5509,8 @@ function processPendingSubmissionCollectionsCore_() {
     };
   }
 
+  const studentLookupIndex = buildStudentLookupIndex_();
+
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
@@ -5465,7 +5550,7 @@ function processPendingSubmissionCollectionsCore_() {
     try {
       sh.getRange(row, h.collectStatus).setValue('수집중').setNote('');
 
-      const rows = buildSubmissionRowsForAssignment_(assignment);
+      const rows = buildSubmissionRowsForAssignment_(assignment, studentLookupIndex);
       ensureSheetHeaders_(SHEET_NAMES.submissions);
 
       if (rows.length > 0) {
@@ -5659,7 +5744,7 @@ function countIncludedAssignments_() {
   return count;
 }
 
-function buildSubmissionRowsForAssignment_(assignment) {
+function buildSubmissionRowsForAssignment_(assignment, studentLookupIndex) {
   const courseId = assignment.courseId;
   const courseName = assignment.courseName;
   const courseWorkId = assignment.courseWorkId;
@@ -5680,7 +5765,7 @@ function buildSubmissionRowsForAssignment_(assignment) {
       const profile = getUserProfile_(sub.userId);
       const email = profile.emailAddress || '';
       const name = profile.name && profile.name.fullName ? profile.name.fullName : '';
-      const studentInfo = lookupStudent_(email, name, sub.userId);
+      const studentInfo = lookupStudent_(email, name, sub.userId, studentLookupIndex);
       const extracted = extractSubmissionText_(sub);
 
       const submissionKey = `${courseId}|${courseWorkId}|${sub.id}`;
