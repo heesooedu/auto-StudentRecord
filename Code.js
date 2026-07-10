@@ -2299,6 +2299,15 @@ function rowValueAt_(rowValues, col) {
   return rowValues[col - 1];
 }
 
+function setCellValueAndNote_(sh, row, col, value, note) {
+  const range = sh.getRange(row, col);
+  range.setValue(value);
+
+  if (note !== undefined) {
+    range.setNote(note || '');
+  }
+}
+
 function truncate_(text, maxChars) {
   text = String(text || '');
   if (text.length <= maxChars) return text;
@@ -4975,6 +4984,13 @@ function processManualAddedRecordsCore_() {
   const lastRow = sh.getLastRow();
   const lastCol = Math.max(sh.getLastColumn(), manualConfig.byteCol);
   const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  const rowCount = Math.max(lastRow - manualConfig.startRow + 1, 0);
+  const manualValues = rowCount > 0
+    ? sh.getRange(manualConfig.startRow, 1, rowCount, lastCol).getValues()
+    : [];
+  const outputNotes = rowCount > 0
+    ? sh.getRange(manualConfig.startRow, manualConfig.outputCol, rowCount, 1).getNotes()
+    : [];
 
   let processed = 0;
   let skipped = 0;
@@ -5009,15 +5025,16 @@ function processManualAddedRecordsCore_() {
 
     if (processed >= batchSize) break;
 
-    const outputCell = sh.getRange(row, manualConfig.outputCol);
-    const outputValue = String(outputCell.getValue() || '').trim();
-    const outputNote = String(outputCell.getNote() || '').trim();
+    const rowIndex = row - manualConfig.startRow;
+    const rowValues = manualValues[rowIndex] || [];
+    const outputValue = String(rowValueAt_(rowValues, manualConfig.outputCol) || '').trim();
+    const outputNote = String((outputNotes[rowIndex] && outputNotes[rowIndex][0]) || '').trim();
 
     if (outputValue || isManualOutputHandledNote_(outputNote)) {
       continue;
     }
 
-    const manualInput = buildManualInputForRow_(sh, row, headers, manualConfig.inputCols);
+    const manualInput = buildManualInputFromRowValues_(rowValues, headers, manualConfig.inputCols);
 
     if (manualInput.length < 20) {
       skipped++;
@@ -5032,6 +5049,8 @@ function processManualAddedRecordsCore_() {
       recordDraftMinChars,
       recordDraftMaxChars,
     });
+
+    const outputCell = sh.getRange(row, manualConfig.outputCol);
 
     try {
       const generated = createRecordDraftWithLength_(
@@ -5062,7 +5081,7 @@ function processManualAddedRecordsCore_() {
       const errorInfo = classifyRecordDraftError_(message);
 
       failed++;
-      outputCell.setNote(`[수동추가 오류]\n${errorInfo.reason}: ${message}`);
+      outputCell.setNote(buildManualOutputErrorNote_(errorInfo.reason, message));
       formatManualProcessedRow_(sh, row, manualConfig);
       log_(
         'processManualAddedRecordsCore_',
@@ -5210,11 +5229,17 @@ function ensureManualOutputColumns_(sh, manualConfig) {
 }
 
 function buildManualInputForRow_(sh, row, headers, inputCols) {
+  const lastCol = Math.max(sh.getLastColumn(), Math.max.apply(null, inputCols));
+  const rowValues = sh.getRange(row, 1, 1, lastCol).getValues()[0];
+  return buildManualInputFromRowValues_(rowValues, headers, inputCols);
+}
+
+function buildManualInputFromRowValues_(rowValues, headers, inputCols) {
   return inputCols.map(col => {
     const label = String(headers[col - 1] || '').trim() || `열 ${colToA1_(col)}`;
     if (isPersonalInfoHeader_(label)) return '';
 
-    const value = sanitizePromptText_(sh.getRange(row, col).getValue()).trim();
+    const value = sanitizePromptText_(rowValueAt_(rowValues, col)).trim();
 
     if (!value) return '';
 
@@ -5266,6 +5291,13 @@ function buildManualOutputNote_(status, caution, evidenceSummary, model) {
     caution ? `[caution]\n${caution}` : '',
     evidenceSummary ? `[evidence_summary]\n${evidenceSummary}` : '',
   ].filter(Boolean).join('\n\n');
+}
+
+function buildManualOutputErrorNote_(reason, message) {
+  return [
+    '[수동추가 오류]',
+    `${reason}: ${message}`,
+  ].filter(Boolean).join('\n');
 }
 
 function isManualOutputHandledNote_(note) {
@@ -5571,6 +5603,7 @@ function processPendingSubmissionCollectionsCore_() {
   const sh = ensureSheetHeaders_(SHEET_NAMES.assignments);
   const h = headerMap_(sh);
   const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
 
   let processed = 0;
   let submissionCount = 0;
@@ -5594,7 +5627,9 @@ function processPendingSubmissionCollectionsCore_() {
     };
   }
 
+  const assignmentValues = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
   const studentLookupIndex = buildStudentLookupIndex_();
+  let submissionsSheetEnsured = false;
 
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
@@ -5608,35 +5643,39 @@ function processPendingSubmissionCollectionsCore_() {
       break;
     }
 
-    const include = sh.getRange(row, h.includeInFinal).getValue() === true;
+    const rowValues = assignmentValues[row - 2] || [];
+    const include = rowValueAt_(rowValues, h.includeInFinal) === true;
     if (!include) continue;
 
-    const status = String(sh.getRange(row, h.collectStatus).getValue() || '').trim();
+    const status = String(rowValueAt_(rowValues, h.collectStatus) || '').trim();
     if (!isPendingSubmissionCollectionStatus_(status)) continue;
 
     const assignment = {
       row,
-      courseId: valueAt_(sh, row, h.courseId),
-      courseName: valueAt_(sh, row, h.courseName),
-      courseWorkId: valueAt_(sh, row, h.courseWorkId),
-      assignmentTitle: valueAt_(sh, row, h.assignmentTitle),
-      maxPoints: h.maxPoints ? valueAt_(sh, row, h.maxPoints) : '',
+      courseId: rowValueAt_(rowValues, h.courseId),
+      courseName: rowValueAt_(rowValues, h.courseName),
+      courseWorkId: rowValueAt_(rowValues, h.courseWorkId),
+      assignmentTitle: rowValueAt_(rowValues, h.assignmentTitle),
+      maxPoints: h.maxPoints ? rowValueAt_(rowValues, h.maxPoints) : '',
       assignmentDescription: h.assignmentDescription
-        ? valueAt_(sh, row, h.assignmentDescription)
+        ? rowValueAt_(rowValues, h.assignmentDescription)
         : '',
     };
 
     if (!assignment.courseId || !assignment.courseWorkId) {
-      sh.getRange(row, h.collectStatus).setValue('수집오류').setNote('courseId 또는 courseWorkId가 비어 있습니다.');
+      setCellValueAndNote_(sh, row, h.collectStatus, '수집오류', 'courseId 또는 courseWorkId가 비어 있습니다.');
       failed++;
       continue;
     }
 
     try {
-      sh.getRange(row, h.collectStatus).setValue('수집중').setNote('');
+      setCellValueAndNote_(sh, row, h.collectStatus, '수집중', '');
 
       const rows = buildSubmissionRowsForAssignment_(assignment, studentLookupIndex);
-      ensureSheetHeaders_(SHEET_NAMES.submissions);
+      if (!submissionsSheetEnsured) {
+        ensureSheetHeaders_(SHEET_NAMES.submissions);
+        submissionsSheetEnsured = true;
+      }
 
       if (rows.length > 0) {
         upsertByKey_(SHEET_NAMES.submissions, 'submissionKey', rows);
@@ -5645,13 +5684,13 @@ function processPendingSubmissionCollectionsCore_() {
 
       processed++;
       submissionCount += rows.length;
-      sh.getRange(row, h.collectStatus).setValue(`수집완료 ${rows.length}명`).setNote('');
+      setCellValueAndNote_(sh, row, h.collectStatus, `수집완료 ${rows.length}명`, '');
 
       Utilities.sleep(500);
     } catch (err) {
       const message = String(err.message || err);
       failed++;
-      sh.getRange(row, h.collectStatus).setValue('수집오류').setNote(message);
+      setCellValueAndNote_(sh, row, h.collectStatus, '수집오류', message);
       log_(
         'processPendingSubmissionCollectionsCore_',
         'ERROR',
@@ -5686,17 +5725,28 @@ function processPendingSubmissionCollectionsCore_() {
 }
 
 function queueIncludedAssignmentsForSubmissionCollection_(sh, h, lastRow) {
-  if (!h.collectStatus) return 0;
+  if (!h.includeInFinal || !h.collectStatus || lastRow < 2) return 0;
 
+  const rowCount = lastRow - 1;
+  const includeValues = sh.getRange(2, h.includeInFinal, rowCount, 1).getValues();
+  const statusRange = sh.getRange(2, h.collectStatus, rowCount, 1);
+  const statusValues = statusRange.getValues();
+  const statusNotes = statusRange.getNotes();
   let queued = 0;
 
-  for (let row = 2; row <= lastRow; row++) {
-    const include = h.includeInFinal && sh.getRange(row, h.includeInFinal).getValue() === true;
+  for (let i = 0; i < rowCount; i++) {
+    const include = includeValues[i][0] === true;
 
     if (!include) continue;
 
-    sh.getRange(row, h.collectStatus).setValue('수집대기').setNote('');
+    statusValues[i][0] = '수집대기';
+    statusNotes[i][0] = '';
     queued++;
+  }
+
+  if (queued > 0) {
+    statusRange.setValues(statusValues);
+    statusRange.setNotes(statusNotes);
   }
 
   return queued;
@@ -5818,15 +5868,10 @@ function countIncludedAssignments_() {
 
   if (!h.includeInFinal || lastRow < 2) return 0;
 
-  let count = 0;
-
-  for (let row = 2; row <= lastRow; row++) {
-    if (sh.getRange(row, h.includeInFinal).getValue() === true) {
-      count++;
-    }
-  }
-
-  return count;
+  return sh.getRange(2, h.includeInFinal, lastRow - 1, 1)
+    .getValues()
+    .filter(row => row[0] === true)
+    .length;
 }
 
 function buildSubmissionRowsForAssignment_(assignment, studentLookupIndex) {
