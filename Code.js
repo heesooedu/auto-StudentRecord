@@ -3394,7 +3394,7 @@ function applySubmissionConditionalFormats_(sh) {
     rules.push(
       SpreadsheetApp.newConditionalFormatRule()
         .whenFormulaSatisfied(`=AND($${studentNameCol}2<>"",ISEVEN(COUNTUNIQUE($${studentNameCol}$2:$${studentNameCol}2)))`)
-        .setBackground('#f3f8ff')
+        .setBackground('#e2f0ff')
         .setRanges([dataRange])
         .build()
     );
