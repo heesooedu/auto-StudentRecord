@@ -13,6 +13,7 @@ const ASSIGNMENTS_TRAILING_BLANK_ROWS = 1000;
 const MANUAL_SHEET_NAME = '수동추가';
 const MANUAL_RESET_ROWS = 1000;
 const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
+const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
 
 const DASHBOARD_SHEET_NAME = '현황판';
 
@@ -4527,26 +4528,32 @@ function stopAutoRecordDraftTrigger(showUi) {
   deleteAutoStudentFinalRecordTriggers_();
   deleteAutoCommonPhraseTriggers_();
   deleteAutoManualRecordTriggers_();
+  deleteAutoSubmissionCollectionTriggers_();
 
   PropertiesService.getUserProperties().setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+  PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
 
   log_('stopAutoRecordDraftTrigger', 'OK', '자동 생성 트리거 중지');
 
   if (showUi !== false) {
-    SpreadsheetApp.getUi().alert('생기부초안/학생별 최종 생기부/공통문구/수동추가 자동 생성 트리거를 중지했습니다.');
+    SpreadsheetApp.getUi().alert('제출물 수집/생기부초안/학생별 최종 생기부/공통문구/수동추가 자동 트리거를 중지했습니다.');
   }
 }
 
 
 function showAutoRecordDraftStatus() {
+  const submissionCollectionPendingCount = countPendingSubmissionCollections_();
   const draftPendingCount = countPendingRecordDrafts_();
   const studentFinalPendingCount = countPendingStudentFinalRecords_();
   const commonPhrasePendingCount = countPendingCommonPhrases_();
 
   const triggers = ScriptApp.getProjectTriggers();
+  const submissionCollectionTriggers = triggers.filter(trigger => {
+    return trigger.getHandlerFunction() === 'autoProcessPendingSubmissionCollections';
+  });
   const draftTriggers = triggers.filter(trigger => {
     return trigger.getHandlerFunction() === 'autoProcessPendingRecordDrafts';
   });
@@ -4557,15 +4564,23 @@ function showAutoRecordDraftStatus() {
     return trigger.getHandlerFunction() === 'autoProcessPendingCommonPhrases';
   });
 
+  const submissionCollectionStatus = PropertiesService.getUserProperties().getProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY) || 'OFF';
   const draftStatus = PropertiesService.getUserProperties().getProperty('AUTO_RECORD_DRAFT_TRIGGER') || 'OFF';
   const studentFinalStatus = PropertiesService.getUserProperties().getProperty('AUTO_STUDENT_FINAL_TRIGGER') || 'OFF';
   const commonPhraseStatus = PropertiesService.getUserProperties().getProperty('AUTO_COMMON_PHRASE_TRIGGER') || 'OFF';
+  const submissionCollectionLastResult = formatAutoLastResultForStatus_('마지막 제출물 자동 수집 결과', getAutoSubmissionCollectionLastResult_(), '개', '수집 완료');
   const draftLastResult = formatAutoLastResultForStatus_('마지막 생기부초안 자동 생성 결과', getAutoRecordDraftLastResult_(), '개');
   const studentFinalLastResult = formatAutoLastResultForStatus_('마지막 학생별 최종 자동 생성 결과', getAutoStudentFinalLastResult_(), '명');
   const commonPhraseLastResult = formatAutoLastResultForStatus_('마지막 공통문구 자동 생성 결과', getAutoCommonPhraseLastResult_(), '개');
 
   SpreadsheetApp.getUi().alert(
     `자동 생성 상태\n\n` +
+    `[제출물 수집]\n` +
+    `상태값: ${submissionCollectionStatus}\n` +
+    `실제 트리거 수: ${submissionCollectionTriggers.length}개\n` +
+    `남은 수집대기 과제: ${submissionCollectionPendingCount}개\n` +
+    submissionCollectionLastResult +
+    `\n\n` +
     `[생기부초안]\n` +
     `상태값: ${draftStatus}\n` +
     `실제 트리거 수: ${draftTriggers.length}개\n` +
@@ -4584,15 +4599,16 @@ function showAutoRecordDraftStatus() {
   );
 }
 
-function formatAutoLastResultForStatus_(title, lastResult, unit) {
+function formatAutoLastResultForStatus_(title, lastResult, unit, processedLabel) {
   if (!lastResult) return '';
+  processedLabel = processedLabel || '생성 완료';
 
   return [
     '',
     `[${title}]`,
     `상태: ${lastResult.status || ''}`,
     `시각: ${lastResult.updatedAt || ''}`,
-    `생성 완료: ${lastResult.processed || 0}${unit}`,
+    `${processedLabel}: ${lastResult.processed || 0}${unit}`,
     `실패: ${lastResult.failed || 0}${unit}`,
     `스킵: ${lastResult.skipped || 0}${unit}`,
     `남은 대기/재시도: ${lastResult.remaining || 0}${unit}`,
@@ -5183,46 +5199,221 @@ function setSelectedAssignmentsIncluded_(value) {
 }
 
 function collectSubmissionsForIncludedAssignments() {
-  const sh = getSheet_(SHEET_NAMES.assignments);
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
+    'https://www.googleapis.com/auth/script.scriptapp',
+    'https://www.googleapis.com/auth/spreadsheets.currentonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/classroom.courses.readonly',
+    'https://www.googleapis.com/auth/classroom.coursework.students.readonly',
+    'https://www.googleapis.com/auth/classroom.rosters.readonly',
+    'https://www.googleapis.com/auth/classroom.profile.emails'
+  ]);
+
+  const ui = SpreadsheetApp.getUi();
+  const sh = ensureSheetHeaders_(SHEET_NAMES.assignments);
   const h = headerMap_(sh);
   const lastRow = sh.getLastRow();
 
   if (!h.includeInFinal) {
-    SpreadsheetApp.getUi().alert('includeInFinal 열을 찾을 수 없습니다. 먼저 시트 초기 설정을 실행하세요.');
+    ui.alert('includeInFinal 열을 찾을 수 없습니다. 먼저 시트 초기 설정을 실행하세요.');
     return;
   }
 
   if (lastRow < 2) {
-    SpreadsheetApp.getUi().alert('과제목록에 과제가 없습니다.');
+    ui.alert('과제목록에 과제가 없습니다.');
     return;
   }
 
   const includedCount = countIncludedAssignments_();
 
   if (includedCount === 0) {
-    SpreadsheetApp.getUi().alert('includeInFinal에 체크된 과제가 없습니다.');
+    ui.alert('includeInFinal에 체크된 과제가 없습니다.');
     return;
   }
 
-  const confirm = SpreadsheetApp.getUi().alert(
+  const confirm = ui.alert(
     '체크한 과제 제출물 일괄 수집',
-    `현재 includeInFinal에 체크된 과제 ${includedCount}개의 제출물을 모두 수집합니다.\n계속할까요?`,
-    SpreadsheetApp.getUi().ButtonSet.OK_CANCEL
+    `현재 includeInFinal에 체크된 과제 ${includedCount}개의 제출물을 수집합니다.\n과제가 많으면 자동으로 나누어 이어서 처리합니다.\n계속할까요?`,
+    ui.ButtonSet.OK_CANCEL
   );
 
-  if (confirm !== SpreadsheetApp.getUi().Button.OK) {
+  if (confirm !== ui.Button.OK) return;
+
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    ui.alert('이미 다른 자동 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
 
-  const allRows = [];
-  let assignmentCount = 0;
+  try {
+    queueIncludedAssignmentsForSubmissionCollection_(sh, h, lastRow);
+    deleteAutoSubmissionCollectionTriggers_();
+    PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'ON');
+
+    const result = processPendingSubmissionCollectionsCore_();
+    saveAutoSubmissionCollectionLastResult_(result.blocked ? 'BLOCKED' : result.remaining === 0 ? 'DONE' : 'RUNNING', result);
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoSubmissionCollectionTriggers_();
+      ui.alert(buildSubmissionCollectionResultMessage_('제출물 수집을 중단했습니다.', result));
+      return;
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoSubmissionCollectionTriggers_();
+      ui.alert(buildSubmissionCollectionResultMessage_('제출물 수집을 완료했습니다.', result));
+      return;
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    scheduleNextAutoSubmissionCollectionTrigger_(nextDelayMs);
+
+    ui.alert(
+      buildSubmissionCollectionResultMessage_('제출물 첫 배치 수집 결과', result) +
+      `\n\n남은 과제는 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 수집합니다.`
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      submissionCount: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingSubmissionCollections_(),
+      blocked: true,
+      blockingReason: '제출물 수집 시작 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoSubmissionCollectionTriggers_();
+    saveAutoSubmissionCollectionLastResult_('BLOCKED', result);
+    log_('collectSubmissionsForIncludedAssignments', 'ERROR', message);
+    ui.alert(buildSubmissionCollectionResultMessage_('제출물 수집 중 오류가 발생했습니다.', result));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function autoProcessPendingSubmissionCollections() {
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    log_('autoProcessPendingSubmissionCollections', 'SKIP', '이미 다른 자동 작업이 실행 중입니다.');
+    return;
+  }
+
+  try {
+    deleteAutoSubmissionCollectionTriggers_();
+
+    const status = PropertiesService.getUserProperties().getProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY) || 'OFF';
+
+    if (status !== 'ON') {
+      log_('autoProcessPendingSubmissionCollections', 'STOP', '자동 수집 상태가 OFF라 실행하지 않음');
+      return;
+    }
+
+    const result = processPendingSubmissionCollectionsCore_();
+    saveAutoSubmissionCollectionLastResult_(result.blocked ? 'BLOCKED' : result.remaining === 0 ? 'DONE' : 'RUNNING', result);
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+      toastAutoRecordDraft_(result.blockingMessage || '제출물 수집을 중단했습니다.', result.blockingReason || '제출물 수집 중단');
+      log_('autoProcessPendingSubmissionCollections', 'BLOCKED', `${result.blockingReason}: ${result.blockingMessage}`);
+      return;
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+      toastAutoRecordDraft_(
+        `수집 완료 ${result.processed}개 과제, 제출물 ${result.submissionCount || 0}개, 실패 ${result.failed}개`,
+        '제출물 수집 완료'
+      );
+      log_('autoProcessPendingSubmissionCollections', 'DONE', '남은 수집대기 과제가 없어 종료했습니다.');
+      return;
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+
+    scheduleNextAutoSubmissionCollectionTrigger_(nextDelayMs);
+    log_(
+      'autoProcessPendingSubmissionCollections',
+      'NEXT',
+      `남은 제출물 수집 과제 ${result.remaining}개. ${Math.round(nextDelayMs / 1000)}초 뒤 다음 실행 예약`
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+    saveAutoSubmissionCollectionLastResult_('BLOCKED', {
+      processed: 0,
+      submissionCount: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingSubmissionCollections_(),
+      blocked: true,
+      blockingReason: '제출물 자동 수집 오류',
+      blockingMessage: message,
+    });
+    toastAutoRecordDraft_(message, '제출물 자동 수집 오류');
+    log_('autoProcessPendingSubmissionCollections', 'ERROR', message);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function processPendingSubmissionCollectionsCore_() {
+  const config = getConfigMap_();
+  const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
+  const startedAt = Date.now();
+  const sh = ensureSheetHeaders_(SHEET_NAMES.assignments);
+  const h = headerMap_(sh);
+  const lastRow = sh.getLastRow();
+
+  let processed = 0;
   let submissionCount = 0;
-  let errorCount = 0;
+  let skipped = 0;
+  let failed = 0;
+  let blocked = false;
+  let blockingReason = '';
+  let blockingMessage = '';
+  let touchedSubmissions = false;
+
+  if (!h.includeInFinal || !h.collectStatus || lastRow < 2) {
+    return {
+      processed,
+      submissionCount,
+      skipped,
+      failed,
+      remaining: 0,
+      blocked,
+      blockingReason,
+      blockingMessage,
+    };
+  }
 
   for (let row = 2; row <= lastRow; row++) {
-    const include = sh.getRange(row, h.includeInFinal).getValue() === true;
+    const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
+    if (elapsedSeconds > maxRunSeconds) {
+      log_(
+        'processPendingSubmissionCollectionsCore_',
+        'STOP',
+        `실행 시간 제한 접근으로 중단. 수집 과제 ${processed}개, 실패 ${failed}개`
+      );
+      break;
+    }
+
+    const include = sh.getRange(row, h.includeInFinal).getValue() === true;
     if (!include) continue;
+
+    const status = String(sh.getRange(row, h.collectStatus).getValue() || '').trim();
+    if (!isPendingSubmissionCollectionStatus_(status)) continue;
 
     const assignment = {
       row,
@@ -5234,57 +5425,190 @@ function collectSubmissionsForIncludedAssignments() {
       assignmentDescription: h.assignmentDescription
         ? valueAt_(sh, row, h.assignmentDescription)
         : '',
-    };    
+    };
 
-    if (!assignment.courseId || !assignment.courseWorkId) continue;
+    if (!assignment.courseId || !assignment.courseWorkId) {
+      sh.getRange(row, h.collectStatus).setValue('수집오류').setNote('courseId 또는 courseWorkId가 비어 있습니다.');
+      failed++;
+      continue;
+    }
 
     try {
+      sh.getRange(row, h.collectStatus).setValue('수집중').setNote('');
+
       const rows = buildSubmissionRowsForAssignment_(assignment);
-      allRows.push(...rows);
+      ensureSheetHeaders_(SHEET_NAMES.submissions);
 
-      assignmentCount++;
-      submissionCount += rows.length;
-
-      if (h.collectStatus) {
-        sh.getRange(row, h.collectStatus).setValue(`수집완료 ${rows.length}명`);
+      if (rows.length > 0) {
+        upsertByKey_(SHEET_NAMES.submissions, 'submissionKey', rows);
+        touchedSubmissions = true;
       }
+
+      processed++;
+      submissionCount += rows.length;
+      sh.getRange(row, h.collectStatus).setValue(`수집완료 ${rows.length}명`).setNote('');
 
       Utilities.sleep(500);
-
     } catch (err) {
-      errorCount++;
-
-      if (h.collectStatus) {
-        sh.getRange(row, h.collectStatus).setValue('수집오류');
-      }
-
+      const message = String(err.message || err);
+      failed++;
+      sh.getRange(row, h.collectStatus).setValue('수집오류').setNote(message);
       log_(
-        'collectSubmissionsForIncludedAssignments',
+        'processPendingSubmissionCollectionsCore_',
         'ERROR',
-        `${assignment.assignmentTitle}: ${err.message}`
+        `${assignment.assignmentTitle}: ${message}`
       );
     }
   }
 
-  if (allRows.length > 0) {
-    ensureSheetHeaders_(SHEET_NAMES.submissions);
-    upsertByKey_(SHEET_NAMES.submissions, 'submissionKey', allRows);
+  if (touchedSubmissions) {
     sortSubmissionsSheet_();
     styleSubmissionsSheet_();
   }
 
+  const remaining = countPendingSubmissionCollections_();
+
   log_(
-    'collectSubmissionsForIncludedAssignments',
+    'processPendingSubmissionCollectionsCore_',
     'OK',
-    `과제 ${assignmentCount}개, 제출물 ${submissionCount}개 수집, 오류 ${errorCount}개`
+    `수집 과제 ${processed}개, 제출물 ${submissionCount}개, 실패 ${failed}개, 스킵 ${skipped}개, 남은 대기 ${remaining}개`
   );
 
-  SpreadsheetApp.getUi().alert(
-    `체크한 과제 제출물 수집 완료\n\n` +
-    `수집 과제: ${assignmentCount}개\n` +
-    `수집 제출물: ${submissionCount}개\n` +
-    `오류: ${errorCount}개`
+  return {
+    processed,
+    submissionCount,
+    skipped,
+    failed,
+    remaining,
+    blocked,
+    blockingReason,
+    blockingMessage,
+  };
+}
+
+function queueIncludedAssignmentsForSubmissionCollection_(sh, h, lastRow) {
+  if (!h.collectStatus) return 0;
+
+  let queued = 0;
+
+  for (let row = 2; row <= lastRow; row++) {
+    const include = h.includeInFinal && sh.getRange(row, h.includeInFinal).getValue() === true;
+
+    if (!include) continue;
+
+    sh.getRange(row, h.collectStatus).setValue('수집대기').setNote('');
+    queued++;
+  }
+
+  return queued;
+}
+
+function countPendingSubmissionCollections_() {
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.assignments);
+    if (!sh) return 0;
+
+    const h = headerMap_(sh);
+    if (!h.includeInFinal || !h.collectStatus) return 0;
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return 0;
+
+    const includeValues = sh.getRange(2, h.includeInFinal, lastRow - 1, 1).getValues();
+    const statusValues = sh.getRange(2, h.collectStatus, lastRow - 1, 1).getValues();
+    let count = 0;
+
+    for (let i = 0; i < includeValues.length; i++) {
+      const include = includeValues[i][0] === true;
+      const status = String(statusValues[i][0] || '').trim();
+
+      if (include && isPendingSubmissionCollectionStatus_(status)) count++;
+    }
+
+    return count;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function isPendingSubmissionCollectionStatus_(status) {
+  const value = String(status || '').trim();
+  return value === '수집대기' || value === '수집중';
+}
+
+function buildSubmissionCollectionResultMessage_(title, result) {
+  const lines = [
+    title,
+    '',
+    `수집 완료 과제: ${result.processed || 0}개`,
+    `수집 제출물: ${result.submissionCount || 0}개`,
+    `실패 과제: ${result.failed || 0}개`,
+    `스킵: ${result.skipped || 0}개`,
+    `남은 수집대기 과제: ${result.remaining || 0}개`,
+  ];
+
+  if (result.blocked) {
+    lines.push('', `중단 사유: ${result.blockingReason || '확인 필요'}`);
+    lines.push(result.blockingMessage || '제출물 수집을 계속할 수 없어 중단했습니다.');
+  }
+
+  return lines.join('\n');
+}
+
+function scheduleNextAutoSubmissionCollectionTrigger_(delayMs) {
+  deleteAutoSubmissionCollectionTriggers_();
+
+  ScriptApp.newTrigger('autoProcessPendingSubmissionCollections')
+    .timeBased()
+    .after(delayMs)
+    .create();
+
+  log_(
+    'scheduleNextAutoSubmissionCollectionTrigger_',
+    'OK',
+    `${Math.round(delayMs / 1000)}초 뒤 다음 제출물 수집 예약`
   );
+}
+
+function deleteAutoSubmissionCollectionTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'autoProcessPendingSubmissionCollections') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
+function saveAutoSubmissionCollectionLastResult_(status, result) {
+  const payload = {
+    status,
+    processed: result.processed || 0,
+    submissionCount: result.submissionCount || 0,
+    failed: result.failed || 0,
+    skipped: result.skipped || 0,
+    remaining: result.remaining || 0,
+    blocked: !!result.blocked,
+    blockingReason: result.blockingReason || '',
+    blockingMessage: result.blockingMessage || '',
+    updatedAt: new Date().toISOString(),
+  };
+
+  PropertiesService.getUserProperties().setProperty(
+    'AUTO_SUBMISSION_COLLECTION_LAST_RESULT',
+    JSON.stringify(payload)
+  );
+}
+
+function getAutoSubmissionCollectionLastResult_() {
+  const raw = PropertiesService.getUserProperties().getProperty('AUTO_SUBMISSION_COLLECTION_LAST_RESULT');
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
 }
 
 
