@@ -3387,6 +3387,19 @@ function applySubmissionConditionalFormats_(sh) {
   const maxRows = sh.getMaxRows();
   const rules = [];
 
+  if (h.studentName) {
+    const studentNameCol = colToA1_(h.studentName);
+    const dataRange = sh.getRange(2, 1, maxRows - 1, sh.getLastColumn());
+
+    rules.push(
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenFormulaSatisfied(`=AND($${studentNameCol}2<>"",ISEVEN(COUNTUNIQUE($${studentNameCol}$2:$${studentNameCol}2)))`)
+        .setBackground('#f3f8ff')
+        .setRanges([dataRange])
+        .build()
+    );
+  }
+
   if (h.aiStatus) {
     const range = sh.getRange(2, h.aiStatus, maxRows - 1, 1);
 
