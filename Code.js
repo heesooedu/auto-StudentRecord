@@ -14,6 +14,8 @@ const MANUAL_SHEET_NAME = '수동추가';
 const MANUAL_RESET_ROWS = 1000;
 const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
+const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
+const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
 
 const DASHBOARD_SHEET_NAME = '현황판';
 
@@ -203,6 +205,7 @@ function generateCommonPhrases() {
   const sh = getOrCreateSheet_(SHEET_NAMES.commonPhrases);
 
   ensureCommonPhraseSheet_();
+  ensureCommonPhraseConfigDefaults_();
   styleCommonPhraseSheet_();
 
   try {
@@ -353,6 +356,51 @@ function ensureCommonPhraseSheet_() {
   return sh;
 }
 
+function ensureCommonPhraseConfigDefaults_() {
+  const config = getSheet_(SHEET_NAMES.config);
+  const defaults = getCommonPhraseConfigDefaults_();
+  const lastRow = config.getLastRow();
+  const values = lastRow >= 2
+    ? config.getRange(2, 1, lastRow - 1, 3).getValues()
+    : [];
+  const existingKeys = {};
+
+  values.forEach((row, index) => {
+    const key = String(row[0] || '').trim();
+    if (!key) return;
+
+    existingKeys[key] = index + 2;
+  });
+
+  const rowsToAppend = [];
+
+  defaults.forEach(row => {
+    const existingRow = existingKeys[row[0]];
+
+    if (!existingRow) {
+      rowsToAppend.push(row);
+      return;
+    }
+
+    const currentDescription = String(values[existingRow - 2][2] || '');
+    if (currentDescription !== row[2]) {
+      config.getRange(existingRow, 3).setValue(row[2]);
+    }
+  });
+
+  if (rowsToAppend.length > 0) {
+    config.getRange(config.getLastRow() + 1, 1, rowsToAppend.length, 3).setValues(rowsToAppend);
+  }
+}
+
+function getCommonPhraseConfigDefaults_() {
+  return [[
+    'COMMON_PHRASE_PREVIOUS_LIMIT',
+    String(COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT),
+    '공통문구 생성 시 AI 프롬프트에 포함할 최근 생성 문구 수\n기본 10개. 입력 토큰 절감을 위해 너무 크게 설정하지 않는 것을 권장합니다.',
+  ]];
+}
+
 function clearCommonPhraseOutputs_(count) {
   const sh = getSheet_(SHEET_NAMES.commonPhrases);
   ensureCommonPhraseOutputRows_(count);
@@ -403,24 +451,25 @@ function getCommonPhraseTotal_() {
   return 0;
 }
 
-function getGeneratedCommonPhrases_(total) {
-  const sh = getSheet_(SHEET_NAMES.commonPhrases);
+function getGeneratedCommonPhrases_(total, outputValues) {
   total = Number(total || 0);
   if (total < 1) return [];
 
-  return sh.getRange(3, 2, total, 1).getValues()
+  const values = outputValues || getSheet_(SHEET_NAMES.commonPhrases).getRange(3, 2, total, 1).getValues();
+
+  return values
     .map(row => String(row[0] || '').trim())
     .filter(text => !!text);
 }
 
-function getNextCommonPhraseIndex_(total) {
-  const sh = getSheet_(SHEET_NAMES.commonPhrases);
+function getNextCommonPhraseIndex_(total, outputValues, startIndex) {
   total = Number(total || 0);
   if (total < 1) return 0;
 
-  const values = sh.getRange(3, 2, total, 1).getValues();
+  const values = outputValues || getSheet_(SHEET_NAMES.commonPhrases).getRange(3, 2, total, 1).getValues();
+  const start = Math.max(Number(startIndex || 1), 1);
 
-  for (let i = 0; i < values.length; i++) {
+  for (let i = start - 1; i < values.length; i++) {
     if (!String(values[i][0] || '').trim()) {
       return i + 1;
     }
@@ -445,10 +494,12 @@ function processPendingCommonPhrasesCore_() {
   const sh = getSheet_(SHEET_NAMES.commonPhrases);
   const config = getConfigMap_();
   const total = getCommonPhraseTotal_();
-  const prompt = String(sh.getRange('A2').getValue() || '').trim();
-  const sourceText = String(sh.getRange('B2').getValue() || '').trim();
+  const inputValues = sh.getRange(2, 1, 1, 2).getValues()[0];
+  const prompt = String(inputValues[0] || '').trim();
+  const sourceText = String(inputValues[1] || '').trim();
   const batchSize = Number(config.BATCH_SIZE || 5);
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
+  const previousLimit = getCommonPhrasePreviousLimit_(config);
   const startedAt = Date.now();
   const ai = getAiProviderAndModel_(config);
   const provider = ai.provider;
@@ -476,6 +527,10 @@ function processPendingCommonPhrasesCore_() {
   }
 
   ensureCommonPhraseOutputRows_(total);
+  const outputValues = sh.getRange(3, 2, total, 1).getValues();
+  const generatedTexts = getGeneratedCommonPhrases_(total, outputValues);
+  const generatedTextSet = buildExactTextSet_(generatedTexts);
+  let nextIndex = getNextCommonPhraseIndex_(total, outputValues);
 
   while (processed < batchSize) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
@@ -489,23 +544,62 @@ function processPendingCommonPhrasesCore_() {
       break;
     }
 
-    const index = getNextCommonPhraseIndex_(total);
+    const index = nextIndex;
     if (index === 0) break;
 
     const row = 2 + index;
-    const previousTexts = getGeneratedCommonPhrases_(total);
-    const userPrompt = buildCommonPhrasePrompt_(prompt, sourceText, index, total, previousTexts);
+    let phrase = '';
+    let duplicatePhrase = '';
 
     try {
-      const result = callAi_(provider, model, systemGuide, userPrompt, reasoning);
-      const parsed = parseClaudeJson_(result.text);
-      const phrase = normalizeAiText_(parsed.record_draft || result.text).trim();
+      for (let attempt = 1; attempt <= COMMON_PHRASE_DUPLICATE_RETRY_LIMIT + 1; attempt++) {
+        const previousTexts = getRecentCommonPhraseTexts_(generatedTexts, previousLimit);
+        const userPrompt = buildCommonPhrasePrompt_(
+          prompt,
+          sourceText,
+          index,
+          total,
+          previousTexts,
+          {
+            previousLimit,
+            duplicatePhrase,
+            duplicateAttempt: attempt > 1 ? attempt - 1 : 0,
+          }
+        );
+        const result = callAi_(provider, model, systemGuide, userPrompt, reasoning);
+        const parsed = parseClaudeJson_(result.text);
+
+        phrase = normalizeAiText_(parsed.record_draft || result.text).trim();
+
+        if (phrase && !generatedTextSet[phrase]) {
+          break;
+        }
+
+        duplicatePhrase = phrase;
+        log_(
+          'processPendingCommonPhrasesCore_',
+          'DUPLICATE_RETRY',
+          `${index}번째 문구 중복으로 재생성 시도 ${attempt}/${COMMON_PHRASE_DUPLICATE_RETRY_LIMIT + 1}`
+        );
+      }
+
+      if (!phrase) {
+        throw new Error('공통문구 생성 결과가 비어 있습니다.');
+      }
+
+      if (generatedTextSet[phrase]) {
+        throw new Error(`공통문구 중복으로 저장하지 않음: ${phrase}`);
+      }
 
       const phraseCell = sh.getRange(row, 2);
       phraseCell.setValue(phrase);
       phraseCell.clearNote();
       sh.getRange(row, 3).setFormula(`=IF(B${row}="","",2*LENB(B${row})-LEN(B${row}))`);
       sh.setRowHeight(row, 150);
+      outputValues[index - 1][0] = phrase;
+      generatedTexts.push(phrase);
+      generatedTextSet[phrase] = true;
+      nextIndex = getNextCommonPhraseIndex_(total, outputValues, index);
 
       processed++;
       Utilities.sleep(1200);
@@ -753,7 +847,49 @@ function getAutoCommonPhraseLastResult_() {
   }
 }
 
-function buildCommonPhrasePrompt_(prompt, sourceText, index, total, previousTexts) {
+function getCommonPhrasePreviousLimit_(config) {
+  const raw = String((config && config.COMMON_PHRASE_PREVIOUS_LIMIT) || '').trim();
+  if (!raw) return COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT;
+
+  const value = Number(raw);
+
+  if (Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+
+  return COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT;
+}
+
+function buildExactTextSet_(texts) {
+  const set = Object.create(null);
+  (texts || []).forEach(text => {
+    const value = String(text || '').trim();
+    if (value) set[value] = true;
+  });
+  return set;
+}
+
+function getRecentCommonPhraseTexts_(texts, limit) {
+  const max = Math.max(Number(limit || 0), 0);
+  if (max < 1) return [];
+
+  return (texts || [])
+    .filter(text => String(text || '').trim())
+    .slice(-max);
+}
+
+function buildCommonPhrasePrompt_(prompt, sourceText, index, total, previousTexts, options) {
+  options = options || {};
+  const rawPreviousLimit = options.previousLimit === undefined
+    ? COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT
+    : Number(options.previousLimit);
+  const previousLimit = Number.isFinite(rawPreviousLimit) && rawPreviousLimit >= 0
+    ? Math.floor(rawPreviousLimit)
+    : COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT;
+  const limitedPreviousTexts = getRecentCommonPhraseTexts_(previousTexts, previousLimit);
+  const duplicatePhrase = String(options.duplicatePhrase || '').trim();
+  const duplicateAttempt = Number(options.duplicateAttempt || 0);
+
   return [
     '[공통문구 생성 요청]',
     '아래 원문을 프롬프트에 따라 공통문구 1개로 작성한다.',
@@ -769,11 +905,15 @@ function buildCommonPhrasePrompt_(prompt, sourceText, index, total, previousText
     '[생성 조건]',
     `총 ${total}개 중 ${index}번째 문구를 작성한다.`,
     '이미 생성된 문구와 같은 표현을 반복하지 않는다.',
+    `참고용 이전 문구는 최근 ${previousLimit}개까지만 제공된다. 제공되지 않은 이전 문구도 내부 중복 검사에서 완전히 같은 문구면 저장되지 않는다.`,
     'record_draft에는 문구 본문만 작성하고 번호, 따옴표, 설명을 붙이지 않는다.',
     'evidence_summary와 caution은 빈 문자열로 둔다.',
-    previousTexts.length > 0 ? '' : '',
-    previousTexts.length > 0 ? '[이미 생성된 문구]' : '',
-    previousTexts.length > 0 ? previousTexts.map((text, i) => `${i + 1}. ${text}`).join('\n') : '',
+    limitedPreviousTexts.length > 0 ? '' : '',
+    limitedPreviousTexts.length > 0 ? `[최근 생성된 문구 최대 ${previousLimit}개]` : '',
+    limitedPreviousTexts.length > 0 ? limitedPreviousTexts.map((text, i) => `${i + 1}. ${text}`).join('\n') : '',
+    duplicatePhrase ? '' : '',
+    duplicatePhrase ? `[직전 중복 생성 결과 - 저장하지 않음${duplicateAttempt ? ` / 재시도 ${duplicateAttempt}` : ''}]` : '',
+    duplicatePhrase ? duplicatePhrase : '',
   ].filter(line => line !== '').join('\n');
 }
 
@@ -820,6 +960,7 @@ function setupSheets() {
     ['BATCH_SIZE', '5', '자동 생성 트리거 1회 실행당 처리할 학생 수'],
     ['MAX_RUN_SECONDS', '270', 'Apps Script 6분 제한 전에 안전 중단할 시간'],
     ['AUTO_NEXT_DELAY_MS', '30000', ''],
+    ['COMMON_PHRASE_PREVIOUS_LIMIT', String(COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT), '공통문구 생성 시 AI 프롬프트에 포함할 최근 생성 문구 수\n기본 10개. 입력 토큰 절감을 위해 너무 크게 설정하지 않는 것을 권장합니다.'],
     ['PROMPT_1', defaultRecordDraftPrompt_(), '생기부초안 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['PROMPT_2', defaultStudentFinalRecordPrompt_(), '학생별생기부 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['MANUAL_START_ROW', '2', '수동추가를 위한 설정\n학생 데이터가 시작하는 행번호(ex. 2)'],
