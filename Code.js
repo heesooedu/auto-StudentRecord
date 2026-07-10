@@ -2348,7 +2348,9 @@ function buildRecordDraftNoEvidenceRule_() {
     '[자동 적용 최우선 제외 규칙]',
     '이 규칙은 설정 시트의 PROMPT_1 내용 및 record_draft 글자수 조건보다 우선한다.',
     '학생 제출물 원문에 학생이 직접 작성한 답변, 활동 결과, 사고 과정, 탐구 내용이 확인되지 않으면 생활기록부를 작성하지 않는다.',
-    '제출하지 않은 과제, 빈 제출물, 파일을 열 수 없음, 텍스트 자동 추출 미지원, 교사 문항만 있고 학생 답변이 없는 경우는 모두 근거 부족으로 본다.',
+    '파일을 열 수 없음 또는 텍스트 자동 추출 미지원 문구가 있는 첨부파일은 해당 첨부파일만 근거에서 제외한다.',
+    '같은 제출물 안의 다른 단답형 응답, 선택형 응답, Google Docs 본문, 텍스트 파일 등에서 학생이 직접 작성한 답변이 확인되면 그 확인 가능한 답변만 근거로 record_draft를 작성한다.',
+    '제출하지 않은 과제, 빈 제출물, 모든 첨부파일을 열 수 없음, 모든 첨부파일이 텍스트 자동 추출 미지원, 교사 문항만 있고 학생 답변이 없는 경우는 근거 부족으로 본다.',
     '근거 부족 상황에서는 반드시 아래 JSON 구조처럼 답한다.',
     '{"evidence_summary":"", "record_draft":"", "caution":"학생 제출물 원문에서 생활기록부 작성에 사용할 수 있는 학생 수행 근거가 확인되지 않음"}',
     '근거 부족 상황에서는 record_draft 최소 글자수 조건을 무시하고 record_draft를 반드시 빈 문자열로 둔다.',
@@ -2360,7 +2362,8 @@ function buildStudentFinalNoEvidenceRule_() {
   return [
     '[자동 적용 최우선 제외 규칙]',
     '이 규칙은 설정 시트의 PROMPT_2 내용 및 record_draft 글자수 조건보다 우선한다.',
-    '과제별 근거 묶음에서 caution 또는 주의 항목에 근거 부족, 제출물 없음, 미제출, 파일을 열 수 없음, 텍스트 자동 추출 미지원, 학생 답변 없음이 표시된 과제는 생활기록부 근거에서 제외한다.',
+    '과제별 근거 묶음에서 근거 부족, 제출물 없음, 미제출, 학생 답변 없음이 표시된 과제는 생활기록부 근거에서 제외한다.',
+    '파일을 열 수 없음 또는 텍스트 자동 추출 미지원 표시는 해당 첨부파일만 제외하라는 뜻이며, 같은 과제의 다른 확인 가능한 근거 요약이 있으면 그 과제 전체를 제외하지 않는다.',
     '근거 요약이 비어 있거나 학생의 직접 수행이 확인되지 않는 과제도 제외한다.',
     '제외 후 사용할 수 있는 학생 수행 근거가 하나도 없으면 생활기록부를 작성하지 않는다.',
     '이 경우 반드시 아래 JSON 구조처럼 답한다.',
@@ -2671,14 +2674,45 @@ function hasNoUsableEvidenceSignal_(text) {
     /수행\s*근거.*(없|부족|확인되지)/,
     /작성에\s*사용할\s*수\s*있는.*(없|부족|확인되지)/,
     /생활기록부.*작성.*(없|불가|어렵|부족)/,
-    /제출물.*(없|비어|부족|확인되지)/,
+    /제출물\s*(없음|없|비어\s*있음|비어|부족)/,
+    /제출물.*학생\s*답변.*(없|비어|확인되지)/,
     /학생\s*답변.*(없|비어|확인되지)/,
     /학생\s*수행.*(없|비어|확인되지)/,
     /미제출/,
     /빈\s*제출/,
-    /파일을\s*열\s*수\s*없음/,
-    /텍스트\s*자동\s*추출\s*미지원/,
+    /모든\s*(첨부파일|첨부|파일|자료).*파일을\s*열\s*수\s*없음/,
+    /모든\s*(첨부파일|첨부|파일|자료).*텍스트\s*자동\s*추출\s*미지원/,
+    /전체\s*(첨부파일|첨부|파일|자료).*파일을\s*열\s*수\s*없음/,
+    /전체\s*(첨부파일|첨부|파일|자료).*텍스트\s*자동\s*추출\s*미지원/,
   ].some(pattern => pattern.test(normalized));
+}
+
+function hasExtractedTextWarning_(text) {
+  return /파일을\s*열\s*수\s*없음|텍스트\s*자동\s*추출\s*미지원/.test(String(text || ''));
+}
+
+function getExtractedTextForStatus_(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .filter(line => {
+      const value = line.trim();
+      return value &&
+        !/^\[첨부파일:/.test(value) &&
+        !/^파일을\s*열\s*수\s*없음/.test(value) &&
+        !/^텍스트\s*자동\s*추출\s*미지원/.test(value) &&
+        !/^\[텍스트\s*자동\s*추출\s*미지원/.test(value) &&
+        !/^파일\s*링크를\s*직접\s*확인하세요/.test(value) &&
+        !/^https?:\/\//i.test(value);
+    })
+    .join('\n')
+    .trim();
+}
+
+function hasUsableExtractedText_(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (!hasExtractedTextWarning_(value)) return value.length >= 20;
+  return getExtractedTextForStatus_(value).length >= 20;
 }
 
 function clearClaudeApiKey() {
@@ -3254,12 +3288,7 @@ function refreshDashboard() {
   const neisWarningBytes = Number(config.NEIS_WARNING_BYTES || 1400);
 
   const submissionCount = submissions.length;
-  const extractionSuccessCount = submissions.filter(r => {
-    const text = String(r.extractedText || '');
-    return text.length >= 20 &&
-      !text.includes('파일을 열 수 없음') &&
-      !text.includes('텍스트 자동 추출 미지원');
-  }).length;
+  const extractionSuccessCount = submissions.filter(r => hasUsableExtractedText_(r.extractedText)).length;
 
   const extractionFailCount = submissionCount - extractionSuccessCount;
 
@@ -3435,13 +3464,13 @@ function applySubmissionConditionalFormats_(sh) {
 
   if (h.extractedText) {
     const colLetter = colToA1_(h.extractedText);
-    const dataRange = sh.getRange(2, 1, maxRows - 1, sh.getLastColumn());
+    const warningRange = sh.getRange(2, h.extractedText, maxRows - 1, 1);
 
     rules.push(
       SpreadsheetApp.newConditionalFormatRule()
         .whenFormulaSatisfied(`=REGEXMATCH($${colLetter}2,"파일을 열 수 없음|텍스트 자동 추출 미지원")`)
         .setBackground('#fce4d6')
-        .setRanges([dataRange])
+        .setRanges([warningRange])
         .build()
     );
   }
