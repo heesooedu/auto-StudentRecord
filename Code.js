@@ -167,6 +167,7 @@ function onOpen() {
     .addItem('8. 보고있는 시트의 학생 데이터 삭제', 'deleteActiveSheetStudentData')
     .addSeparator()
     .addItem('9. 수동추가 데이터 생기부 생성', 'generateManualAddedRecords')
+    .addItem('행발 특성 키워드 선택', 'showBehaviorTraitSelector')
     .addItem('행발 추천 문구 생성', 'generateBehaviorRecommendationsForSelectedRows')
     //.addItem('생기부초안 열 재배열', 'reorganizeRecordsSheetLayout_')
     //.addItem('화면 정리 / 서식 적용', 'applyFrontendLayout')
@@ -1028,7 +1029,7 @@ function styleBehaviorRecommendationSheet_() {
   }
   if (h.selectedTraits) {
     sh.getRange(1, h.selectedTraits).setNote(
-      '쉼표로 구분하여 여러 특성을 입력하세요.\n예: ' + BEHAVIOR_TRAIT_KEYWORDS.join(', ')
+      '메뉴의 "행발 특성 키워드 선택"에서 체크박스로 선택하세요.\n직접 입력할 경우 쉼표로 구분할 수 있습니다.\n예: ' + BEHAVIOR_TRAIT_KEYWORDS.join(', ')
     );
   }
   if (h.customTraits) {
@@ -1048,6 +1049,275 @@ function styleBehaviorRecommendationSheet_() {
   } catch (err) {
     // 필터 생성 실패는 기능 자체를 막지 않는다.
   }
+}
+
+function showBehaviorTraitSelector() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getActiveSheet();
+
+  if (!sh || sh.getName() !== SHEET_NAMES.behaviorRecommendations) {
+    ui.alert('행발문구추천 시트에서 키워드를 적용할 행을 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  ensureBehaviorRecommendationSheet_();
+  styleBehaviorRecommendationSheet_();
+
+  const range = sh.getActiveRange();
+  if (!range) {
+    ui.alert('키워드를 적용할 행을 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  const startRow = Math.max(range.getRow(), 2);
+  const endRow = range.getRow() + range.getNumRows() - 1;
+  if (endRow < 2) {
+    ui.alert('헤더가 아닌 데이터 행을 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  const h = headerMap_(sh);
+  if (!h.selectedTraits) {
+    ui.alert('selectedTraits 헤더를 찾을 수 없습니다.');
+    return;
+  }
+
+  const rowCount = endRow - startRow + 1;
+  const rows = Array.from({ length: rowCount }, (_, index) => startRow + index);
+  const firstSelectedTraits = String(sh.getRange(startRow, h.selectedTraits).getValue() || '');
+  const context = {
+    rows,
+    rowLabel: startRow === endRow ? `${startRow}행` : `${startRow}-${endRow}행`,
+    keywords: BEHAVIOR_TRAIT_KEYWORDS,
+    selectedTraits: parseBehaviorTraitText_(firstSelectedTraits),
+  };
+
+  const html = HtmlService
+    .createHtmlOutput(buildBehaviorTraitSelectorHtml_(context))
+    .setWidth(430)
+    .setHeight(560);
+
+  ui.showModalDialog(html, '행발 특성 키워드 선택');
+}
+
+function applyBehaviorTraitSelection(payload) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEET_NAMES.behaviorRecommendations);
+  if (!sh) {
+    throw new Error('행발문구추천 시트를 찾을 수 없습니다.');
+  }
+
+  const h = headerMap_(sh);
+  if (!h.selectedTraits) {
+    throw new Error('selectedTraits 헤더를 찾을 수 없습니다.');
+  }
+
+  const rows = Array.from(new Set((payload && payload.rows ? payload.rows : [])
+    .map(row => Number(row))
+    .filter(row => row >= 2)))
+    .sort((a, b) => a - b);
+
+  if (rows.length === 0) {
+    throw new Error('적용할 데이터 행이 없습니다.');
+  }
+
+  const selectedTraits = normalizeBehaviorTraitSelection_(payload && payload.traits);
+  const value = selectedTraits.join(', ');
+  writeBehaviorTraitSelectionRows_(sh, h.selectedTraits, rows, value);
+
+  return `${rows.length}개 행의 selectedTraits에 적용했습니다.`;
+}
+
+function normalizeBehaviorTraitSelection_(traits) {
+  const allowed = new Set(BEHAVIOR_TRAIT_KEYWORDS);
+  const normalized = [];
+
+  (Array.isArray(traits) ? traits : []).forEach(trait => {
+    const value = String(trait || '').trim();
+    if (!value || !allowed.has(value) || normalized.includes(value)) return;
+    normalized.push(value);
+  });
+
+  return normalized;
+}
+
+function parseBehaviorTraitText_(text) {
+  return String(text || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function writeBehaviorTraitSelectionRows_(sh, col, rows, value) {
+  if (!rows.length) return;
+
+  let startRow = 0;
+  let values = [];
+
+  const flush = () => {
+    if (!values.length) return;
+    sh.getRange(startRow, col, values.length, 1)
+      .setValues(values)
+      .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+    startRow = 0;
+    values = [];
+  };
+
+  rows.forEach(row => {
+    const expectedRow = startRow ? startRow + values.length : row;
+    if (startRow && row !== expectedRow) {
+      flush();
+    }
+
+    if (!startRow) startRow = row;
+    values.push([value]);
+  });
+
+  flush();
+}
+
+function buildBehaviorTraitSelectorHtml_(context) {
+  const contextJson = JSON.stringify(context).replace(/</g, '\\u003c');
+
+  return `<!doctype html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      box-sizing: border-box;
+      color: #1f2937;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 18px;
+    }
+    .target {
+      background: #eef6ff;
+      border: 1px solid #c7dff5;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 14px;
+      padding: 10px 12px;
+    }
+    .grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr 1fr;
+      margin-bottom: 16px;
+    }
+    label {
+      align-items: center;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      font-size: 13px;
+      gap: 7px;
+      min-height: 34px;
+      padding: 6px 8px;
+    }
+    label:has(input:checked) {
+      background: #e8f1ff;
+      border-color: #7aa7dc;
+      color: #123b62;
+      font-weight: 600;
+    }
+    input {
+      margin: 0;
+    }
+    .actions {
+      align-items: center;
+      border-top: 1px solid #e5e7eb;
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      padding-top: 12px;
+    }
+    button {
+      border: 1px solid #9ca3af;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      min-height: 32px;
+      padding: 6px 12px;
+    }
+    .primary {
+      background: #1f4e79;
+      border-color: #1f4e79;
+      color: #fff;
+    }
+    .secondary {
+      background: #fff;
+      color: #374151;
+    }
+    .status {
+      color: #4b5563;
+      flex: 1;
+      font-size: 12px;
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="target" id="target"></div>
+  <div class="grid" id="traitGrid"></div>
+  <div class="actions">
+    <div class="status" id="status"></div>
+    <button class="secondary" onclick="google.script.host.close()">취소</button>
+    <button class="primary" id="applyButton" onclick="applySelection()">적용</button>
+  </div>
+
+  <script>
+    var context = ${contextJson};
+    var selected = {};
+    (context.selectedTraits || []).forEach(function(trait) {
+      selected[trait] = true;
+    });
+
+    document.getElementById('target').textContent =
+      '적용 대상: ' + context.rowLabel + ' / ' + (context.rows || []).length + '개 행';
+
+    var grid = document.getElementById('traitGrid');
+    (context.keywords || []).forEach(function(trait) {
+      var label = document.createElement('label');
+      var input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = 'trait';
+      input.value = trait;
+      input.checked = !!selected[trait];
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(trait));
+      grid.appendChild(label);
+    });
+
+    function applySelection() {
+      var checked = Array.prototype.slice.call(document.querySelectorAll('input[name="trait"]:checked'))
+        .map(function(input) { return input.value; });
+      var button = document.getElementById('applyButton');
+      var status = document.getElementById('status');
+      button.disabled = true;
+      status.textContent = '적용 중...';
+
+      google.script.run
+        .withSuccessHandler(function(message) {
+          status.textContent = message;
+          setTimeout(function() {
+            google.script.host.close();
+          }, 700);
+        })
+        .withFailureHandler(function(err) {
+          button.disabled = false;
+          status.textContent = err && err.message ? err.message : String(err);
+        })
+        .applyBehaviorTraitSelection({
+          rows: context.rows || [],
+          traits: checked
+        });
+    }
+  </script>
+</body>
+</html>`;
 }
 
 function generateBehaviorRecommendationsForSelectedRows() {
