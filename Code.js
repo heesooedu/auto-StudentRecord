@@ -6,6 +6,7 @@ const SHEET_NAMES = {
   records: '생기부초안',
   studentFinalRecords: '학생별생기부',
   commonPhrases: '공통문구생성',
+  behaviorRecommendations: '행발문구추천',
   logs: '로그',
 };
 
@@ -16,6 +17,38 @@ const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
+const BEHAVIOR_RECOMMENDATION_HEADERS = [
+  'studentName',
+  'selectedTraits',
+  'customTraits',
+  'positiveObservation',
+  'improvementNeeded',
+  'growthEvidence',
+  'recommendedRecord',
+  'byteCount',
+  'status',
+];
+const BEHAVIOR_TRAIT_KEYWORDS = [
+  '성실성',
+  '책임감',
+  '자발성',
+  '배려',
+  '협력',
+  '봉사',
+  '리더십',
+  '의사소통',
+  '예의',
+  '규칙 준수',
+  '자기관리',
+  '적극성',
+  '자신감',
+  '인내심',
+  '피드백 수용',
+  '감정 조절',
+  '관계 형성',
+  '학습 태도',
+  '성장 가능성',
+];
 
 const DASHBOARD_SHEET_NAME = '현황판';
 
@@ -134,6 +167,7 @@ function onOpen() {
     .addItem('8. 보고있는 시트의 학생 데이터 삭제', 'deleteActiveSheetStudentData')
     .addSeparator()
     .addItem('9. 수동추가 데이터 생기부 생성', 'generateManualAddedRecords')
+    .addItem('행발 추천 문구 생성', 'generateBehaviorRecommendationsForSelectedRows')
     //.addItem('생기부초안 열 재배열', 'reorganizeRecordsSheetLayout_')
     //.addItem('화면 정리 / 서식 적용', 'applyFrontendLayout')
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
@@ -927,6 +961,451 @@ function commonPhraseSystemGuide_() {
   ].join('\n');
 }
 
+function ensureBehaviorRecommendationSheet_() {
+  const sh = getOrCreateSheet_(SHEET_NAMES.behaviorRecommendations);
+  sh.getRange(1, 1, 1, BEHAVIOR_RECOMMENDATION_HEADERS.length)
+    .setValues([BEHAVIOR_RECOMMENDATION_HEADERS]);
+  sh.setFrozenRows(1);
+  return sh;
+}
+
+function styleBehaviorRecommendationSheet_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
+  if (!sh) return;
+
+  ensureBehaviorRecommendationSheet_();
+
+  const h = headerMap_(sh);
+  const lastRow = Math.max(sh.getLastRow(), 2);
+  const headerCount = BEHAVIOR_RECOMMENDATION_HEADERS.length;
+  const bodyRows = Math.max(lastRow - 1, 1);
+
+  sh.setFrozenRows(1);
+  setColumnWidthsByHeader_(sh, {
+    studentName: 130,
+    selectedTraits: 220,
+    customTraits: 220,
+    positiveObservation: 300,
+    improvementNeeded: 300,
+    growthEvidence: 300,
+    recommendedRecord: 620,
+    byteCount: 90,
+    status: 120,
+  });
+
+  sh.getRange(1, 1, 1, headerCount)
+    .setFontWeight('bold')
+    .setFontColor('#ffffff')
+    .setBackground('#1f4e79')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle');
+
+  sh.getRange(2, 1, bodyRows, 6)
+    .setBackground('#eaf4ff')
+    .setVerticalAlignment('top');
+  sh.getRange(2, 7, bodyRows, 3)
+    .setBackground('#fff2cc')
+    .setVerticalAlignment('top');
+
+  ['selectedTraits', 'customTraits', 'positiveObservation', 'improvementNeeded', 'growthEvidence', 'recommendedRecord'].forEach(header => {
+    if (h[header]) {
+      sh.getRange(2, h[header], bodyRows, 1)
+        .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP)
+        .setVerticalAlignment('top');
+    }
+  });
+
+  ['byteCount', 'status'].forEach(header => {
+    if (h[header]) {
+      sh.getRange(2, h[header], bodyRows, 1)
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+    }
+  });
+
+  if (h.studentName) {
+    sh.getRange(1, h.studentName).setNote('교사가 학생을 구분하기 위한 이름입니다. AI 프롬프트에는 전송하지 않습니다.');
+  }
+  if (h.selectedTraits) {
+    sh.getRange(1, h.selectedTraits).setNote(
+      '쉼표로 구분하여 여러 특성을 입력하세요.\n예: ' + BEHAVIOR_TRAIT_KEYWORDS.join(', ')
+    );
+  }
+  if (h.customTraits) {
+    sh.getRange(1, h.customTraits).setNote('기본 키워드 목록에 없는 특성을 직접 입력하세요. 여러 개면 쉼표로 구분할 수 있습니다.');
+  }
+  if (h.recommendedRecord) {
+    sh.getRange(1, h.recommendedRecord).setNote('AI가 생성한 행발 추천 문구입니다. caution이 있으면 이 셀 메모에 저장됩니다.');
+  }
+  if (h.byteCount) {
+    sh.getRange(1, h.byteCount).setNote('recommendedRecord 기준 나이스 바이트 계산값입니다.');
+  }
+
+  try {
+    const filter = sh.getFilter();
+    if (filter) filter.remove();
+    sh.getRange(1, 1, lastRow, headerCount).createFilter();
+  } catch (err) {
+    // 필터 생성 실패는 기능 자체를 막지 않는다.
+  }
+}
+
+function generateBehaviorRecommendationsForSelectedRows() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getActiveSheet();
+
+  if (!sh || sh.getName() !== SHEET_NAMES.behaviorRecommendations) {
+    ui.alert('행발문구추천 시트에서 처리할 행을 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  ensureBehaviorRecommendationSheet_();
+  styleBehaviorRecommendationSheet_();
+
+  try {
+    requireCurrentAiApiKey_();
+  } catch (err) {
+    ui.alert(String(err.message || err));
+    return;
+  }
+
+  const range = sh.getActiveRange();
+  if (!range) {
+    ui.alert('처리할 행을 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  const startRow = Math.max(range.getRow(), 2);
+  const endRow = range.getRow() + range.getNumRows() - 1;
+
+  if (endRow < 2) {
+    ui.alert('헤더가 아닌 데이터 행을 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  const h = headerMap_(sh);
+  const rowCount = endRow - startRow + 1;
+  const config = getConfigMap_();
+  const result = processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config);
+
+  styleBehaviorRecommendationSheet_();
+  log_(
+    'generateBehaviorRecommendationsForSelectedRows',
+    result.blocked ? 'BLOCKED' : 'OK',
+    `처리 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행, 남은 대기 ${result.remaining}행`
+  );
+
+  ui.alert(buildBehaviorRecommendationResultMessage_(result));
+}
+
+function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
+  const missingHeaders = BEHAVIOR_RECOMMENDATION_HEADERS.filter(header => !h[header]);
+  if (missingHeaders.length > 0) {
+    throw new Error(`행발문구추천 시트에 필요한 헤더가 없습니다: ${missingHeaders.join(', ')}`);
+  }
+
+  const batchSize = Number(config.BATCH_SIZE || 5);
+  const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
+  const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
+  const startedAt = Date.now();
+  const ai = getAiProviderAndModel_(config);
+  const systemGuide = behaviorRecommendationSystemGuide_();
+  const lastCol = Math.max(sh.getLastColumn(), BEHAVIOR_RECOMMENDATION_HEADERS.length);
+  const rowValues = sh.getRange(startRow, 1, rowCount, lastCol).getValues();
+  const statusUpdates = [];
+  const candidates = [];
+
+  let processed = 0;
+  let skipped = 0;
+  let failed = 0;
+  let attempted = 0;
+  let blocked = false;
+  let blockingReason = '';
+  let blockingMessage = '';
+
+  rowValues.forEach((values, index) => {
+    const row = startRow + index;
+    const recommendedRecord = String(rowValueAt_(values, h.recommendedRecord) || '').trim();
+    if (recommendedRecord) {
+      skipped++;
+      return;
+    }
+
+    const data = buildBehaviorRecommendationData_(values, h);
+
+    if (!data.hasObservation) {
+      if (data.hasAnyInput) {
+        statusUpdates.push({ row, status: '관찰근거부족' });
+      }
+      skipped++;
+      return;
+    }
+
+    candidates.push({ row, data });
+    statusUpdates.push({ row, status: '대기' });
+  });
+
+  writeBehaviorStatusRows_(sh, h.status, statusUpdates);
+
+  for (let i = 0; i < candidates.length; i++) {
+    const elapsedSeconds = (Date.now() - startedAt) / 1000;
+    if (processed >= batchSize || elapsedSeconds > maxRunSeconds) break;
+
+    const item = candidates[i];
+    attempted++;
+
+    try {
+      sh.getRange(item.row, h.status).setValue('생성중');
+
+      const userPrompt = buildBehaviorRecommendationPrompt_(item.data, maxInputChars);
+      const result = callAi_(ai.provider, ai.model, systemGuide, userPrompt, ai.reasoning);
+      const parsed = parseBehaviorRecommendationJson_(result.text);
+      const recommendedRecord = normalizeAiText_(parsed.recommended_record);
+      const caution = String(parsed.caution || '').trim();
+
+      if (!recommendedRecord) {
+        throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
+      }
+
+      writeBehaviorRecommendationResult_(sh, h, item.row, recommendedRecord, '생성완료', caution);
+      processed++;
+      Utilities.sleep(1200);
+    } catch (err) {
+      failed++;
+
+      if (isBehaviorResponseFormatError_(err)) {
+        writeBehaviorRecommendationResult_(sh, h, item.row, '', '응답형식오류', String(err.message || err));
+        log_('processBehaviorRecommendationRows_', 'FORMAT_ERROR', `${item.row}행: ${err.message}`);
+        continue;
+      }
+
+      const message = String(err.message || err);
+      const errorInfo = classifyRecordDraftError_(message);
+      writeBehaviorRecommendationResult_(sh, h, item.row, '', errorInfo.status, `${errorInfo.reason}: ${message}`);
+      log_(
+        'processBehaviorRecommendationRows_',
+        errorInfo.shouldStop ? 'STOP' : 'ERROR',
+        `${item.row}행: ${errorInfo.reason} / ${message}`
+      );
+
+      if (errorInfo.shouldStop) {
+        blocked = true;
+        blockingReason = errorInfo.reason;
+        blockingMessage = errorInfo.userMessage;
+        break;
+      }
+    }
+  }
+
+  return {
+    processed,
+    skipped,
+    failed,
+    remaining: Math.max(candidates.length - attempted, 0),
+    blocked,
+    blockingReason,
+    blockingMessage,
+  };
+}
+
+function buildBehaviorRecommendationData_(rowValues, h) {
+  const studentName = String(rowValueAt_(rowValues, h.studentName) || '').trim();
+  const sanitizeOptions = { studentName };
+  const selectedTraits = sanitizePromptText_(rowValueAt_(rowValues, h.selectedTraits), sanitizeOptions).trim();
+  const customTraits = sanitizePromptText_(rowValueAt_(rowValues, h.customTraits), sanitizeOptions).trim();
+  const positiveObservation = sanitizePromptText_(rowValueAt_(rowValues, h.positiveObservation), sanitizeOptions).trim();
+  const improvementNeeded = sanitizePromptText_(rowValueAt_(rowValues, h.improvementNeeded), sanitizeOptions).trim();
+  const growthEvidence = sanitizePromptText_(rowValueAt_(rowValues, h.growthEvidence), sanitizeOptions).trim();
+
+  const observationFields = [positiveObservation, improvementNeeded, growthEvidence];
+  const inputFields = [selectedTraits, customTraits].concat(observationFields);
+
+  return {
+    selectedTraits,
+    customTraits,
+    positiveObservation,
+    improvementNeeded,
+    growthEvidence,
+    hasObservation: observationFields.some(isMeaningfulBehaviorInput_),
+    hasAnyInput: inputFields.some(isMeaningfulBehaviorInput_),
+  };
+}
+
+function isMeaningfulBehaviorInput_(text) {
+  return String(text || '')
+    .replace(/\[(학생명|이메일|학번) 제거\]/g, '')
+    .replace(/[\s,.;:|/\\()[\]{}'"`~!?\-_=+]+/g, '')
+    .trim()
+    .length > 0;
+}
+
+function behaviorRecommendationSystemGuide_() {
+  return [
+    '너는 대한민국 학교 교사가 행동특성 및 종합의견 추천 문구를 작성할 때 보조하는 도구이다.',
+    '교사가 입력한 관찰 사실만 근거로 삼고, 입력에 없는 행동, 성격, 교우관계, 가정환경, 학업 성취를 추정하지 않는다.',
+    '학생 이름과 개인정보를 결과에 포함하지 않는다.',
+    '비난, 낙인, 모욕적 표현은 제거하고 관찰된 행동과 성장 가능성 중심으로 쓴다.',
+    '반드시 JSON 형식으로만 답한다.',
+    '{"recommended_record":"", "caution":""}',
+  ].join('\n');
+}
+
+function buildBehaviorRecommendationPrompt_(data, maxInputChars) {
+  const inputLines = [
+    data.selectedTraits ? `[selectedTraits]\n${data.selectedTraits}` : '',
+    data.customTraits ? `[customTraits]\n${data.customTraits}` : '',
+    data.positiveObservation ? `[positiveObservation]\n${data.positiveObservation}` : '',
+    data.improvementNeeded ? `[improvementNeeded]\n${data.improvementNeeded}` : '',
+    data.growthEvidence ? `[growthEvidence]\n${data.growthEvidence}` : '',
+  ].filter(Boolean).join('\n\n');
+
+  return truncate_([
+    '[행발 추천 문구 생성 요청]',
+    '아래 입력만 근거로 행동특성 및 종합의견에 사용할 추천 문구를 작성한다.',
+    '',
+    '[입력]',
+    inputLines,
+    '',
+    '[작성 원칙]',
+    '1. 교사가 입력한 관찰 사실만 사용한다.',
+    '2. 특성 키워드는 문장의 방향을 정하는 참고 정보이며, 키워드만으로 관찰되지 않은 행동을 만들어내지 않는다.',
+    '3. 부정적 내용을 무조건 긍정적으로 미화하지 않고, 성장가능성 위주로 서술한다.',
+    '4. 학생의 인격이나 성격을 단정하지 않고 관찰된 행동을 중심으로 표현한다.',
+    '5. 비난, 낙인, 모욕적 표현은 제거한다.',
+    '6. growthEvidence가 있을 때만 실제 변화, 향상, 개선을 서술한다.',
+    '7. growthEvidence가 없으면 개선되었다고 쓰지 말고, 보완할 점이나 앞으로의 성장 방향을 신중하게 표현한다.',
+    '8. 단발성 행동을 항상, 평소, 꾸준히, 지속적으로 등으로 과장하지 않는다.',
+    '9. 교사가 입력하지 않은 교우관계, 성격, 가정환경, 학업 성취 등을 추정하지 않는다.',
+    '10. 학생 이름과 개인정보를 결과에 포함하지 않는다.',
+    '11. 장점과 보완점이 모두 있으면 장점을 먼저 제시하고, 보완점은 성장 가능성이 드러나는 방식으로 자연스럽게 연결한다.',
+    '12. 문장 끝은 주로 ~함, ~보임, ~기대됨, ~필요가 있음 형식으로 작성한다.',
+    '13. 생활기록부에 바로 사용할 수 있는 하나의 자연스러운 문단으로 작성한다.',
+    '14. 결과에는 제목, 번호, 따옴표, 설명을 붙이지 않는다.',
+    '',
+    '[중요 예시]',
+    '교사가 산만하고 친구 말을 자주 끊음이라고 입력했을 때, growthEvidence가 있으면 지도 후 상대방의 말을 끝까지 들으려 노력하는 변화처럼 근거가 있는 변화만 쓴다.',
+    'growthEvidence가 없으면 개선되었다고 쓰지 말고 상대방의 의견을 경청하고 자신의 생각을 차분히 표현하는 태도를 기를 필요가 있음처럼 성장 방향으로 쓴다.',
+    '',
+    '[응답 형식]',
+    '{"recommended_record":"", "caution":""}',
+  ].join('\n'), maxInputChars || 30000);
+}
+
+function parseBehaviorRecommendationJson_(text) {
+  const raw = String(text || '').trim();
+  let parsed = null;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) {
+      throw makeBehaviorResponseFormatError_('JSON 객체를 찾을 수 없습니다.');
+    }
+
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch (parseErr) {
+      throw makeBehaviorResponseFormatError_('JSON 파싱에 실패했습니다.');
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw makeBehaviorResponseFormatError_('JSON 객체 형식이 아닙니다.');
+  }
+
+  const recommendedRecord = parsed.recommended_record !== undefined
+    ? parsed.recommended_record
+    : parsed.record_draft;
+
+  if (typeof recommendedRecord !== 'string') {
+    throw makeBehaviorResponseFormatError_('recommended_record 키가 없거나 문자열이 아닙니다.');
+  }
+
+  return {
+    recommended_record: recommendedRecord,
+    caution: parsed.caution === undefined ? '' : String(parsed.caution || ''),
+  };
+}
+
+function makeBehaviorResponseFormatError_(message) {
+  const err = new Error(message);
+  err.name = 'BehaviorResponseFormatError';
+  return err;
+}
+
+function isBehaviorResponseFormatError_(err) {
+  return err && err.name === 'BehaviorResponseFormatError';
+}
+
+function writeBehaviorRecommendationResult_(sh, h, row, recommendedRecord, status, note) {
+  const record = String(recommendedRecord || '').trim();
+  const byteCount = record ? neisByteCount_(record) : '';
+  const cleanNote = String(note || '').trim();
+  const noteText = cleanNote
+    ? status === '생성완료'
+      ? `[caution]\n${cleanNote}`
+      : `[${status}]\n${cleanNote}`
+    : '';
+
+  sh.getRange(row, h.recommendedRecord, 1, 3).setValues([[
+    record,
+    byteCount,
+    status,
+  ]]);
+  sh.getRange(row, h.recommendedRecord).setNote(noteText);
+}
+
+function writeBehaviorStatusRows_(sh, statusCol, items) {
+  if (!statusCol || !items || items.length === 0) return;
+
+  const sorted = items
+    .filter(item => item && item.row && item.status)
+    .sort((a, b) => a.row - b.row);
+
+  let startRow = 0;
+  let values = [];
+
+  const flush = () => {
+    if (!values.length) return;
+    sh.getRange(startRow, statusCol, values.length, 1).setValues(values);
+    startRow = 0;
+    values = [];
+  };
+
+  sorted.forEach(item => {
+    const expectedRow = startRow ? startRow + values.length : item.row;
+
+    if (startRow && item.row !== expectedRow) {
+      flush();
+    }
+
+    if (!startRow) startRow = item.row;
+    values.push([item.status]);
+  });
+
+  flush();
+}
+
+function buildBehaviorRecommendationResultMessage_(result) {
+  const lines = [
+    '행발 추천 문구 생성 결과',
+    '',
+    `생성 완료: ${result.processed || 0}행`,
+    `실패: ${result.failed || 0}행`,
+    `스킵: ${result.skipped || 0}행`,
+    `대기: ${result.remaining || 0}행`,
+  ];
+
+  if (result.blocked) {
+    lines.push('', `중단 사유: ${result.blockingReason || '확인 필요'}`);
+    lines.push(result.blockingMessage || '더 이상 생성을 계속할 수 없어 중단했습니다.');
+  }
+
+  return lines.join('\n');
+}
+
 function setupSheets() {
   Object.keys(HEADERS).forEach(sheetName => {
     const sh = ensureSheetHeaders_(sheetName);
@@ -979,7 +1458,9 @@ function setupSheets() {
   applyConfigValidations_(config);
   styleConfigSheet_();
 
+  ensureBehaviorRecommendationSheet_();
   styleCommonPhraseSheet_();
+  styleBehaviorRecommendationSheet_();
   styleRecordsSheet_();
   styleStudentFinalRecordsSheet_();
   organizeSheetTabs_();
@@ -3048,10 +3529,12 @@ function applyFrontendLayout() {
   styleSheetBase_(SHEET_NAMES.submissions);
   styleSheetBase_(SHEET_NAMES.records);
   styleSheetBase_(SHEET_NAMES.commonPhrases);
+  styleSheetBase_(SHEET_NAMES.behaviorRecommendations);
   styleSheetBase_(SHEET_NAMES.logs);
 
   styleConfigSheet_();
   styleCommonPhraseSheet_();
+  styleBehaviorRecommendationSheet_();
   styleAssignmentsSheet_();
   styleSubmissionsSheet_();
   styleRecordsSheet_();
@@ -7060,6 +7543,7 @@ function organizeSheetTabs_() {
     SHEET_NAMES.records,
     SHEET_NAMES.studentFinalRecords,
     SHEET_NAMES.commonPhrases,
+    SHEET_NAMES.behaviorRecommendations,
     SHEET_NAMES.logs,
   ];
 
