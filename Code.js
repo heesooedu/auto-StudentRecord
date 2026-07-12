@@ -2381,6 +2381,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
   }
 
   reasoning = normalizeReasoning_(reasoning);
+  const baseMaxOutputTokens = getOpenAiMaxOutputTokens_(reasoning);
 
   const payload = {
     model: model || 'gpt-5.1',
@@ -2399,7 +2400,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
         ],
       },
     ],
-    max_output_tokens: 1200,
+    max_output_tokens: baseMaxOutputTokens,
     text: {
       format: {
         type: 'json_schema',
@@ -2420,6 +2421,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
   };
 
   const maxAttempts = 5;
+  let outputTokenRetryUsed = false;
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2438,6 +2440,23 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
 
     if (code >= 200 && code < 300) {
       const json = JSON.parse(body);
+
+      if (isOpenAiMaxOutputTokenIncomplete_(json) && !outputTokenRetryUsed) {
+        outputTokenRetryUsed = true;
+        payload.max_output_tokens = Math.min(Number(payload.max_output_tokens || baseMaxOutputTokens) * 2, 16000);
+        log_(
+          'callOpenAi_',
+          'RETRY',
+          `OpenAI 응답이 max_output_tokens로 중단되어 ${payload.max_output_tokens} 토큰으로 1회 재시도합니다. ${summarizeOpenAiUsage_(json)}`
+        );
+        Utilities.sleep(1200);
+        continue;
+      }
+
+      if (isOpenAiMaxOutputTokenIncomplete_(json)) {
+        throw new Error(`OpenAI 응답이 max_output_tokens 한도로 중단되어 output_text가 없습니다. ${summarizeOpenAiUsage_(json)}`);
+      }
+
       const text = extractOpenAiOutputText_(json);
 
       return {
@@ -2458,6 +2477,41 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
   }
 
   throw new Error(`OpenAI API 재시도 실패: ${lastErrorMessage}`);
+}
+
+function getOpenAiMaxOutputTokens_(reasoning) {
+  reasoning = normalizeReasoning_(reasoning);
+
+  if (reasoning === 'medium') return 6000;
+  if (reasoning === 'low') return 3000;
+
+  return 2000;
+}
+
+function isOpenAiMaxOutputTokenIncomplete_(json) {
+  const reason = json && json.incomplete_details
+    ? String(json.incomplete_details.reason || '').trim()
+    : '';
+
+  return json && json.status === 'incomplete' && reason === 'max_output_tokens';
+}
+
+function summarizeOpenAiUsage_(json) {
+  const usage = json && json.usage ? json.usage : {};
+  const outputDetails = usage.output_tokens_details || usage.outputTokensDetails || {};
+
+  return [
+    `status=${json && json.status ? json.status : ''}`,
+    `output_tokens=${formatUsageNumber_(usage.output_tokens, usage.outputTokens)}`,
+    `reasoning_tokens=${formatUsageNumber_(outputDetails.reasoning_tokens, outputDetails.reasoningTokens)}`,
+  ].filter(part => !part.endsWith('=')).join(', ');
+}
+
+function formatUsageNumber_(snakeValue, camelValue) {
+  if (snakeValue !== undefined && snakeValue !== null) return snakeValue;
+  if (camelValue !== undefined && camelValue !== null) return camelValue;
+
+  return '';
 }
 
 function callGemini_(model, systemGuide, userPrompt, reasoning) {
