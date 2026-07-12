@@ -177,6 +177,7 @@ function onOpen() {
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
     //.addItem('현황판 새로고침', 'refreshDashboard')
     .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
+    .addSeparator()
     .addToUi();
 }
 
