@@ -1078,17 +1078,11 @@ function generateBehaviorRecommendationsForSelectedRows() {
     return;
   }
 
-  const range = sh.getActiveRange();
-  if (!range) {
-    ui.alert('처리할 행을 선택한 뒤 실행하세요.');
-    return;
-  }
-
   const h = headerMap_(sh);
-  const target = resolveBehaviorRecommendationTargetRange_(sh, range);
+  const target = resolveBehaviorRecommendationTargetRange_(sh);
 
   if (!target) {
-    ui.alert('헤더가 아닌 데이터 행을 선택한 뒤 실행하세요.');
+    ui.alert('행발문구추천 시트에 처리할 데이터 행이 없습니다.');
     return;
   }
 
@@ -1140,29 +1134,14 @@ function generateBehaviorRecommendationsForSelectedRows() {
   }
 }
 
-function resolveBehaviorRecommendationTargetRange_(sh, range) {
+function resolveBehaviorRecommendationTargetRange_(sh) {
   const lastRow = sh.getLastRow();
   if (lastRow < 2) return null;
 
-  const selectedStartRow = Math.max(range.getRow(), 2);
-  const selectedEndRow = range.getRow() + range.getNumRows() - 1;
-  if (selectedEndRow < 2) return null;
-
-  const isSingleCellSelection = range.getNumRows() === 1 && range.getNumColumns() === 1;
-  if (isSingleCellSelection) {
-    return {
-      startRow: 2,
-      rowCount: lastRow - 1,
-      scopeLabel: `전체 데이터행 2-${lastRow}`,
-    };
-  }
-
   return {
-    startRow: selectedStartRow,
-    rowCount: selectedEndRow - selectedStartRow + 1,
-    scopeLabel: selectedStartRow === selectedEndRow
-      ? `${selectedStartRow}행`
-      : `${selectedStartRow}-${selectedEndRow}행`,
+    startRow: 2,
+    rowCount: lastRow - 1,
+    scopeLabel: `전체 데이터행 2-${lastRow}`,
   };
 }
 
