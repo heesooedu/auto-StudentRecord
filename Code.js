@@ -17,6 +17,8 @@ const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
+const RECORD_DRAFT_CHARS_DESCRIPTION = '생기부 작성을 위한 최소, 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
+const BEHAVIOR_RECORD_CHARS_DESCRIPTION = '행발 작성을 위한 최소, 최대 글자수\n(정확하지는 않습니다)';
 const BEHAVIOR_RECOMMENDATION_HEADERS = [
   'studentName',
   'selectedTraits',
@@ -1135,7 +1137,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
   const behaviorPrompt = getBehaviorRecordPrompt_(config);
-  const byteRange = getBehaviorRecordByteRange_(config);
+  const charRange = getBehaviorRecordCharRange_(config);
   const startedAt = Date.now();
   const ai = getAiProviderAndModel_(config);
   const systemGuide = behaviorRecommendationSystemGuide_();
@@ -1193,13 +1195,13 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
     try {
       sh.getRange(item.row, h.status).setValue('생성중');
 
-      const generated = generateBehaviorRecommendationWithByteRetry_({
+      const generated = generateBehaviorRecommendationWithCharRetry_({
         ai,
         systemGuide,
         data: item.data,
         maxInputChars,
         behaviorPrompt,
-        byteRange,
+        charRange,
       });
       const recommendedRecord = generated.recommendedRecord;
       const caution = generated.caution;
@@ -1323,9 +1325,15 @@ function getBehaviorRecordPrompt_(config) {
   return prompt || defaultBehaviorRecordPrompt_();
 }
 
-function getBehaviorRecordByteRange_(config) {
-  let min = parsePositiveInteger_(config && config.BEHAVIOR_RECORD_BYTE_MIN);
-  let max = parsePositiveInteger_(config && config.BEHAVIOR_RECORD_BYTE_MAX);
+function getBehaviorRecordCharRange_(config) {
+  let min = parsePositiveInteger_(
+    (config && config.BEHAVIOR_RECORD_MIN_CHARS) ||
+      (config && config.BEHAVIOR_RECORD_BYTE_MIN)
+  );
+  let max = parsePositiveInteger_(
+    (config && config.BEHAVIOR_RECORD_MAX_CHARS) ||
+      (config && config.BEHAVIOR_RECORD_BYTE_MAX)
+  );
 
   if (min && max && min > max) {
     const tmp = min;
@@ -1346,7 +1354,7 @@ function parsePositiveInteger_(value) {
   return Math.floor(parsed);
 }
 
-function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt, byteRange, retryContext) {
+function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt, charRange, retryContext) {
   const inputLines = [
     data.selectedTraits ? `[selectedTraits]\n${data.selectedTraits}` : '',
     data.customTraits ? `[customTraits]\n${data.customTraits}` : '',
@@ -1354,12 +1362,12 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
     data.improvementNeeded ? `[improvementNeeded]\n${data.improvementNeeded}` : '',
     data.growthEvidence ? `[growthEvidence]\n${data.growthEvidence}` : '',
   ].filter(Boolean).join('\n\n');
-  const byteInstruction = buildBehaviorByteInstruction_(byteRange);
+  const charInstruction = buildBehaviorCharInstruction_(charRange);
   const retryInstruction = retryContext
     ? [
       '[재작성 요청]',
-      `이전 응답의 바이트 수는 ${retryContext.byteCount}바이트였고, 설정 범위(${formatBehaviorByteRange_(byteRange)})를 벗어났다.`,
-      '위 입력 사실은 유지하되, recommended_record를 설정 바이트 범위 안에 들어오도록 다시 작성한다.',
+      `이전 응답의 글자 수는 ${retryContext.charCount}자였고, 설정 범위(${formatBehaviorCharRange_(charRange)})를 벗어났다.`,
+      '위 입력 사실은 유지하되, recommended_record를 설정 글자수 범위 안에 들어오도록 다시 작성한다.',
     ].join('\n')
     : '';
 
@@ -1371,7 +1379,7 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
     inputLines,
     '',
     behaviorPrompt || defaultBehaviorRecordPrompt_(),
-    byteInstruction,
+    charInstruction,
     retryInstruction,
     '',
     '[응답 형식]',
@@ -1379,37 +1387,37 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
   ].join('\n'), maxInputChars || 30000);
 }
 
-function buildBehaviorByteInstruction_(byteRange) {
-  if (!byteRange || !byteRange.enabled) return '';
+function buildBehaviorCharInstruction_(charRange) {
+  if (!charRange || !charRange.enabled) return '';
 
   return [
     '[분량 조건]',
-    `recommended_record는 나이스 바이트 기준 ${formatBehaviorByteRange_(byteRange)} 안에 들어오도록 작성한다.`,
-    '바이트 계산은 한글 2바이트, 영문/숫자/기호/공백 1바이트에 가깝게 맞춘다.',
+    `recommended_record는 일반 글자수 기준 ${formatBehaviorCharRange_(charRange)} 안에 들어오도록 작성한다.`,
+    '정확히 맞추기 어렵더라도 지정된 글자수 범위에 최대한 가깝게 작성한다.',
   ].join('\n');
 }
 
-function formatBehaviorByteRange_(byteRange) {
-  if (!byteRange || !byteRange.enabled) return '제한 없음';
-  if (byteRange.min && byteRange.max) return `${byteRange.min}-${byteRange.max}바이트`;
-  if (byteRange.min) return `${byteRange.min}바이트 이상`;
-  return `${byteRange.max}바이트 이하`;
+function formatBehaviorCharRange_(charRange) {
+  if (!charRange || !charRange.enabled) return '제한 없음';
+  if (charRange.min && charRange.max) return `${charRange.min}-${charRange.max}자`;
+  if (charRange.min) return `${charRange.min}자 이상`;
+  return `${charRange.max}자 이하`;
 }
 
-function generateBehaviorRecommendationWithByteRetry_(options) {
-  const maxAttempts = options.byteRange && options.byteRange.enabled ? 2 : 1;
+function generateBehaviorRecommendationWithCharRetry_(options) {
+  const maxAttempts = options.charRange && options.charRange.enabled ? 2 : 1;
   let fallback = null;
   let retryErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const retryContext = fallback && attempt > 1
-      ? { byteCount: fallback.byteCount }
+      ? { charCount: fallback.charCount }
       : null;
     const userPrompt = buildBehaviorRecommendationPrompt_(
       options.data,
       options.maxInputChars,
       options.behaviorPrompt,
-      options.byteRange,
+      options.charRange,
       retryContext
     );
 
@@ -1423,23 +1431,23 @@ function generateBehaviorRecommendationWithByteRetry_(options) {
       );
       const parsed = parseBehaviorRecommendationJson_(result.text);
       const recommendedRecord = normalizeAiText_(parsed.recommended_record);
-      const byteCount = recommendedRecord ? neisByteCount_(recommendedRecord) : 0;
+      const charCount = recommendedRecord ? recommendedRecord.length : 0;
       const caution = String(parsed.caution || '').trim();
       const generated = {
         recommendedRecord,
         caution,
-        byteCount,
+        charCount,
       };
 
       if (!recommendedRecord) {
         throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
       }
 
-      if (!isBehaviorByteOutOfRange_(byteCount, options.byteRange)) {
+      if (!isBehaviorCharOutOfRange_(charCount, options.charRange)) {
         if (attempt > 1 && fallback) {
           generated.caution = appendBehaviorCaution_(
             caution,
-            `바이트 범위 재요청 후 ${byteCount}바이트로 생성됨.`
+            `글자수 범위 재요청 후 ${charCount}자로 생성됨.`
           );
         }
         return generated;
@@ -1461,7 +1469,7 @@ function generateBehaviorRecommendationWithByteRetry_(options) {
   }
 
   if (fallback) {
-    const rangeMessage = `설정 바이트 범위(${formatBehaviorByteRange_(options.byteRange)})를 벗어남: ${fallback.byteCount}바이트.`;
+    const rangeMessage = `설정 글자수 범위(${formatBehaviorCharRange_(options.charRange)})를 벗어남: ${fallback.charCount}자.`;
     const retryMessage = retryErrorMessage
       ? `재요청 응답 처리 실패: ${retryErrorMessage}`
       : '재요청 후에도 범위에 들어오지 않음.';
@@ -1472,10 +1480,10 @@ function generateBehaviorRecommendationWithByteRetry_(options) {
   throw makeBehaviorResponseFormatError_('recommended_record 값을 생성하지 못했습니다.');
 }
 
-function isBehaviorByteOutOfRange_(byteCount, byteRange) {
-  if (!byteRange || !byteRange.enabled) return false;
-  if (byteRange.min && byteCount < byteRange.min) return true;
-  if (byteRange.max && byteCount > byteRange.max) return true;
+function isBehaviorCharOutOfRange_(charCount, charRange) {
+  if (!charRange || !charRange.enabled) return false;
+  if (charRange.min && charCount < charRange.min) return true;
+  if (charRange.max && charCount > charRange.max) return true;
   return false;
 }
 
@@ -1637,8 +1645,8 @@ function setupSheets() {
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
     ['MAX_RECORD_CHARS', '500', '생기부 초안 최대 글자수'],
     ['MAX_INPUT_CHARS', '30000', 'Claude에 보낼 과제 원문 최대 글자수'],
-    ['RECORD_DRAFT_MIN_CHARS', '350', '생기부 작성을 위한 최소 글자수\n(완벽하게 지키지는 못합니다)'],
-    ['RECORD_DRAFT_MAX_CHARS', '500', '생기부 작성을 위한 최대 글자수\n(완벽하게 지키지는 못합니다)'],
+    ['RECORD_DRAFT_MIN_CHARS', '350', RECORD_DRAFT_CHARS_DESCRIPTION],
+    ['RECORD_DRAFT_MAX_CHARS', '500', RECORD_DRAFT_CHARS_DESCRIPTION],
     ['NEIS_MAX_BYTES', '1500', ''],
     ['NEIS_WARNING_BYTES', '1400', ''],
     ['BATCH_SIZE', '5', '자동 생성 트리거 1회 실행당 처리할 학생 수'],
@@ -1651,8 +1659,8 @@ function setupSheets() {
     ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능'],
     ['MANUAL_OUTPUT_COL', '', '수동추가를 위한 설정\n인공지능에게 받아올 생기부를 적을 열(ex. C)'],
     ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침'],
-    ['BEHAVIOR_RECORD_BYTE_MIN', '', '행발문구추천을 위한 설정\nrecommendedRecord의 나이스 최소 바이트 수. 비워두면 최소 제한을 적용하지 않습니다.'],
-    ['BEHAVIOR_RECORD_BYTE_MAX', '', '행발문구추천을 위한 설정\nrecommendedRecord의 나이스 최대 바이트 수. 비워두면 최대 제한을 적용하지 않습니다.'],
+    ['BEHAVIOR_RECORD_MIN_CHARS', '', BEHAVIOR_RECORD_CHARS_DESCRIPTION],
+    ['BEHAVIOR_RECORD_MAX_CHARS', '', BEHAVIOR_RECORD_CHARS_DESCRIPTION],
     ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '행발문구추천 작성 지침\n[작성 원칙], [중요 예시] 중심으로 입력하세요. 입력 데이터와 JSON 응답 형식은 코드에서 자동으로 붙입니다.'],
     ['SYSTEM_GUIDE', defaultSystemGuide_(), '생활기록부 작성 지침. 선생님 기준에 맞게 수정하시되\n\n반드시 JSON 형식으로만 답한다.\n{"evidence_summary":"", "record_draft":"", "caution":""}\n\n이 두 문장은 남겨주세요.']
   ];
@@ -2622,6 +2630,12 @@ function migrateLegacyConfigKeys_(config) {
   let reasoningRow = 0;
   const legacyReasoningRows = [];
   let firstLegacyReasoningValue = '';
+  let behaviorMinCharsRow = 0;
+  let behaviorMaxCharsRow = 0;
+  const legacyBehaviorMinRows = [];
+  const legacyBehaviorMaxRows = [];
+  let firstLegacyBehaviorMinValue = '';
+  let firstLegacyBehaviorMaxValue = '';
 
   values.forEach((row, index) => {
     const sheetRow = index + 2;
@@ -2641,6 +2655,20 @@ function migrateLegacyConfigKeys_(config) {
       legacyReasoningRows.push(sheetRow);
       if (!firstLegacyReasoningValue) {
         firstLegacyReasoningValue = row[1];
+      }
+    } else if (key === 'BEHAVIOR_RECORD_MIN_CHARS') {
+      behaviorMinCharsRow = sheetRow;
+    } else if (key === 'BEHAVIOR_RECORD_MAX_CHARS') {
+      behaviorMaxCharsRow = sheetRow;
+    } else if (key === 'BEHAVIOR_RECORD_BYTE_MIN') {
+      legacyBehaviorMinRows.push(sheetRow);
+      if (!firstLegacyBehaviorMinValue) {
+        firstLegacyBehaviorMinValue = row[1];
+      }
+    } else if (key === 'BEHAVIOR_RECORD_BYTE_MAX') {
+      legacyBehaviorMaxRows.push(sheetRow);
+      if (!firstLegacyBehaviorMaxValue) {
+        firstLegacyBehaviorMaxValue = row[1];
       }
     }
   });
@@ -2672,8 +2700,46 @@ function migrateLegacyConfigKeys_(config) {
     }
   }
 
+  if (legacyBehaviorMinRows.length > 0) {
+    if (!behaviorMinCharsRow) {
+      const migratedRow = legacyBehaviorMinRows.shift();
+      config.getRange(migratedRow, 1, 1, 3).setValues([[
+        'BEHAVIOR_RECORD_MIN_CHARS',
+        firstLegacyBehaviorMinValue || '',
+        BEHAVIOR_RECORD_CHARS_DESCRIPTION,
+      ]]);
+      behaviorMinCharsRow = migratedRow;
+    } else {
+      const currentValue = String(config.getRange(behaviorMinCharsRow, 2).getValue() || '').trim();
+
+      if (!currentValue && firstLegacyBehaviorMinValue) {
+        config.getRange(behaviorMinCharsRow, 2).setValue(firstLegacyBehaviorMinValue);
+      }
+    }
+  }
+
+  if (legacyBehaviorMaxRows.length > 0) {
+    if (!behaviorMaxCharsRow) {
+      const migratedRow = legacyBehaviorMaxRows.shift();
+      config.getRange(migratedRow, 1, 1, 3).setValues([[
+        'BEHAVIOR_RECORD_MAX_CHARS',
+        firstLegacyBehaviorMaxValue || '',
+        BEHAVIOR_RECORD_CHARS_DESCRIPTION,
+      ]]);
+      behaviorMaxCharsRow = migratedRow;
+    } else {
+      const currentValue = String(config.getRange(behaviorMaxCharsRow, 2).getValue() || '').trim();
+
+      if (!currentValue && firstLegacyBehaviorMaxValue) {
+        config.getRange(behaviorMaxCharsRow, 2).setValue(firstLegacyBehaviorMaxValue);
+      }
+    }
+  }
+
   openAiModelRows
     .concat(legacyReasoningRows)
+    .concat(legacyBehaviorMinRows)
+    .concat(legacyBehaviorMaxRows)
     .sort((a, b) => b - a)
     .forEach(row => config.deleteRow(row));
 }
