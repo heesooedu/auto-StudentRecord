@@ -15,6 +15,7 @@ const MANUAL_SHEET_NAME = '수동추가';
 const MANUAL_RESET_ROWS = 1000;
 const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
+const AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY = 'AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER';
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
 const RECORD_DRAFT_CHARS_DESCRIPTION = '생기부 작성을 위한 최소, 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
@@ -1054,6 +1055,7 @@ function styleBehaviorRecommendationSheet_() {
 
 function generateBehaviorRecommendationsForSelectedRows() {
   const ui = SpreadsheetApp.getUi();
+  const lock = LockService.getScriptLock();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getActiveSheet();
 
@@ -1086,19 +1088,52 @@ function generateBehaviorRecommendationsForSelectedRows() {
     return;
   }
 
-  const config = getConfigMap_();
-  const result = processBehaviorRecommendationRows_(sh, h, target.startRow, target.rowCount, config);
-  result.scopeLabel = target.scopeLabel;
+  if (!lock.tryLock(1000)) {
+    ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
+    return;
+  }
 
-  styleBehaviorRecommendationSheet_();
-  log_(
-    'generateBehaviorRecommendationsForSelectedRows',
-    result.blocked ? 'BLOCKED' : 'OK',
-    `범위 ${result.scopeLabel}, 처리 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행` +
-      ` (이미생성 ${result.skippedAlreadyGenerated || 0}, 관찰근거부족 ${result.skippedNoObservation || 0}, 빈행 ${result.skippedBlank || 0}), 남은 대기 ${result.remaining}행`
-  );
+  try {
+    deleteAutoBehaviorRecommendationTriggers_();
 
-  ui.alert(buildBehaviorRecommendationResultMessage_(result));
+    const config = getConfigMap_();
+    const result = processBehaviorRecommendationRows_(sh, h, target.startRow, target.rowCount, config);
+    result.scopeLabel = target.scopeLabel;
+
+    styleBehaviorRecommendationSheet_();
+    logBehaviorRecommendationResult_('generateBehaviorRecommendationsForSelectedRows', result);
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoBehaviorRecommendationTriggers_();
+      ui.alert(buildBehaviorRecommendationResultMessage_(result));
+      return;
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoBehaviorRecommendationTriggers_();
+      ui.alert(buildBehaviorRecommendationResultMessage_(result));
+      return;
+    }
+
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'ON');
+    scheduleNextAutoBehaviorRecommendationTrigger_(nextDelayMs);
+
+    ui.alert(
+      buildBehaviorRecommendationResultMessage_(result) +
+      `\n\n남은 행은 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoBehaviorRecommendationTriggers_();
+    log_('generateBehaviorRecommendationsForSelectedRows', 'ERROR', message);
+    ui.alert(`행발 추천 문구 생성 중 오류가 발생했습니다.\n\n${message}`);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function resolveBehaviorRecommendationTargetRange_(sh, range) {
@@ -1127,12 +1162,13 @@ function resolveBehaviorRecommendationTargetRange_(sh, range) {
   };
 }
 
-function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
+function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, options) {
   const missingHeaders = BEHAVIOR_RECOMMENDATION_HEADERS.filter(header => !h[header]);
   if (missingHeaders.length > 0) {
     throw new Error(`행발문구추천 시트에 필요한 헤더가 없습니다: ${missingHeaders.join(', ')}`);
   }
 
+  const pendingOnly = !!(options && options.pendingOnly);
   const batchSize = Number(config.BATCH_SIZE || 5);
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
@@ -1142,6 +1178,23 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
   const ai = getAiProviderAndModel_(config);
   const systemGuide = behaviorRecommendationSystemGuide_();
   const lastCol = Math.max(sh.getLastColumn(), BEHAVIOR_RECOMMENDATION_HEADERS.length);
+
+  if (rowCount <= 0) {
+    return {
+      processed: 0,
+      skipped: 0,
+      skippedAlreadyGenerated: 0,
+      skippedNoTraits: 0,
+      skippedNoObservation: 0,
+      skippedBlank: 0,
+      failed: 0,
+      remaining: countPendingBehaviorRecommendationRows_(),
+      blocked: false,
+      blockingReason: '',
+      blockingMessage: '',
+    };
+  }
+
   const rowValues = sh.getRange(startRow, 1, rowCount, lastCol).getValues();
   const statusUpdates = [];
   const candidates = [];
@@ -1149,6 +1202,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
   let processed = 0;
   let skipped = 0;
   let skippedAlreadyGenerated = 0;
+  let skippedNoTraits = 0;
   let skippedNoObservation = 0;
   let skippedBlank = 0;
   let failed = 0;
@@ -1159,6 +1213,12 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
 
   rowValues.forEach((values, index) => {
     const row = startRow + index;
+    const status = String(rowValueAt_(values, h.status) || '').trim();
+
+    if (pendingOnly && status !== '대기' && status !== '재시도필요') {
+      return;
+    }
+
     const recommendedRecord = String(rowValueAt_(values, h.recommendedRecord) || '').trim();
     if (recommendedRecord) {
       skipped++;
@@ -1167,6 +1227,17 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
     }
 
     const data = buildBehaviorRecommendationData_(values, h);
+
+    if (!data.hasSelectedTraits) {
+      if (data.hasAnyInput) {
+        statusUpdates.push({ row, status: '특성없음' });
+        skippedNoTraits++;
+      } else {
+        skippedBlank++;
+      }
+      skipped++;
+      return;
+    }
 
     if (!data.hasObservation) {
       if (data.hasAnyInput) {
@@ -1244,10 +1315,11 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
     processed,
     skipped,
     skippedAlreadyGenerated,
+    skippedNoTraits,
     skippedNoObservation,
     skippedBlank,
     failed,
-    remaining: Math.max(candidates.length - attempted, 0),
+    remaining: countPendingBehaviorRecommendationRows_(),
     blocked,
     blockingReason,
     blockingMessage,
@@ -1272,6 +1344,7 @@ function buildBehaviorRecommendationData_(rowValues, h) {
     positiveObservation,
     improvementNeeded,
     growthEvidence,
+    hasSelectedTraits: isMeaningfulBehaviorInput_(selectedTraits),
     hasObservation: observationFields.some(isMeaningfulBehaviorInput_),
     hasAnyInput: inputFields.some(isMeaningfulBehaviorInput_),
   };
@@ -1606,6 +1679,7 @@ function buildBehaviorRecommendationResultMessage_(result) {
     lines.push(
       '',
       `스킵 사유 - 이미 생성됨: ${result.skippedAlreadyGenerated || 0}행`,
+      `스킵 사유 - 특성없음: ${result.skippedNoTraits || 0}행`,
       `스킵 사유 - 관찰근거부족: ${result.skippedNoObservation || 0}행`,
       `스킵 사유 - 빈 행: ${result.skippedBlank || 0}행`
     );
@@ -1617,6 +1691,149 @@ function buildBehaviorRecommendationResultMessage_(result) {
   }
 
   return lines.join('\n');
+}
+
+function logBehaviorRecommendationResult_(action, result) {
+  log_(
+    action,
+    result.blocked ? 'BLOCKED' : 'OK',
+    `범위 ${result.scopeLabel || '대기 행'}, 처리 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행` +
+      ` (이미생성 ${result.skippedAlreadyGenerated || 0}, 특성없음 ${result.skippedNoTraits || 0}, 관찰근거부족 ${result.skippedNoObservation || 0}, 빈행 ${result.skippedBlank || 0}), 남은 대기 ${result.remaining}행`
+  );
+}
+
+function autoProcessPendingBehaviorRecommendations() {
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    log_('autoProcessPendingBehaviorRecommendations', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    return;
+  }
+
+  try {
+    deleteAutoBehaviorRecommendationTriggers_();
+
+    const status = PropertiesService.getUserProperties().getProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY) || 'OFF';
+    if (status !== 'ON') {
+      log_('autoProcessPendingBehaviorRecommendations', 'STOP', '자동 생성 상태가 OFF라 실행하지 않음');
+      return;
+    }
+
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
+    if (!sh) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      log_('autoProcessPendingBehaviorRecommendations', 'STOP', '행발문구추천 시트를 찾을 수 없음');
+      return;
+    }
+
+    const lastRow = sh.getLastRow();
+    const h = headerMap_(sh);
+    const config = getConfigMap_();
+    const result = processBehaviorRecommendationRows_(
+      sh,
+      h,
+      2,
+      Math.max(lastRow - 1, 0),
+      config,
+      { pendingOnly: true }
+    );
+    result.scopeLabel = '대기/재시도필요 행';
+
+    logBehaviorRecommendationResult_('autoProcessPendingBehaviorRecommendations', result);
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      toastAutoRecordDraft_(result.blockingMessage || '행발 추천 문구 생성을 중단했습니다.', result.blockingReason || '행발 생성 중단');
+      return;
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      toastAutoRecordDraft_(
+        `생성 완료 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행`,
+        '행발 추천 문구 생성 완료'
+      );
+      return;
+    }
+
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    scheduleNextAutoBehaviorRecommendationTrigger_(nextDelayMs);
+  } catch (err) {
+    const message = String(err.message || err);
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoBehaviorRecommendationTriggers_();
+    toastAutoRecordDraft_(message, '행발 추천 문구 자동 처리 오류');
+    log_('autoProcessPendingBehaviorRecommendations', 'ERROR', message);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function countPendingBehaviorRecommendationRows_() {
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
+    if (!sh) return 0;
+
+    const h = headerMap_(sh);
+    if (!h.selectedTraits || !h.positiveObservation || !h.improvementNeeded || !h.growthEvidence || !h.recommendedRecord || !h.status) {
+      return 0;
+    }
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return 0;
+
+    const lastCol = Math.max(sh.getLastColumn(), BEHAVIOR_RECOMMENDATION_HEADERS.length);
+    const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    let count = 0;
+
+    values.forEach(row => {
+      const status = String(rowValueAt_(row, h.status) || '').trim();
+      if (status !== '대기' && status !== '재시도필요') return;
+
+      const recommendedRecord = String(rowValueAt_(row, h.recommendedRecord) || '').trim();
+      if (recommendedRecord) return;
+
+      const selectedTraits = String(rowValueAt_(row, h.selectedTraits) || '').trim();
+      if (!isMeaningfulBehaviorInput_(selectedTraits)) return;
+
+      const hasObservation = [
+        rowValueAt_(row, h.positiveObservation),
+        rowValueAt_(row, h.improvementNeeded),
+        rowValueAt_(row, h.growthEvidence),
+      ].some(isMeaningfulBehaviorInput_);
+
+      if (hasObservation) count++;
+    });
+
+    return count;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function scheduleNextAutoBehaviorRecommendationTrigger_(delayMs) {
+  deleteAutoBehaviorRecommendationTriggers_();
+
+  ScriptApp.newTrigger('autoProcessPendingBehaviorRecommendations')
+    .timeBased()
+    .after(delayMs)
+    .create();
+
+  log_(
+    'scheduleNextAutoBehaviorRecommendationTrigger_',
+    'OK',
+    `${Math.round(delayMs / 1000)}초 뒤 다음 행발 추천 문구 자동 생성 예약`
+  );
+}
+
+function deleteAutoBehaviorRecommendationTriggers_() {
+  const triggers = ScriptApp.getProjectTriggers();
+
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'autoProcessPendingBehaviorRecommendations') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 }
 
 function setupSheets() {
@@ -5633,17 +5850,19 @@ function stopAutoRecordDraftTrigger(showUi) {
   deleteAutoCommonPhraseTriggers_();
   deleteAutoManualRecordTriggers_();
   deleteAutoSubmissionCollectionTriggers_();
+  deleteAutoBehaviorRecommendationTriggers_();
 
   PropertiesService.getUserProperties().setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
   PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
   PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+  PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
 
   log_('stopAutoRecordDraftTrigger', 'OK', '자동 생성 트리거 중지');
 
   if (showUi !== false) {
-    SpreadsheetApp.getUi().alert('제출물 수집/생기부초안/학생별 최종 생기부/공통문구/수동추가 자동 트리거를 중지했습니다.');
+    SpreadsheetApp.getUi().alert('제출물 수집/생기부초안/학생별 최종 생기부/공통문구/수동추가/행발 추천 자동 트리거를 중지했습니다.');
   }
 }
 
@@ -5653,6 +5872,7 @@ function showAutoRecordDraftStatus() {
   const draftPendingCount = countPendingRecordDrafts_();
   const studentFinalPendingCount = countPendingStudentFinalRecords_();
   const commonPhrasePendingCount = countPendingCommonPhrases_();
+  const behaviorRecommendationPendingCount = countPendingBehaviorRecommendationRows_();
 
   const triggers = ScriptApp.getProjectTriggers();
   const submissionCollectionTriggers = triggers.filter(trigger => {
@@ -5667,11 +5887,15 @@ function showAutoRecordDraftStatus() {
   const commonPhraseTriggers = triggers.filter(trigger => {
     return trigger.getHandlerFunction() === 'autoProcessPendingCommonPhrases';
   });
+  const behaviorRecommendationTriggers = triggers.filter(trigger => {
+    return trigger.getHandlerFunction() === 'autoProcessPendingBehaviorRecommendations';
+  });
 
   const submissionCollectionStatus = PropertiesService.getUserProperties().getProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY) || 'OFF';
   const draftStatus = PropertiesService.getUserProperties().getProperty('AUTO_RECORD_DRAFT_TRIGGER') || 'OFF';
   const studentFinalStatus = PropertiesService.getUserProperties().getProperty('AUTO_STUDENT_FINAL_TRIGGER') || 'OFF';
   const commonPhraseStatus = PropertiesService.getUserProperties().getProperty('AUTO_COMMON_PHRASE_TRIGGER') || 'OFF';
+  const behaviorRecommendationStatus = PropertiesService.getUserProperties().getProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY) || 'OFF';
   const submissionCollectionLastResult = formatAutoLastResultForStatus_('마지막 제출물 자동 수집 결과', getAutoSubmissionCollectionLastResult_(), '개', '수집 완료');
   const draftLastResult = formatAutoLastResultForStatus_('마지막 생기부초안 자동 생성 결과', getAutoRecordDraftLastResult_(), '개');
   const studentFinalLastResult = formatAutoLastResultForStatus_('마지막 학생별 최종 자동 생성 결과', getAutoStudentFinalLastResult_(), '명');
@@ -5699,7 +5923,11 @@ function showAutoRecordDraftStatus() {
     `상태값: ${commonPhraseStatus}\n` +
     `실제 트리거 수: ${commonPhraseTriggers.length}개\n` +
     `남은 대기/재시도 문구: ${commonPhrasePendingCount}개` +
-    commonPhraseLastResult
+    commonPhraseLastResult +
+    `\n\n[행발문구추천]\n` +
+    `상태값: ${behaviorRecommendationStatus}\n` +
+    `실제 트리거 수: ${behaviorRecommendationTriggers.length}개\n` +
+    `남은 대기/재시도 행: ${behaviorRecommendationPendingCount}행`
   );
 }
 
