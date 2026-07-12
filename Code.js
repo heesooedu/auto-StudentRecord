@@ -1377,19 +1377,20 @@ function defaultBehaviorRecordPrompt_() {
   return [
     '[작성 원칙]',
     '1. 교사가 입력한 관찰 사실만 사용한다.',
-    '2. 특성 키워드는 문장의 방향을 정하는 참고 정보이며, 키워드만으로 관찰되지 않은 행동을 만들어내지 않는다.',
-    '3. 부정적 내용을 무조건 긍정적으로 미화하지 않고, 성장가능성 위주로 서술한다.',
-    '4. 학생의 인격이나 성격을 단정하지 않고 관찰된 행동을 중심으로 표현한다.',
-    '5. 비난, 낙인, 모욕적 표현은 제거한다.',
-    '6. growthEvidence가 있을 때만 실제 변화, 향상, 개선을 서술한다.',
-    '7. growthEvidence가 없으면 개선되었다고 쓰지 말고, 보완할 점이나 앞으로의 성장 방향을 신중하게 표현한다.',
-    '8. 단발성 행동을 항상, 평소, 꾸준히, 지속적으로 등으로 과장하지 않는다.',
-    '9. 교사가 입력하지 않은 교우관계, 성격, 가정환경, 학업 성취 등을 추정하지 않는다.',
-    '10. 학생 이름과 개인정보를 결과에 포함하지 않는다.',
-    '11. 장점과 보완점이 모두 있으면 장점을 먼저 제시하고, 보완점은 성장 가능성이 드러나는 방식으로 자연스럽게 연결한다.',
-    '12. 문장 끝은 주로 ~함, ~보임, ~기대됨, ~필요가 있음 형식으로 작성한다.',
-    '13. 생활기록부에 바로 사용할 수 있는 하나의 자연스러운 문단으로 작성한다.',
-    '14. 결과에는 제목, 번호, 따옴표, 설명을 붙이지 않는다.',
+    '2. 특성 키워드는 문장의 방향을 정하는 참고 정보이며, 선택된 모든 특성을 반드시 반영할 필요는 없다.',
+    '3. 특성 키워드만으로 관찰되지 않은 행동을 만들어내지 않고, 관찰 근거로 자연스럽게 뒷받침되는 특성만 반영한다.',
+    '4. 부정적 내용을 무조건 긍정적으로 미화하지 않고, 성장가능성 위주로 서술한다.',
+    '5. 학생의 인격이나 성격을 단정하지 않고 관찰된 행동을 중심으로 표현한다.',
+    '6. 비난, 낙인, 모욕적 표현은 제거한다.',
+    '7. growthEvidence가 있을 때만 실제 변화, 향상, 개선을 서술한다.',
+    '8. growthEvidence가 없으면 개선되었다고 쓰지 말고, 보완할 점이나 앞으로의 성장 방향을 신중하게 표현한다.',
+    '9. 단발성 행동을 항상, 평소, 꾸준히, 지속적으로 등으로 과장하지 않는다.',
+    '10. 교사가 입력하지 않은 교우관계, 성격, 가정환경, 학업 성취 등을 추정하지 않는다.',
+    '11. 학생 이름과 개인정보를 결과에 포함하지 않는다.',
+    '12. 장점과 보완점이 모두 있으면 장점을 먼저 제시하고, 보완점은 성장 가능성이 드러나는 방식으로 자연스럽게 연결한다.',
+    '13. 문장 끝은 주로 ~함, ~보임, ~기대됨, ~필요가 있음 형식으로 작성한다.',
+    '14. 생활기록부에 바로 사용할 수 있는 하나의 자연스러운 문단으로 작성한다.',
+    '15. 결과에는 제목, 번호, 따옴표, 설명을 붙이지 않는다.',
     '',
     '[중요 예시]',
     '교사가 산만하고 친구 말을 자주 끊음이라고 입력했을 때, growthEvidence가 있으면 지도 후 상대방의 말을 끝까지 들으려 노력하는 변화처럼 근거가 있는 변화만 쓴다.',
@@ -1440,6 +1441,7 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
     data.growthEvidence ? `[growthEvidence]\n${data.growthEvidence}` : '',
   ].filter(Boolean).join('\n\n');
   const charInstruction = buildBehaviorCharInstruction_(charRange);
+  const traitInstruction = buildBehaviorTraitInstruction_();
   const retryInstruction = retryContext
     ? [
       '[재작성 요청]',
@@ -1456,12 +1458,23 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
     inputLines,
     '',
     behaviorPrompt || defaultBehaviorRecordPrompt_(),
+    traitInstruction,
     charInstruction,
     retryInstruction,
     '',
     '[응답 형식]',
     '{"recommended_record":"", "caution":""}',
   ].join('\n'), maxInputChars || 30000);
+}
+
+function buildBehaviorTraitInstruction_() {
+  return [
+    '[특성 키워드 사용 원칙]',
+    'selectedTraits와 customTraits는 문장의 방향을 정하는 참고 정보이다.',
+    '선택된 모든 특성을 반드시 문장에 반영하려고 하지 않는다.',
+    '교사의 관찰 내용과 성장 근거로 자연스럽게 뒷받침되는 특성만 골라 반영한다.',
+    '근거가 약한 특성은 쓰지 않거나 caution에 참고 사항으로만 남긴다.',
+  ].join('\n');
 }
 
 function buildBehaviorCharInstruction_(charRange) {
