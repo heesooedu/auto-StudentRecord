@@ -18,8 +18,10 @@ const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_
 const AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY = 'AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER';
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
-const RECORD_DRAFT_CHARS_DESCRIPTION = '생기부 작성을 위한 최소, 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
-const BEHAVIOR_RECORD_CHARS_DESCRIPTION = '행발 작성을 위한 최소, 최대 글자수\n(정확하지는 않습니다)';
+const RECORD_DRAFT_MIN_CHARS_DESCRIPTION = '생기부 작성을 위한 최소 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
+const RECORD_DRAFT_MAX_CHARS_DESCRIPTION = '생기부 작성을 위한 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
+const BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION = '행발 최소 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
+const BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION = '행발 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
 const BEHAVIOR_RECOMMENDATION_HEADERS = [
   'studentName',
   'selectedTraits',
@@ -176,8 +178,8 @@ function onOpen() {
     //.addItem('화면 정리 / 서식 적용', 'applyFrontendLayout')
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
     //.addItem('현황판 새로고침', 'refreshDashboard')
-    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
     .addSeparator()
+    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
     .addToUi();
 }
 
@@ -1864,8 +1866,8 @@ function setupSheets() {
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
     ['MAX_RECORD_CHARS', '500', '생기부 초안 최대 글자수'],
     ['MAX_INPUT_CHARS', '30000', 'Claude에 보낼 과제 원문 최대 글자수'],
-    ['RECORD_DRAFT_MIN_CHARS', '350', RECORD_DRAFT_CHARS_DESCRIPTION],
-    ['RECORD_DRAFT_MAX_CHARS', '500', RECORD_DRAFT_CHARS_DESCRIPTION],
+    ['RECORD_DRAFT_MIN_CHARS', '350', RECORD_DRAFT_MIN_CHARS_DESCRIPTION],
+    ['RECORD_DRAFT_MAX_CHARS', '500', RECORD_DRAFT_MAX_CHARS_DESCRIPTION],
     ['NEIS_MAX_BYTES', '1500', ''],
     ['NEIS_WARNING_BYTES', '1400', ''],
     ['BATCH_SIZE', '5', '자동 생성 트리거 1회 실행당 처리할 학생 수'],
@@ -1875,13 +1877,13 @@ function setupSheets() {
     ['PROMPT_1', defaultRecordDraftPrompt_(), '생기부초안 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['PROMPT_2', defaultStudentFinalRecordPrompt_(), '학생별생기부 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['MANUAL_START_ROW', '2', '수동추가를 위한 설정\n학생 데이터가 시작하는 행번호(ex. 2)'],
-    ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능'],
+    ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능\n이름과 같은 개인정보를 포함하지 않게 주의해주세요'],
     ['MANUAL_OUTPUT_COL', '', '수동추가를 위한 설정\n인공지능에게 받아올 생기부를 적을 열(ex. C)'],
-    ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침'],
-    ['BEHAVIOR_RECORD_MIN_CHARS', '', BEHAVIOR_RECORD_CHARS_DESCRIPTION],
-    ['BEHAVIOR_RECORD_MAX_CHARS', '', BEHAVIOR_RECORD_CHARS_DESCRIPTION],
-    ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '행발문구추천 작성 지침\n[작성 원칙], [중요 예시] 중심으로 입력하세요. 입력 데이터와 JSON 응답 형식은 코드에서 자동으로 붙입니다.'],
-    ['SYSTEM_GUIDE', defaultSystemGuide_(), '생활기록부 작성 지침. 선생님 기준에 맞게 수정하시되\n\n반드시 JSON 형식으로만 답한다.\n{"evidence_summary":"", "record_draft":"", "caution":""}\n\n이 두 문장은 남겨주세요.']
+    ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침\n\n\n인공지능에게 채점도 시켜보고 싶으시면 채점하라고 지시하시면 됩니다.\n그리고 "evidence_summary에 점수를 입력하여 보낸다" 라는 프롬프트를 \n작업에 넣어주시면 메모로 받아보실 수 있습니다.'],
+    ['BEHAVIOR_RECORD_MIN_CHARS', '', BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION],
+    ['BEHAVIOR_RECORD_MAX_CHARS', '', BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION],
+    ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '작성하시는 스타일에 맞게 수정하시면 됩니다.'],
+    ['SYSTEM_GUIDE', defaultSystemGuide_(), '작성 지침. \n이건 예시이고 선생님 기준에 맞게 자유롭게 수정하시면 됩니다.\n\n저의 경우는 작업 순서는 실제로 작성한다고 가정하고\n그 프로세스를 단계별로 서술했습니다.\n\n특정문장으로 시작하게 할 수도 있습니다.\n예를 들면 "인공지능과 미래사회에 대한 수행평가 글쓰기에서"라는 \n문장으로 시작하라고 지정하는거죠.\n\n']
   ];
 
   const rows = defaults.filter(r => !existing[r[0]]);
@@ -2925,7 +2927,7 @@ function migrateLegacyConfigKeys_(config) {
       config.getRange(migratedRow, 1, 1, 3).setValues([[
         'BEHAVIOR_RECORD_MIN_CHARS',
         firstLegacyBehaviorMinValue || '',
-        BEHAVIOR_RECORD_CHARS_DESCRIPTION,
+        BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION,
       ]]);
       behaviorMinCharsRow = migratedRow;
     } else {
@@ -2943,7 +2945,7 @@ function migrateLegacyConfigKeys_(config) {
       config.getRange(migratedRow, 1, 1, 3).setValues([[
         'BEHAVIOR_RECORD_MAX_CHARS',
         firstLegacyBehaviorMaxValue || '',
-        BEHAVIOR_RECORD_CHARS_DESCRIPTION,
+        BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION,
       ]]);
       behaviorMaxCharsRow = migratedRow;
     } else {
