@@ -3073,13 +3073,14 @@ function deleteActiveSheetStudentData() {
     [SHEET_NAMES.records]: 2,
     [SHEET_NAMES.studentFinalRecords]: 2,
     [SHEET_NAMES.commonPhrases]: 3,
+    [SHEET_NAMES.behaviorRecommendations]: 2,
   };
   const startRow = startRowsBySheetName[sheetName];
 
   if (!startRow) {
     ui.alert(
       '활성화된 시트 학생 데이터 삭제',
-      `${sheetName} 시트는 이 기능으로 삭제할 수 없습니다.\n과제목록, 제출물, 생기부초안, 학생별생기부, 공통문구생성, 수동추가 시트에서만 실행할 수 있습니다.`,
+      `${sheetName} 시트는 이 기능으로 삭제할 수 없습니다.\n과제목록, 제출물, 생기부초안, 학생별생기부, 공통문구생성, 수동추가, 행발문구추천 시트에서만 실행할 수 있습니다.`,
       ui.ButtonSet.OK
     );
     log_('deleteActiveSheetStudentData', 'BLOCKED', `${sheetName}: 삭제 허용 시트 아님`);
@@ -3101,6 +3102,11 @@ function deleteActiveSheetStudentData() {
   );
 
   if (confirm !== ui.Button.OK) return;
+
+  if (sheetName === SHEET_NAMES.behaviorRecommendations) {
+    deleteAutoBehaviorRecommendationTriggers_();
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+  }
 
   sh.deleteRows(startRow, rowsToDelete);
 
