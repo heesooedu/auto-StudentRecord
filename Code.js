@@ -1152,7 +1152,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
   }
 
   const pendingOnly = !!(options && options.pendingOnly);
-  const batchSize = Number(config.BATCH_SIZE || 5);
+  const batchSize = Math.max(Number(config.BATCH_SIZE || 5), 1);
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
   const behaviorPrompt = getBehaviorRecordPrompt_(config);
@@ -1202,13 +1202,6 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       return;
     }
 
-    const recommendedRecord = String(rowValueAt_(values, h.recommendedRecord) || '').trim();
-    if (recommendedRecord) {
-      skipped++;
-      skippedAlreadyGenerated++;
-      return;
-    }
-
     const data = buildBehaviorRecommendationData_(values, h);
 
     if (!data.hasSelectedTraits) {
@@ -1219,6 +1212,13 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
         skippedBlank++;
       }
       skipped++;
+      return;
+    }
+
+    const recommendedRecord = String(rowValueAt_(values, h.recommendedRecord) || '').trim();
+    if (recommendedRecord) {
+      skipped++;
+      skippedAlreadyGenerated++;
       return;
     }
 
