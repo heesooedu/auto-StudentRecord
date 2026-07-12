@@ -1134,6 +1134,8 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
   const batchSize = Number(config.BATCH_SIZE || 5);
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
+  const behaviorPrompt = getBehaviorRecordPrompt_(config);
+  const byteRange = getBehaviorRecordByteRange_(config);
   const startedAt = Date.now();
   const ai = getAiProviderAndModel_(config);
   const systemGuide = behaviorRecommendationSystemGuide_();
@@ -1191,11 +1193,16 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config) {
     try {
       sh.getRange(item.row, h.status).setValue('생성중');
 
-      const userPrompt = buildBehaviorRecommendationPrompt_(item.data, maxInputChars);
-      const result = callAi_(ai.provider, ai.model, systemGuide, userPrompt, ai.reasoning);
-      const parsed = parseBehaviorRecommendationJson_(result.text);
-      const recommendedRecord = normalizeAiText_(parsed.recommended_record);
-      const caution = String(parsed.caution || '').trim();
+      const generated = generateBehaviorRecommendationWithByteRetry_({
+        ai,
+        systemGuide,
+        data: item.data,
+        maxInputChars,
+        behaviorPrompt,
+        byteRange,
+      });
+      const recommendedRecord = generated.recommendedRecord;
+      const caution = generated.caution;
 
       if (!recommendedRecord) {
         throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
@@ -1287,22 +1294,8 @@ function behaviorRecommendationSystemGuide_() {
   ].join('\n');
 }
 
-function buildBehaviorRecommendationPrompt_(data, maxInputChars) {
-  const inputLines = [
-    data.selectedTraits ? `[selectedTraits]\n${data.selectedTraits}` : '',
-    data.customTraits ? `[customTraits]\n${data.customTraits}` : '',
-    data.positiveObservation ? `[positiveObservation]\n${data.positiveObservation}` : '',
-    data.improvementNeeded ? `[improvementNeeded]\n${data.improvementNeeded}` : '',
-    data.growthEvidence ? `[growthEvidence]\n${data.growthEvidence}` : '',
-  ].filter(Boolean).join('\n\n');
-
-  return truncate_([
-    '[행발 추천 문구 생성 요청]',
-    '아래 입력만 근거로 행동특성 및 종합의견에 사용할 추천 문구를 작성한다.',
-    '',
-    '[입력]',
-    inputLines,
-    '',
+function defaultBehaviorRecordPrompt_() {
+  return [
     '[작성 원칙]',
     '1. 교사가 입력한 관찰 사실만 사용한다.',
     '2. 특성 키워드는 문장의 방향을 정하는 참고 정보이며, 키워드만으로 관찰되지 않은 행동을 만들어내지 않는다.',
@@ -1322,10 +1315,176 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars) {
     '[중요 예시]',
     '교사가 산만하고 친구 말을 자주 끊음이라고 입력했을 때, growthEvidence가 있으면 지도 후 상대방의 말을 끝까지 들으려 노력하는 변화처럼 근거가 있는 변화만 쓴다.',
     'growthEvidence가 없으면 개선되었다고 쓰지 말고 상대방의 의견을 경청하고 자신의 생각을 차분히 표현하는 태도를 기를 필요가 있음처럼 성장 방향으로 쓴다.',
+  ].join('\n');
+}
+
+function getBehaviorRecordPrompt_(config) {
+  const prompt = String((config && config.BEHAVIOR_RECORD_PROMPT) || '').trim();
+  return prompt || defaultBehaviorRecordPrompt_();
+}
+
+function getBehaviorRecordByteRange_(config) {
+  let min = parsePositiveInteger_(config && config.BEHAVIOR_RECORD_BYTE_MIN);
+  let max = parsePositiveInteger_(config && config.BEHAVIOR_RECORD_BYTE_MAX);
+
+  if (min && max && min > max) {
+    const tmp = min;
+    min = max;
+    max = tmp;
+  }
+
+  return {
+    min,
+    max,
+    enabled: Boolean(min || max),
+  };
+}
+
+function parsePositiveInteger_(value) {
+  const parsed = Number(String(value || '').replace(/,/g, '').trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed);
+}
+
+function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt, byteRange, retryContext) {
+  const inputLines = [
+    data.selectedTraits ? `[selectedTraits]\n${data.selectedTraits}` : '',
+    data.customTraits ? `[customTraits]\n${data.customTraits}` : '',
+    data.positiveObservation ? `[positiveObservation]\n${data.positiveObservation}` : '',
+    data.improvementNeeded ? `[improvementNeeded]\n${data.improvementNeeded}` : '',
+    data.growthEvidence ? `[growthEvidence]\n${data.growthEvidence}` : '',
+  ].filter(Boolean).join('\n\n');
+  const byteInstruction = buildBehaviorByteInstruction_(byteRange);
+  const retryInstruction = retryContext
+    ? [
+      '[재작성 요청]',
+      `이전 응답의 바이트 수는 ${retryContext.byteCount}바이트였고, 설정 범위(${formatBehaviorByteRange_(byteRange)})를 벗어났다.`,
+      '위 입력 사실은 유지하되, recommended_record를 설정 바이트 범위 안에 들어오도록 다시 작성한다.',
+    ].join('\n')
+    : '';
+
+  return truncate_([
+    '[행발 추천 문구 생성 요청]',
+    '아래 입력만 근거로 행동특성 및 종합의견에 사용할 추천 문구를 작성한다.',
+    '',
+    '[입력]',
+    inputLines,
+    '',
+    behaviorPrompt || defaultBehaviorRecordPrompt_(),
+    byteInstruction,
+    retryInstruction,
     '',
     '[응답 형식]',
     '{"recommended_record":"", "caution":""}',
   ].join('\n'), maxInputChars || 30000);
+}
+
+function buildBehaviorByteInstruction_(byteRange) {
+  if (!byteRange || !byteRange.enabled) return '';
+
+  return [
+    '[분량 조건]',
+    `recommended_record는 나이스 바이트 기준 ${formatBehaviorByteRange_(byteRange)} 안에 들어오도록 작성한다.`,
+    '바이트 계산은 한글 2바이트, 영문/숫자/기호/공백 1바이트에 가깝게 맞춘다.',
+  ].join('\n');
+}
+
+function formatBehaviorByteRange_(byteRange) {
+  if (!byteRange || !byteRange.enabled) return '제한 없음';
+  if (byteRange.min && byteRange.max) return `${byteRange.min}-${byteRange.max}바이트`;
+  if (byteRange.min) return `${byteRange.min}바이트 이상`;
+  return `${byteRange.max}바이트 이하`;
+}
+
+function generateBehaviorRecommendationWithByteRetry_(options) {
+  const maxAttempts = options.byteRange && options.byteRange.enabled ? 2 : 1;
+  let fallback = null;
+  let retryErrorMessage = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const retryContext = fallback && attempt > 1
+      ? { byteCount: fallback.byteCount }
+      : null;
+    const userPrompt = buildBehaviorRecommendationPrompt_(
+      options.data,
+      options.maxInputChars,
+      options.behaviorPrompt,
+      options.byteRange,
+      retryContext
+    );
+
+    try {
+      const result = callAi_(
+        options.ai.provider,
+        options.ai.model,
+        options.systemGuide,
+        userPrompt,
+        options.ai.reasoning
+      );
+      const parsed = parseBehaviorRecommendationJson_(result.text);
+      const recommendedRecord = normalizeAiText_(parsed.recommended_record);
+      const byteCount = recommendedRecord ? neisByteCount_(recommendedRecord) : 0;
+      const caution = String(parsed.caution || '').trim();
+      const generated = {
+        recommendedRecord,
+        caution,
+        byteCount,
+      };
+
+      if (!recommendedRecord) {
+        throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
+      }
+
+      if (!isBehaviorByteOutOfRange_(byteCount, options.byteRange)) {
+        if (attempt > 1 && fallback) {
+          generated.caution = appendBehaviorCaution_(
+            caution,
+            `바이트 범위 재요청 후 ${byteCount}바이트로 생성됨.`
+          );
+        }
+        return generated;
+      }
+
+      fallback = generated;
+      if (attempt < maxAttempts) {
+        Utilities.sleep(800);
+        continue;
+      }
+    } catch (err) {
+      if (fallback) {
+        retryErrorMessage = String(err.message || err);
+        break;
+      }
+
+      throw err;
+    }
+  }
+
+  if (fallback) {
+    const rangeMessage = `설정 바이트 범위(${formatBehaviorByteRange_(options.byteRange)})를 벗어남: ${fallback.byteCount}바이트.`;
+    const retryMessage = retryErrorMessage
+      ? `재요청 응답 처리 실패: ${retryErrorMessage}`
+      : '재요청 후에도 범위에 들어오지 않음.';
+    fallback.caution = appendBehaviorCaution_(fallback.caution, `${rangeMessage} ${retryMessage}`);
+    return fallback;
+  }
+
+  throw makeBehaviorResponseFormatError_('recommended_record 값을 생성하지 못했습니다.');
+}
+
+function isBehaviorByteOutOfRange_(byteCount, byteRange) {
+  if (!byteRange || !byteRange.enabled) return false;
+  if (byteRange.min && byteCount < byteRange.min) return true;
+  if (byteRange.max && byteCount > byteRange.max) return true;
+  return false;
+}
+
+function appendBehaviorCaution_(caution, message) {
+  const existing = String(caution || '').trim();
+  const extra = String(message || '').trim();
+  if (!existing) return extra;
+  if (!extra) return existing;
+  return `${existing}\n${extra}`;
 }
 
 function parseBehaviorRecommendationJson_(text) {
@@ -1492,6 +1651,9 @@ function setupSheets() {
     ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능'],
     ['MANUAL_OUTPUT_COL', '', '수동추가를 위한 설정\n인공지능에게 받아올 생기부를 적을 열(ex. C)'],
     ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침'],
+    ['BEHAVIOR_RECORD_BYTE_MIN', '', '행발문구추천을 위한 설정\nrecommendedRecord의 나이스 최소 바이트 수. 비워두면 최소 제한을 적용하지 않습니다.'],
+    ['BEHAVIOR_RECORD_BYTE_MAX', '', '행발문구추천을 위한 설정\nrecommendedRecord의 나이스 최대 바이트 수. 비워두면 최대 제한을 적용하지 않습니다.'],
+    ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '행발문구추천 작성 지침\n[작성 원칙], [중요 예시] 중심으로 입력하세요. 입력 데이터와 JSON 응답 형식은 코드에서 자동으로 붙입니다.'],
     ['SYSTEM_GUIDE', defaultSystemGuide_(), '생활기록부 작성 지침. 선생님 기준에 맞게 수정하시되\n\n반드시 JSON 형식으로만 답한다.\n{"evidence_summary":"", "record_draft":"", "caution":""}\n\n이 두 문장은 남겨주세요.']
   ];
 
