@@ -1153,7 +1153,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
 
   const pendingOnly = !!(options && options.pendingOnly);
   const batchSize = Math.max(Number(config.BATCH_SIZE || 5), 1);
-  const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
+  const maxRunSeconds = Math.max(Number(config.MAX_RUN_SECONDS || 270), 30);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
   const behaviorPrompt = getBehaviorRecordPrompt_(config);
   const charRange = getBehaviorRecordCharRange_(config);
@@ -1181,6 +1181,8 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
   const rowValues = sh.getRange(startRow, 1, rowCount, lastCol).getValues();
   const statusUpdates = [];
   const candidates = [];
+  const candidateRows = [];
+  const skippedDetails = [];
 
   let processed = 0;
   let skipped = 0;
@@ -1199,6 +1201,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
     const status = String(rowValueAt_(values, h.status) || '').trim();
 
     if (pendingOnly && status !== '대기' && status !== '재시도필요') {
+      addBehaviorSkippedDetail_(skippedDetails, row, `상태 ${status || '빈값'}`);
       return;
     }
 
@@ -1208,8 +1211,10 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       if (data.hasAnyInput) {
         statusUpdates.push({ row, status: '특성없음' });
         skippedNoTraits++;
+        addBehaviorSkippedDetail_(skippedDetails, row, '특성없음');
       } else {
         skippedBlank++;
+        addBehaviorSkippedDetail_(skippedDetails, row, '빈 행');
       }
       skipped++;
       return;
@@ -1219,6 +1224,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
     if (recommendedRecord) {
       skipped++;
       skippedAlreadyGenerated++;
+      addBehaviorSkippedDetail_(skippedDetails, row, '이미 생성됨');
       return;
     }
 
@@ -1226,14 +1232,17 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       if (data.hasAnyInput) {
         statusUpdates.push({ row, status: '관찰근거부족' });
         skippedNoObservation++;
+        addBehaviorSkippedDetail_(skippedDetails, row, '관찰근거부족');
       } else {
         skippedBlank++;
+        addBehaviorSkippedDetail_(skippedDetails, row, '빈 행');
       }
       skipped++;
       return;
     }
 
     candidates.push({ row, data });
+    candidateRows.push(row);
     statusUpdates.push({ row, status: '대기' });
   });
 
@@ -1301,6 +1310,8 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
     skippedNoTraits,
     skippedNoObservation,
     skippedBlank,
+    candidateRows,
+    skippedDetails,
     failed,
     remaining: countPendingBehaviorRecommendationRows_(),
     blocked,
@@ -1331,6 +1342,11 @@ function buildBehaviorRecommendationData_(rowValues, h) {
     hasObservation: observationFields.some(isMeaningfulBehaviorInput_),
     hasAnyInput: inputFields.some(isMeaningfulBehaviorInput_),
   };
+}
+
+function addBehaviorSkippedDetail_(details, row, reason) {
+  if (!details || details.length >= 12) return;
+  details.push(`${row}행 ${reason}`);
 }
 
 function isMeaningfulBehaviorInput_(text) {
@@ -1669,6 +1685,7 @@ function buildBehaviorRecommendationResultMessage_(result) {
     `실패: ${result.failed || 0}행`,
     `스킵: ${result.skipped || 0}행`,
     `대기: ${result.remaining || 0}행`,
+    `생성 후보: ${(result.candidateRows || []).length}행`,
   ];
 
   if (result.skipped) {
@@ -1679,6 +1696,14 @@ function buildBehaviorRecommendationResultMessage_(result) {
       `스킵 사유 - 관찰근거부족: ${result.skippedNoObservation || 0}행`,
       `스킵 사유 - 빈 행: ${result.skippedBlank || 0}행`
     );
+  }
+
+  if (result.candidateRows && result.candidateRows.length > 0) {
+    lines.push('', `생성 후보 행: ${result.candidateRows.slice(0, 12).join(', ')}${result.candidateRows.length > 12 ? '...' : ''}`);
+  }
+
+  if (result.skippedDetails && result.skippedDetails.length > 0) {
+    lines.push('', `스킵 상세: ${result.skippedDetails.join(', ')}`);
   }
 
   if (result.blocked) {
@@ -1694,7 +1719,8 @@ function logBehaviorRecommendationResult_(action, result) {
     action,
     result.blocked ? 'BLOCKED' : 'OK',
     `범위 ${result.scopeLabel || '대기 행'}, 처리 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행` +
-      ` (이미생성 ${result.skippedAlreadyGenerated || 0}, 특성없음 ${result.skippedNoTraits || 0}, 관찰근거부족 ${result.skippedNoObservation || 0}, 빈행 ${result.skippedBlank || 0}), 남은 대기 ${result.remaining}행`
+      ` (이미생성 ${result.skippedAlreadyGenerated || 0}, 특성없음 ${result.skippedNoTraits || 0}, 관찰근거부족 ${result.skippedNoObservation || 0}, 빈행 ${result.skippedBlank || 0}), ` +
+      `후보 ${(result.candidateRows || []).join(',') || '없음'}, 스킵상세 ${(result.skippedDetails || []).join(', ') || '없음'}, 남은 대기 ${result.remaining}행`
   );
 }
 
