@@ -140,6 +140,8 @@ const HEADERS = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('생기부 자동화')
+    .addItem('0. 작업 사이드바 열기', 'showAutomationSidebar')
+    .addSeparator()
     //.addItem('1. 시트 초기 설정', 'setupSheets')
     .addItem('2. Claude API 키 저장', 'saveClaudeApiKey')
     .addItem('Claude API 키 삭제', 'clearClaudeApiKey')
@@ -183,11 +185,12 @@ function onOpen() {
     .addToUi();
 }
 
-function doGet() {
-  return HtmlService
+function showAutomationSidebar() {
+  const html = HtmlService
     .createHtmlOutputFromFile('WebApp')
-    .setTitle('생기부 자동화')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setTitle('생기부 자동화');
+
+  SpreadsheetApp.getUi().showSidebar(html);
 }
 
 function webAppGetState() {
