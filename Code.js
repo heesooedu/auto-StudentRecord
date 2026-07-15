@@ -3556,17 +3556,25 @@ function isPersonalInfoHeader_(header) {
 }
 
 function normalizeAiText_(text) {
-  const normalized = String(text || '')
+  const normalized = normalizeAiLineBreaks_(text)
     .replace(/[‘’‚‛′＇ꞌ]/g, "'")
     .replace(/[“”„‟″＂]/g, "'")
     .replace(/[『』「」｢｣《》〈〉]/g, "'")
-    .replace(/([\uac00-\ud7a3])\s*\u00b7\s*([\uac00-\ud7a3])/g, '$1, $2')
+    .replace(/([\uac00-\ud7a3])\s*[\u00b7]\s*([\uac00-\ud7a3])/g, '$1, $2')
     .replace(/[。．]/g, '.')
+    .replace(/[ \t\f\v\u00a0]+/g, ' ')
     .trim();
 
   if (!normalized) return '';
 
   return normalized.endsWith('.') ? normalized : `${normalized}.`;
+}
+
+function normalizeAiLineBreaks_(text) {
+  return String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t\f\v\u00a0]*\n+[ \t\f\v\u00a0]*/g, ' ');
 }
 
 function formatDue_(dueDate, dueTime) {
