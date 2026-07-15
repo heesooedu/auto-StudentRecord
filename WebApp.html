@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --line: #d9dee7;
+        --text: #1f2933;
+        --muted: #637083;
+        --blue: #2563eb;
+        --blue-dark: #1d4ed8;
+        --green: #0f766e;
+        --red: #b42318;
+        --amber: #b54708;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Arial, "Noto Sans KR", sans-serif;
+        font-size: 14px;
+      }
+
+      header {
+        background: #ffffff;
+        border-bottom: 1px solid var(--line);
+        padding: 18px 22px;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 700;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 18px;
+      }
+
+      .topline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .grid.two {
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+      }
+
+      .grid.cards {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      .card {
+        background: #ffffff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+        min-height: 82px;
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+
+      .metric-value {
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      .button-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      button,
+      select,
+      input {
+        font: inherit;
+      }
+
+      button {
+        border: 1px solid var(--line);
+        background: #ffffff;
+        color: var(--text);
+        border-radius: 6px;
+        padding: 10px 12px;
+        cursor: pointer;
+        min-height: 40px;
+      }
+
+      button.primary {
+        background: var(--blue);
+        border-color: var(--blue);
+        color: #ffffff;
+        font-weight: 700;
+      }
+
+      button.primary:hover {
+        background: var(--blue-dark);
+      }
+
+      button.danger {
+        color: var(--red);
+        border-color: #f0b7b2;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 9px 10px;
+        background: #ffffff;
+        min-height: 40px;
+      }
+
+      label {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+
+      .form-row {
+        display: grid;
+        grid-template-columns: 140px minmax(0, 1fr);
+        gap: 10px;
+        align-items: end;
+      }
+
+      .form-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 5px 9px;
+        background: #eef2f7;
+        color: #344054;
+        font-size: 12px;
+        min-height: 26px;
+      }
+
+      .chip.on {
+        background: #ccfbf1;
+        color: var(--green);
+      }
+
+      .chip.warn {
+        background: #fff7ed;
+        color: var(--amber);
+      }
+
+      .notice {
+        white-space: pre-wrap;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+        padding: 12px;
+        min-height: 78px;
+        color: var(--muted);
+      }
+
+      .notice.error {
+        border-color: #f0b7b2;
+        background: #fff5f5;
+        color: var(--red);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 9px 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        background: #f8fafc;
+      }
+
+      td.number,
+      th.number {
+        text-align: right;
+      }
+
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      @media (max-width: 920px) {
+        .grid.two,
+        .grid.cards {
+          grid-template-columns: 1fr;
+        }
+
+        .button-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 640px) {
+        header {
+          padding: 15px;
+        }
+
+        main {
+          padding: 12px;
+        }
+
+        .form-row {
+          grid-template-columns: 1fr;
+        }
+
+        .topline {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>생기부 자동화</h1>
+      <div class="topline">
+        <div id="spreadsheetInfo">스프레드시트 연결 확인 중</div>
+        <div id="updatedAt"></div>
+      </div>
+    </header>
+
+    <main class="stack">
+      <div class="grid two">
+        <section>
+          <h2>작업 실행</h2>
+          <div class="button-grid">
+            <button class="primary" data-action="importAssignments">Classroom 과제목록 가져오기</button>
+            <button class="primary" data-action="collectIncludedAssignments">체크한 과제 제출물 수집</button>
+            <button class="primary" data-action="startRecordDrafts">생기부초안 자동 생성</button>
+            <button class="primary" data-action="generateStudentFinalRecords">학생별생기부 생성</button>
+            <button data-action="generateCommonPhrases">공통문구 생성</button>
+            <button data-action="generateManualRecords">수동추가 생성</button>
+            <button data-action="generateBehaviorRecommendations">행발 추천 문구 생성</button>
+            <button class="danger" data-action="stopAutomation">자동 처리 중지</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>API 키</h2>
+          <div class="form-row">
+            <div>
+              <label for="provider">공급자</label>
+              <select id="provider">
+                <option value="claude">Claude</option>
+                <option value="gpt">GPT</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </div>
+            <div>
+              <label for="apiKey">API 키</label>
+              <input id="apiKey" type="password" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="primary" id="saveKey">저장</button>
+            <button id="clearKey">삭제</button>
+          </div>
+          <div class="chips" id="apiKeyChips"></div>
+        </section>
+      </div>
+
+      <section>
+        <h2>상태</h2>
+        <div class="grid cards" id="metrics"></div>
+      </section>
+
+      <section>
+        <h2>자동 처리</h2>
+        <div id="automation"></div>
+      </section>
+
+      <section>
+        <h2>결과</h2>
+        <div id="result" class="notice">대기 중</div>
+      </section>
+
+      <section>
+        <h2>최근 로그</h2>
+        <div id="logs"></div>
+      </section>
+    </main>
+
+    <script>
+      const ACTION_LABELS = {
+        importAssignments: 'Classroom 과제목록 가져오기',
+        collectIncludedAssignments: '체크한 과제 제출물 수집',
+        startRecordDrafts: '생기부초안 자동 생성',
+        generateStudentFinalRecords: '학생별생기부 생성',
+        generateCommonPhrases: '공통문구 생성',
+        generateManualRecords: '수동추가 생성',
+        generateBehaviorRecommendations: '행발 추천 문구 생성',
+        stopAutomation: '자동 처리 중지',
+      };
+
+      let running = false;
+
+      function el(id) {
+        return document.getElementById(id);
+      }
+
+      function callServer(functionName, ...args) {
+        return new Promise((resolve) => {
+          const runner = google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler((error) => {
+              resolve({
+                ok: false,
+                error: error && error.message ? error.message : String(error),
+              });
+            });
+
+          runner[functionName](...args);
+        });
+      }
+
+      function setRunning(value, message) {
+        running = value;
+        document.querySelectorAll('button').forEach((button) => {
+          button.disabled = value;
+        });
+
+        if (message) {
+          showResult(message, false);
+        }
+      }
+
+      function showResult(message, isError) {
+        const box = el('result');
+        box.textContent = message || '';
+        box.classList.toggle('error', !!isError);
+      }
+
+      async function loadState() {
+        const response = await callServer('webAppGetState');
+
+        if (!response.ok) {
+          showResult(response.error || '상태를 불러오지 못했습니다.', true);
+          return;
+        }
+
+        renderState(response.data);
+      }
+
+      function renderState(state) {
+        renderSpreadsheet(state);
+        renderApiKeys(state.apiKeys || {});
+        renderMetrics(state);
+        renderAutomation(state.automation || {});
+        renderLogs(state.recentLogs || []);
+      }
+
+      function renderSpreadsheet(state) {
+        const link = state.spreadsheetUrl
+          ? `<a href="${escapeHtml(state.spreadsheetUrl)}" target="_blank">${escapeHtml(state.spreadsheetName || '스프레드시트')}</a>`
+          : escapeHtml(state.spreadsheetName || '스프레드시트');
+
+        el('spreadsheetInfo').innerHTML = `${link} · ${escapeHtml(state.config.aiProvider || '')}:${escapeHtml(state.config.model || '')} · reasoning ${escapeHtml(state.config.reasoning || '')}`;
+        el('updatedAt').textContent = state.updatedAt ? `갱신 ${state.updatedAt}` : '';
+      }
+
+      function renderApiKeys(apiKeys) {
+        const items = [
+          ['Claude', apiKeys.claude],
+          ['GPT', apiKeys.gpt],
+          ['Gemini', apiKeys.gemini],
+        ];
+
+        el('apiKeyChips').innerHTML = items
+          .map(([label, saved]) => `<span class="chip ${saved ? 'on' : 'warn'}">${label}: ${saved ? '저장됨' : '없음'}</span>`)
+          .join('');
+      }
+
+      function renderMetrics(state) {
+        const counts = state.counts || {};
+        const metrics = [
+          ['반영 체크 과제', counts.includedAssignments],
+          ['수집 대기 과제', counts.pendingSubmissionCollections],
+          ['초안 대기 제출물', counts.pendingRecordDrafts],
+          ['학생별 대기', counts.pendingStudentFinalRecords],
+          ['공통문구 대기', counts.pendingCommonPhrases],
+          ['수동추가 대기', counts.pendingManualRows],
+          ['행발 대기', counts.pendingBehaviorRecommendations],
+          ['배치 크기', state.config.batchSize || 0],
+        ];
+
+        el('metrics').innerHTML = metrics
+          .map(([label, value]) => `
+            <div class="card">
+              <div class="metric-label">${escapeHtml(label)}</div>
+              <div class="metric-value">${escapeHtml(formatNumber(value))}</div>
+            </div>
+          `)
+          .join('');
+      }
+
+      function renderAutomation(automation) {
+        const rows = [
+          ['제출물 수집', automation.submissionCollection],
+          ['생기부초안', automation.recordDraft],
+          ['학생별생기부', automation.studentFinal],
+          ['공통문구', automation.commonPhrase],
+          ['수동추가', automation.manual],
+          ['행발추천', automation.behaviorRecommendation],
+        ];
+
+        el('automation').innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>작업</th>
+                <th>상태값</th>
+                <th class="number">트리거</th>
+                <th>마지막 결과</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(([label, item]) => renderAutomationRow(label, item || {})).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+
+      function renderAutomationRow(label, item) {
+        const last = item.lastResult
+          ? `${item.lastResult.status || ''} · 처리 ${item.lastResult.processed || 0} · 실패 ${item.lastResult.failed || 0} · 남은 ${item.lastResult.remaining || 0}`
+          : '';
+
+        return `
+          <tr>
+            <td>${escapeHtml(label)}</td>
+            <td><span class="chip ${item.status === 'ON' ? 'on' : ''}">${escapeHtml(item.status || 'OFF')}</span></td>
+            <td class="number">${escapeHtml(formatNumber(item.triggers || 0))}</td>
+            <td class="muted">${escapeHtml(last)}</td>
+          </tr>
+        `;
+      }
+
+      function renderLogs(logs) {
+        if (!logs.length) {
+          el('logs').innerHTML = '<div class="muted">로그 없음</div>';
+          return;
+        }
+
+        el('logs').innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>시간</th>
+                <th>작업</th>
+                <th>상태</th>
+                <th>메시지</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${logs.map((log) => `
+                <tr>
+                  <td>${escapeHtml(log.timestamp || '')}</td>
+                  <td>${escapeHtml(log.action || '')}</td>
+                  <td>${escapeHtml(log.status || '')}</td>
+                  <td>${escapeHtml(log.message || '')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+
+      async function runAction(action) {
+        const label = ACTION_LABELS[action] || action;
+        setRunning(true, `${label} 실행 중`);
+
+        const response = await callServer('webAppRunAction', action);
+
+        if (!response.ok) {
+          showResult(response.error || `${label} 실패`, true);
+          setRunning(false);
+          await loadState();
+          return;
+        }
+
+        const data = response.data || {};
+        showResult(data.message || `${label} 완료`, false);
+        if (data.state) renderState(data.state);
+        setRunning(false);
+      }
+
+      async function saveKey() {
+        const provider = el('provider').value;
+        const key = el('apiKey').value;
+        setRunning(true, 'API 키 저장 중');
+
+        const response = await callServer('webAppSaveApiKey', provider, key);
+
+        if (!response.ok) {
+          showResult(response.error || 'API 키 저장 실패', true);
+          setRunning(false);
+          return;
+        }
+
+        el('apiKey').value = '';
+        showResult(response.data.message || 'API 키를 저장했습니다.', false);
+        if (response.data.state) renderState(response.data.state);
+        setRunning(false);
+      }
+
+      async function clearKey() {
+        const provider = el('provider').value;
+        setRunning(true, 'API 키 삭제 중');
+
+        const response = await callServer('webAppClearApiKey', provider);
+
+        if (!response.ok) {
+          showResult(response.error || 'API 키 삭제 실패', true);
+          setRunning(false);
+          return;
+        }
+
+        showResult(response.data.message || 'API 키를 삭제했습니다.', false);
+        if (response.data.state) renderState(response.data.state);
+        setRunning(false);
+      }
+
+      function formatNumber(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '';
+        return number.toLocaleString('ko-KR');
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      document.querySelectorAll('[data-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (running) return;
+          runAction(button.dataset.action);
+        });
+      });
+
+      el('saveKey').addEventListener('click', () => {
+        if (!running) saveKey();
+      });
+
+      el('clearKey').addEventListener('click', () => {
+        if (!running) clearKey();
+      });
+
+      loadState();
+    </script>
+  </body>
+</html>

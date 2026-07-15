@@ -183,6 +183,769 @@ function onOpen() {
     .addToUi();
 }
 
+function doGet() {
+  return HtmlService
+    .createHtmlOutputFromFile('WebApp')
+    .setTitle('생기부 자동화')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function webAppGetState() {
+  return webAppResponse_(function() {
+    return getWebAppState_();
+  });
+}
+
+function webAppSaveApiKey(provider, key) {
+  return webAppResponse_(function() {
+    const normalizedProvider = normalizeWebAppProvider_(provider);
+    const propertyName = getWebAppApiKeyProperty_(normalizedProvider);
+    const value = String(key || '').trim();
+
+    if (!value) {
+      throw new Error('저장할 API 키를 입력하세요.');
+    }
+
+    PropertiesService.getUserProperties().setProperty(propertyName, value);
+    log_('webAppSaveApiKey', 'OK', `${normalizedProvider} API 키 저장 완료`);
+
+    return {
+      message: `${getWebAppProviderLabel_(normalizedProvider)} API 키를 저장했습니다.`,
+      state: getWebAppState_(),
+    };
+  });
+}
+
+function webAppClearApiKey(provider) {
+  return webAppResponse_(function() {
+    const normalizedProvider = normalizeWebAppProvider_(provider);
+    const propertyName = getWebAppApiKeyProperty_(normalizedProvider);
+
+    PropertiesService.getUserProperties().deleteProperty(propertyName);
+    log_('webAppClearApiKey', 'OK', `${normalizedProvider} API 키 삭제 완료`);
+
+    return {
+      message: `${getWebAppProviderLabel_(normalizedProvider)} API 키를 삭제했습니다.`,
+      state: getWebAppState_(),
+    };
+  });
+}
+
+function webAppRunAction(action) {
+  return webAppResponse_(function() {
+    const name = String(action || '').trim();
+
+    if (name === 'importAssignments') return webAppImportAssignments_();
+    if (name === 'collectIncludedAssignments') return webAppCollectIncludedAssignments_();
+    if (name === 'startRecordDrafts') return startAutoRecordDraftTriggerCore_();
+    if (name === 'generateStudentFinalRecords') return webAppGenerateStudentFinalRecords_();
+    if (name === 'generateCommonPhrases') return webAppGenerateCommonPhrases_();
+    if (name === 'generateManualRecords') return startManualAddedRecordsCore_();
+    if (name === 'generateBehaviorRecommendations') return webAppGenerateBehaviorRecommendations_();
+    if (name === 'stopAutomation') return webAppStopAutomation_();
+
+    throw new Error(`알 수 없는 작업입니다: ${name}`);
+  });
+}
+
+function webAppResponse_(callback) {
+  try {
+    return {
+      ok: true,
+      data: callback(),
+    };
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    log_('webApp', 'ERROR', message);
+
+    return {
+      ok: false,
+      error: message,
+    };
+  }
+}
+
+function getWebAppState_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const config = safeWebAppValue_(function() {
+    return getConfigMap_();
+  }, {});
+  const ai = safeWebAppValue_(function() {
+    return getAiProviderAndModel_(config);
+  }, { provider: String(config.AI_PROVIDER || ''), model: '' });
+
+  return {
+    spreadsheetName: ss.getName(),
+    spreadsheetUrl: ss.getUrl(),
+    updatedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
+    config: {
+      aiProvider: ai.provider || '',
+      model: ai.model || '',
+      reasoning: normalizeReasoning_(config.REASONING || 'none'),
+      batchSize: Number(config.BATCH_SIZE || 0),
+      maxRunSeconds: Number(config.MAX_RUN_SECONDS || 0),
+    },
+    apiKeys: getWebAppApiKeyState_(),
+    counts: {
+      includedAssignments: safeWebAppCount_(countIncludedAssignments_),
+      pendingSubmissionCollections: safeWebAppCount_(countPendingSubmissionCollections_),
+      pendingRecordDrafts: safeWebAppCount_(countPendingRecordDrafts_),
+      pendingStudentFinalRecords: safeWebAppCount_(countPendingStudentFinalRecords_),
+      pendingCommonPhrases: safeWebAppCount_(countPendingCommonPhrases_),
+      pendingManualRows: safeWebAppCount_(countPendingManualAddedRows_),
+      pendingBehaviorRecommendations: safeWebAppCount_(countPendingBehaviorRecommendationRows_),
+    },
+    automation: getWebAppAutomationState_(),
+    recentLogs: getRecentLogsForWebApp_(8),
+  };
+}
+
+function getWebAppApiKeyState_() {
+  const props = PropertiesService.getUserProperties();
+
+  return {
+    claude: !!props.getProperty('CLAUDE_API_KEY'),
+    gpt: !!props.getProperty('OPENAI_API_KEY'),
+    gemini: !!props.getProperty('GEMINI_API_KEY'),
+  };
+}
+
+function getWebAppAutomationState_() {
+  const props = PropertiesService.getUserProperties();
+  const triggers = ScriptApp.getProjectTriggers();
+
+  return {
+    submissionCollection: {
+      status: props.getProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY) || 'OFF',
+      triggers: countWebAppTriggers_(triggers, 'autoProcessPendingSubmissionCollections'),
+      lastResult: getAutoSubmissionCollectionLastResult_(),
+    },
+    recordDraft: {
+      status: props.getProperty('AUTO_RECORD_DRAFT_TRIGGER') || 'OFF',
+      triggers: countWebAppTriggers_(triggers, 'autoProcessPendingRecordDrafts'),
+      lastResult: getAutoRecordDraftLastResult_(),
+    },
+    studentFinal: {
+      status: props.getProperty('AUTO_STUDENT_FINAL_TRIGGER') || 'OFF',
+      triggers: countWebAppTriggers_(triggers, 'autoProcessPendingStudentFinalRecords'),
+      lastResult: getAutoStudentFinalLastResult_(),
+    },
+    commonPhrase: {
+      status: props.getProperty('AUTO_COMMON_PHRASE_TRIGGER') || 'OFF',
+      triggers: countWebAppTriggers_(triggers, 'autoProcessPendingCommonPhrases'),
+      lastResult: getAutoCommonPhraseLastResult_(),
+    },
+    manual: {
+      status: props.getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF',
+      triggers: countWebAppTriggers_(triggers, 'autoProcessPendingManualAddedRecords'),
+    },
+    behaviorRecommendation: {
+      status: props.getProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY) || 'OFF',
+      triggers: countWebAppTriggers_(triggers, 'autoProcessPendingBehaviorRecommendations'),
+    },
+  };
+}
+
+function countWebAppTriggers_(triggers, handlerFunctionName) {
+  return triggers.filter(function(trigger) {
+    return trigger.getHandlerFunction() === handlerFunctionName;
+  }).length;
+}
+
+function getRecentLogsForWebApp_(limit) {
+  return getSheetObjects_(SHEET_NAMES.logs)
+    .slice(-Math.max(Number(limit || 0), 1))
+    .reverse()
+    .map(function(row) {
+      return {
+        timestamp: formatWebAppDate_(row.timestamp),
+        action: String(row.action || ''),
+        status: String(row.status || ''),
+        message: String(row.message || ''),
+      };
+    });
+}
+
+function formatWebAppDate_(value) {
+  if (!value) return '';
+
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'MM-dd HH:mm:ss');
+  }
+
+  return String(value);
+}
+
+function safeWebAppCount_(fn) {
+  return safeWebAppValue_(fn, 0);
+}
+
+function safeWebAppValue_(fn, fallback) {
+  try {
+    return fn();
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function normalizeWebAppProvider_(provider) {
+  const value = String(provider || '').trim().toLowerCase();
+
+  if (value === 'claude' || value === 'gpt' || value === 'gemini') return value;
+
+  throw new Error('provider는 claude, gpt, gemini 중 하나여야 합니다.');
+}
+
+function getWebAppApiKeyProperty_(provider) {
+  if (provider === 'claude') return 'CLAUDE_API_KEY';
+  if (provider === 'gpt') return 'OPENAI_API_KEY';
+  if (provider === 'gemini') return 'GEMINI_API_KEY';
+
+  throw new Error(`지원하지 않는 provider입니다: ${provider}`);
+}
+
+function getWebAppProviderLabel_(provider) {
+  if (provider === 'claude') return 'Claude';
+  if (provider === 'gpt') return 'GPT';
+  if (provider === 'gemini') return 'Gemini';
+
+  return provider;
+}
+
+function webAppActionResult_(title, message, result, extra) {
+  const payload = Object.assign({}, extra || {});
+  payload.title = title;
+  payload.message = message;
+  payload.result = result || null;
+  payload.state = getWebAppState_();
+  return payload;
+}
+
+function webAppImportAssignments_() {
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
+    'https://www.googleapis.com/auth/spreadsheets.currentonly',
+    'https://www.googleapis.com/auth/classroom.courses.readonly',
+    'https://www.googleapis.com/auth/classroom.coursework.students.readonly'
+  ]);
+
+  const result = importClassroomAssignmentsCore_();
+
+  return webAppActionResult_(
+    'Classroom 과제목록 가져오기',
+    `${result.assignmentCount}개 과제를 가져왔습니다.`,
+    result
+  );
+}
+
+function webAppCollectIncludedAssignments_() {
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
+    'https://www.googleapis.com/auth/script.scriptapp',
+    'https://www.googleapis.com/auth/spreadsheets.currentonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/classroom.courses.readonly',
+    'https://www.googleapis.com/auth/classroom.coursework.students.readonly',
+    'https://www.googleapis.com/auth/classroom.rosters.readonly',
+    'https://www.googleapis.com/auth/classroom.profile.emails'
+  ]);
+
+  const sh = ensureSheetHeaders_(SHEET_NAMES.assignments);
+  const h = headerMap_(sh);
+  const lastRow = sh.getLastRow();
+
+  if (!h.includeInFinal) {
+    throw new Error('includeInFinal 열을 찾을 수 없습니다. 먼저 시트 초기 설정을 실행하세요.');
+  }
+
+  if (lastRow < 2) {
+    throw new Error('과제목록에 과제가 없습니다.');
+  }
+
+  const includedCount = countIncludedAssignments_();
+
+  if (includedCount === 0) {
+    throw new Error('includeInFinal에 체크된 과제가 없습니다.');
+  }
+
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    throw new Error('이미 다른 자동 작업이 실행 중입니다. 현재 작업이 끝난 뒤 다시 시작해 주세요.');
+  }
+
+  try {
+    queueIncludedAssignmentsForSubmissionCollection_(sh, h, lastRow);
+    deleteAutoSubmissionCollectionTriggers_();
+    PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'ON');
+
+    const result = processPendingSubmissionCollectionsCore_();
+    saveAutoSubmissionCollectionLastResult_(result.blocked ? 'BLOCKED' : result.remaining === 0 ? 'DONE' : 'RUNNING', result);
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoSubmissionCollectionTriggers_();
+      return webAppActionResult_('제출물 수집 중단', buildSubmissionCollectionResultMessage_('제출물 수집을 중단했습니다.', result), result);
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoSubmissionCollectionTriggers_();
+      return webAppActionResult_('제출물 수집 완료', buildSubmissionCollectionResultMessage_('제출물 수집을 완료했습니다.', result), result);
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    scheduleNextAutoSubmissionCollectionTrigger_(nextDelayMs);
+
+    return webAppActionResult_(
+      '제출물 수집 시작',
+      buildSubmissionCollectionResultMessage_('제출물 첫 배치 수집 결과', result) +
+        `\n\n남은 과제는 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 수집합니다.`,
+      result,
+      { nextDelayMs }
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      submissionCount: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingSubmissionCollections_(),
+      blocked: true,
+      blockingReason: '제출물 수집 시작 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoSubmissionCollectionTriggers_();
+    saveAutoSubmissionCollectionLastResult_('BLOCKED', result);
+    log_('webAppCollectIncludedAssignments_', 'ERROR', message);
+    throw new Error(buildSubmissionCollectionResultMessage_('제출물 수집 중 오류가 발생했습니다.', result));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function startAutoRecordDraftTriggerCore_() {
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
+    'https://www.googleapis.com/auth/script.scriptapp',
+    'https://www.googleapis.com/auth/spreadsheets.currentonly',
+    'https://www.googleapis.com/auth/script.external_request',
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/classroom.courses.readonly',
+    'https://www.googleapis.com/auth/classroom.coursework.students.readonly',
+    'https://www.googleapis.com/auth/classroom.rosters.readonly',
+    'https://www.googleapis.com/auth/classroom.profile.emails'
+  ]);
+
+  requireCurrentAiApiKey_();
+
+  const pendingCount = countPendingRecordDrafts_();
+
+  if (pendingCount === 0) {
+    throw new Error('대기 또는 재시도필요 상태인 제출물이 없습니다.');
+  }
+
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    throw new Error('이미 다른 자동 생성 작업이 실행 중입니다. 현재 작업이 끝난 뒤 다시 시작해 주세요.');
+  }
+
+  try {
+    deleteAutoRecordDraftTriggers_();
+
+    const props = PropertiesService.getUserProperties();
+    props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'ON');
+
+    const result = processPendingRecordDraftsCore_(false);
+
+    if (result.blocked) {
+      props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
+      deleteAutoRecordDraftTriggers_();
+      saveAutoRecordDraftLastResult_('BLOCKED', result);
+      log_('startAutoRecordDraftTriggerCore_', 'BLOCKED', `${result.blockingReason}: ${result.blockingMessage}`);
+      return webAppActionResult_('생기부초안 생성 중단', buildRecordDraftResultMessage_('자동 생성을 중단했습니다.', result), result);
+    }
+
+    if (result.remaining === 0) {
+      props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
+      saveAutoRecordDraftLastResult_('DONE', result);
+      log_('startAutoRecordDraftTriggerCore_', 'DONE', `처리 ${result.processed}개, 실패 ${result.failed}개, 스킵 ${result.skipped}개`);
+      return webAppActionResult_('생기부초안 생성 완료', buildRecordDraftResultMessage_('자동 생성을 완료했습니다.', result), result);
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+
+    scheduleNextAutoRecordDraftTrigger_(nextDelayMs);
+    saveAutoRecordDraftLastResult_('RUNNING', result);
+    log_('startAutoRecordDraftTriggerCore_', 'OK', `처리 ${result.processed}개, 남은 대기열 ${result.remaining}개`);
+
+    return webAppActionResult_(
+      '생기부초안 생성 시작',
+      buildRecordDraftResultMessage_('자동 생성 첫 배치 결과', result) +
+        `\n\n남은 제출물은 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`,
+      result,
+      { nextDelayMs }
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingRecordDrafts_(),
+      blocked: true,
+      blockingReason: '자동 생성 시작 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
+    deleteAutoRecordDraftTriggers_();
+    saveAutoRecordDraftLastResult_('BLOCKED', result);
+    log_('startAutoRecordDraftTriggerCore_', 'ERROR', message);
+    throw new Error(buildRecordDraftResultMessage_('자동 생성 시작 중 오류가 발생했습니다.', result));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function webAppGenerateStudentFinalRecords_() {
+  requireCurrentAiApiKey_();
+
+  const checkedAssignments = getIncludedAssignmentKeySet_();
+
+  if (checkedAssignments.size === 0) {
+    throw new Error('생기부 반영 대상으로 체크된 과제가 없습니다.');
+  }
+
+  const groups = buildStudentFinalRecordGroups_(checkedAssignments);
+
+  if (groups.length === 0) {
+    throw new Error('학생별 최종 생기부를 생성할 생기부초안이 없습니다.');
+  }
+
+  const runId = makeStudentFinalRunId_();
+  const queuedCount = queueStudentFinalRecordGroups_(groups, runId);
+
+  log_('webAppGenerateStudentFinalRecords_', 'QUEUE', `${queuedCount}명 학생별 최종 생기부 대기열 생성`);
+  refreshDashboard();
+
+  const started = startAutoStudentFinalRecordTriggerCore_();
+  started.message = `${queuedCount}명 대기열을 만들었습니다.\n\n${started.message}`;
+  return started;
+}
+
+function startAutoStudentFinalRecordTriggerCore_() {
+  const pendingCount = countPendingStudentFinalRecords_();
+
+  if (pendingCount === 0) {
+    throw new Error('학생별 최종 생기부 대기열이 없습니다.');
+  }
+
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    throw new Error('이미 다른 자동 생성 작업이 실행 중입니다. 현재 작업이 끝난 뒤 다시 시작해 주세요.');
+  }
+
+  try {
+    deleteAutoStudentFinalRecordTriggers_();
+
+    const props = PropertiesService.getUserProperties();
+    props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'ON');
+
+    const result = processPendingStudentFinalRecordsCore_(false);
+
+    if (result.blocked) {
+      props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
+      deleteAutoStudentFinalRecordTriggers_();
+      saveAutoStudentFinalLastResult_('BLOCKED', result);
+      log_('startAutoStudentFinalRecordTriggerCore_', 'BLOCKED', `${result.blockingReason}: ${result.blockingMessage}`);
+      return webAppActionResult_('학생별 생기부 생성 중단', buildRecordDraftResultMessage_('학생별 최종 생기부 생성을 중단했습니다.', result, '명'), result);
+    }
+
+    if (result.remaining === 0) {
+      props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
+      saveAutoStudentFinalLastResult_('DONE', result);
+      log_('startAutoStudentFinalRecordTriggerCore_', 'DONE', `처리 ${result.processed}명, 실패 ${result.failed}명, 스킵 ${result.skipped}명`);
+      return webAppActionResult_('학생별 생기부 생성 완료', buildRecordDraftResultMessage_('학생별 최종 생기부 생성을 완료했습니다.', result, '명'), result);
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+
+    scheduleNextAutoStudentFinalRecordTrigger_(nextDelayMs);
+    saveAutoStudentFinalLastResult_('RUNNING', result);
+    log_('startAutoStudentFinalRecordTriggerCore_', 'OK', `처리 ${result.processed}명, 남은 대기 ${result.remaining}명`);
+
+    return webAppActionResult_(
+      '학생별 생기부 생성 시작',
+      buildRecordDraftResultMessage_('학생별 최종 생기부 첫 배치 결과', result, '명') +
+        `\n\n남은 학생은 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`,
+      result,
+      { nextDelayMs }
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingStudentFinalRecords_(),
+      blocked: true,
+      blockingReason: '학생별 최종 생성 시작 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
+    deleteAutoStudentFinalRecordTriggers_();
+    saveAutoStudentFinalLastResult_('BLOCKED', result);
+    log_('startAutoStudentFinalRecordTriggerCore_', 'ERROR', message);
+    throw new Error(buildRecordDraftResultMessage_('학생별 최종 생기부 생성 시작 중 오류가 발생했습니다.', result, '명'));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function webAppGenerateCommonPhrases_() {
+  const sh = getOrCreateSheet_(SHEET_NAMES.commonPhrases);
+
+  ensureCommonPhraseSheet_();
+  ensureCommonPhraseConfigDefaults_();
+  styleCommonPhraseSheet_();
+  requireCurrentAiApiKey_();
+
+  const prompt = String(sh.getRange('A2').getValue() || '').trim();
+  const sourceText = String(sh.getRange('B2').getValue() || '').trim();
+  const count = Number(sh.getRange('D2').getValue() || 0);
+
+  if (!prompt) throw new Error('공통문구생성 시트 A2에 프롬프트를 입력하세요.');
+  if (!sourceText) throw new Error('공통문구생성 시트 B2에 바탕이 되는 문구를 입력하세요.');
+  if (!Number.isInteger(count) || count < 1) throw new Error('공통문구생성 시트 D2에 생성할 개수를 1 이상의 정수로 입력하세요.');
+
+  clearCommonPhraseOutputs_(count);
+  saveCommonPhraseRun_({
+    runId: makeCommonPhraseRunId_(),
+    total: count,
+  });
+  PropertiesService.getUserProperties().setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'ON');
+
+  log_('webAppGenerateCommonPhrases_', 'QUEUE', `${count}개 공통문구 대기열 생성`);
+
+  const started = startAutoCommonPhraseTriggerCore_();
+  started.message = `${count}개 공통문구 대기열을 만들었습니다.\n\n${started.message}`;
+  return started;
+}
+
+function startAutoCommonPhraseTriggerCore_() {
+  const pendingCount = countPendingCommonPhrases_();
+
+  if (pendingCount === 0) {
+    throw new Error('공통문구 생성 대기열이 없습니다.');
+  }
+
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    throw new Error('이미 다른 자동 생성 작업이 실행 중입니다. 현재 작업이 끝난 뒤 다시 시작해 주세요.');
+  }
+
+  try {
+    deleteAutoCommonPhraseTriggers_();
+
+    const props = PropertiesService.getUserProperties();
+    props.setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'ON');
+
+    const result = processPendingCommonPhrasesCore_();
+
+    if (result.blocked) {
+      props.setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
+      deleteAutoCommonPhraseTriggers_();
+      saveAutoCommonPhraseLastResult_('BLOCKED', result);
+      return webAppActionResult_('공통문구 생성 중단', buildRecordDraftResultMessage_('공통문구 생성을 중단했습니다.', result), result);
+    }
+
+    if (result.remaining === 0) {
+      props.setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
+      deleteAutoCommonPhraseTriggers_();
+      saveAutoCommonPhraseLastResult_('DONE', result);
+      return webAppActionResult_('공통문구 생성 완료', buildRecordDraftResultMessage_('공통문구 생성을 완료했습니다.', result), result);
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+
+    scheduleNextAutoCommonPhraseTrigger_(nextDelayMs);
+    saveAutoCommonPhraseLastResult_('RUNNING', result);
+    log_('startAutoCommonPhraseTriggerCore_', 'OK', `처리 ${result.processed}개, 남은 대기 ${result.remaining}개`);
+
+    return webAppActionResult_(
+      '공통문구 생성 시작',
+      buildRecordDraftResultMessage_('공통문구 첫 배치 결과', result) +
+        `\n\n남은 문구는 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`,
+      result,
+      { nextDelayMs }
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingCommonPhrases_(),
+      blocked: true,
+      blockingReason: '공통문구 생성 시작 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
+    deleteAutoCommonPhraseTriggers_();
+    saveAutoCommonPhraseLastResult_('BLOCKED', result);
+    log_('startAutoCommonPhraseTriggerCore_', 'ERROR', message);
+    throw new Error(buildRecordDraftResultMessage_('공통문구 생성 시작 중 오류가 발생했습니다.', result));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function startManualAddedRecordsCore_() {
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(1000)) {
+    throw new Error('이미 다른 자동 생성 작업이 실행 중입니다. 현재 작업이 끝난 뒤 다시 시작해 주세요.');
+  }
+
+  try {
+    deleteAutoManualRecordTriggers_();
+    PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'ON');
+
+    const result = processManualAddedRecordsCore_();
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoManualRecordTriggers_();
+      return webAppActionResult_('수동추가 생성 중단', buildRecordDraftResultMessage_('수동추가 생기부 생성을 중단했습니다.', result, '행'), result);
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoManualRecordTriggers_();
+      return webAppActionResult_('수동추가 생성 완료', buildRecordDraftResultMessage_('수동추가 생기부 생성을 완료했습니다.', result, '행'), result);
+    }
+
+    const config = getConfigMap_();
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    scheduleNextAutoManualRecordTrigger_(nextDelayMs);
+
+    return webAppActionResult_(
+      '수동추가 생성 시작',
+      buildRecordDraftResultMessage_('수동추가 첫 배치 처리 결과', result, '행') +
+        `\n\n남은 행은 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`,
+      result,
+      { nextDelayMs }
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    const result = {
+      processed: 0,
+      failed: 1,
+      skipped: 0,
+      remaining: countPendingManualAddedRows_(),
+      blocked: true,
+      blockingReason: '수동추가 처리 오류',
+      blockingMessage: message,
+    };
+
+    PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoManualRecordTriggers_();
+    log_('startManualAddedRecordsCore_', 'ERROR', message);
+    throw new Error(buildRecordDraftResultMessage_('수동추가 생기부 생성 중 오류가 발생했습니다.', result, '행'));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function webAppGenerateBehaviorRecommendations_() {
+  const lock = LockService.getScriptLock();
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
+
+  if (!sh) {
+    throw new Error('행발문구추천 시트가 없습니다.');
+  }
+
+  ensureBehaviorRecommendationSheet_();
+  styleBehaviorRecommendationSheet_();
+  requireCurrentAiApiKey_();
+
+  const lastRow = sh.getLastRow();
+
+  if (lastRow < 2) {
+    throw new Error('행발문구추천 시트에 처리할 데이터 행이 없습니다.');
+  }
+
+  if (!lock.tryLock(1000)) {
+    throw new Error('이미 다른 자동 생성 작업이 실행 중입니다. 현재 작업이 끝난 뒤 다시 시작해 주세요.');
+  }
+
+  try {
+    deleteAutoBehaviorRecommendationTriggers_();
+
+    const h = headerMap_(sh);
+    const config = getConfigMap_();
+    const result = processBehaviorRecommendationRows_(sh, h, 2, Math.max(lastRow - 1, 0), config);
+    result.scopeLabel = '전체 데이터 행';
+
+    styleBehaviorRecommendationSheet_();
+    logBehaviorRecommendationResult_('webAppGenerateBehaviorRecommendations_', result);
+
+    if (result.blocked) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoBehaviorRecommendationTriggers_();
+      return webAppActionResult_('행발 추천 생성 중단', buildBehaviorRecommendationResultMessage_(result), result);
+    }
+
+    if (result.remaining === 0) {
+      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+      deleteAutoBehaviorRecommendationTriggers_();
+      return webAppActionResult_('행발 추천 생성 완료', buildBehaviorRecommendationResultMessage_(result), result);
+    }
+
+    const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'ON');
+    scheduleNextAutoBehaviorRecommendationTrigger_(nextDelayMs);
+
+    return webAppActionResult_(
+      '행발 추천 생성 시작',
+      buildBehaviorRecommendationResultMessage_(result) +
+        `\n\n남은 행은 ${Math.round(nextDelayMs / 1000)}초 뒤 자동으로 이어서 처리합니다.`,
+      result,
+      { nextDelayMs }
+    );
+  } catch (err) {
+    const message = String(err.message || err);
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+    deleteAutoBehaviorRecommendationTriggers_();
+    log_('webAppGenerateBehaviorRecommendations_', 'ERROR', message);
+    throw new Error(`행발 추천 문구 생성 중 오류가 발생했습니다.\n\n${message}`);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function webAppStopAutomation_() {
+  stopAutoRecordDraftTrigger(false);
+
+  return webAppActionResult_(
+    '자동 처리 중지',
+    '제출물 수집, 생기부초안, 학생별생기부, 공통문구, 수동추가, 행발 추천 자동 트리거를 중지했습니다.',
+    null
+  );
+}
+
 function saveOpenAiApiKey() {
   const ui = SpreadsheetApp.getUi();
   const res = ui.prompt(
@@ -1946,6 +2709,12 @@ function saveClaudeApiKey() {
 }
 
 function importClassroomAssignments() {
+  const result = importClassroomAssignmentsCore_();
+
+  SpreadsheetApp.getUi().alert(`${result.assignmentCount}개 과제를 가져왔습니다.`);
+}
+
+function importClassroomAssignmentsCore_() {
   const sh = ensureAssignmentsSheetForImport_();
 
   const existingOptions = getAssignmentOptionMap_();
@@ -1997,7 +2766,10 @@ function importClassroomAssignments() {
   styleAssignmentsSheet_();
 
   log_('importClassroomAssignments', 'OK', `${rows.length}개 과제 가져옴`);
-  SpreadsheetApp.getUi().alert(`${rows.length}개 과제를 가져왔습니다.`);
+
+  return {
+    assignmentCount: rows.length,
+  };
 }
 
 function ensureAssignmentsSheetForImport_() {
