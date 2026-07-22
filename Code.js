@@ -2646,7 +2646,7 @@ function setupSheets() {
     ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
     ['CLAUDE_MODEL', 'claude-sonnet-4-6', 'claude-sonnet-4-6 / claude-haiku-4-5\nclaude-sonnet-4-6 - 상대적으로 비쌈. 조금 느리지만 똑똑한 편\nclaude-haiku-4-5 - 값이 쌈. 대답이 빠르나 성능이 조금 떨어짐.'],
     ['GPT_MODEL', 'gpt-5.1', 'gpt-5.4 / gpt-5.1 / gpt-5.4-mini\ngpt-5.4 / sonnet과 비슷\ngpt-5.1 / 충분히 무난하게 쓸 수 있음\ngpt-5.4-mini / haiku와 비슷'],
-    ['GEMINI_MODEL', 'gemini-3.1-flash-lite', 'gemini-3.5-flash / 하루에 20번정도 호출 가능할듯\ngemini-3.1-flash-lite / 무료로 쓰시려면 이 모델 사용, 할당량 채우면 오류남, 매일 갱신됨'],
+    ['GEMINI_MODEL', 'gemini-3.1-flash-lite', 'gemini-3.5-flash / 성능이 더 필요한 경우 사용\ngemini-3.5-flash-lite / 3.5 계열의 빠르고 저렴한 모델\ngemini-3.1-flash-lite / 무료로 쓰시려면 이 모델 사용, 할당량 채우면 오류남, 매일 갱신됨'],
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
     ['MAX_RECORD_CHARS', '500', '생기부 초안 최대 글자수'],
     ['MAX_INPUT_CHARS', '30000', 'Claude에 보낼 과제 원문 최대 글자수'],
@@ -3821,7 +3821,7 @@ function applyConfigValidations_(config) {
     AI_PROVIDER: ['claude', 'gpt', 'gemini'],
     CLAUDE_MODEL: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
     GPT_MODEL: ['gpt-5.4', 'gpt-5.1', 'gpt-5.4-mini'],
-    GEMINI_MODEL: ['gemini-3.1-flash-lite', 'gemini-3.5-flash'],
+    GEMINI_MODEL: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.5-flash'],
     REASONING: ['none', 'low', 'medium'],
   };
 
