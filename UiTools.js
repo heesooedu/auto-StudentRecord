@@ -1,7 +1,7 @@
 // 생기부 도우미의 '도구' 화면(공통문구 · 행발 추천 · 수동추가)용 서버 함수
 // 생성 로직은 Code.js의 기존 함수를 그대로 쓰고, 여기서는 화면 입출력만 다룬다.
 
-const MANUAL_DEFAULT_HEADERS = ['번호', '이름', '활동 내용', '생기부', '바이트'];
+const MANUAL_IMPORT_ROW_LIMIT = 2000;
 const MANUAL_ROW_LIMIT = 500;
 
 // --- 공통문구 -------------------------------------------------------------
@@ -317,23 +317,56 @@ function manualRowStatus_(input, output, note) {
   return '대기';
 }
 
-function uiCreateManualSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss.getSheetByName(MANUAL_SHEET_NAME)) throw new Error(`'${MANUAL_SHEET_NAME}' 시트가 이미 있습니다.`);
+// 화면에서 읽은 CSV로 '수동추가' 시트를 새로 만든다. 맨 오른쪽에 생기부·바이트 열을 붙인다.
+// 이미 있는 시트는 지우지 않고 이름을 바꿔 백업해 둔다.
+function uiImportManualCsv(data) {
+  const headers = ((data && data.headers) || []).map(h => String(h || '').trim());
+  const rows = ((data && data.rows) || []).map(r => headers.map((_, i) => String((r || [])[i] == null ? '' : r[i])));
+  const inputCols = ((data && data.inputCols) || []).map(Number).filter(n => n >= 1 && n <= headers.length);
 
-  const sh = ss.insertSheet(MANUAL_SHEET_NAME);
-  sh.getRange(1, 1, 1, MANUAL_DEFAULT_HEADERS.length)
-    .setValues([MANUAL_DEFAULT_HEADERS])
-    .setFontWeight('bold')
-    .setBackground('#eaf4ff');
-  sh.setFrozenRows(1);
-  sh.setColumnWidth(3, 420);
-  sh.setColumnWidth(4, 420);
+  if (headers.length === 0 || headers.every(h => !h)) throw new Error('CSV 첫 줄에 열 이름이 없습니다.');
+  if (rows.length === 0) throw new Error('CSV에 데이터 행이 없습니다.');
+  if (rows.length > MANUAL_IMPORT_ROW_LIMIT) throw new Error(`한 번에 ${MANUAL_IMPORT_ROW_LIMIT}행까지 올릴 수 있습니다.`);
+  if (inputCols.length === 0) throw new Error('AI에게 보낼 열을 하나 이상 고르세요.');
 
-  writeConfigValues_({ MANUAL_START_ROW: '2', MANUAL_INPUT_COLS: 'C', MANUAL_OUTPUT_COL: 'D' });
-  log_('uiCreateManualSheet', 'OK', '수동추가 시트를 기본 열 구성으로 만듦');
+  const outputCol = headers.length + 1;
+  const backupName = withDocumentLock_(() => {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const old = ss.getSheetByName(MANUAL_SHEET_NAME);
+    let backup = '';
+    if (old) {
+      backup = `${MANUAL_SHEET_NAME}_백업_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMdd_HHmmss')}`;
+      old.setName(backup);
+    }
 
-  return uiGetManual();
+    const sh = ss.insertSheet(MANUAL_SHEET_NAME, old ? old.getIndex() - 1 : ss.getNumSheets());
+    const width = headers.length + 2;
+    if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
+    if (sh.getMaxRows() < rows.length + 1) sh.insertRowsAfter(sh.getMaxRows(), rows.length + 1 - sh.getMaxRows());
+
+    // 학번 앞자리 0 등이 사라지지 않게 원본 열은 텍스트로 둔다.
+    sh.getRange(1, 1, rows.length + 1, headers.length).setNumberFormat('@');
+    sh.getRange(1, 1, 1, width)
+      .setValues([headers.concat(['생기부', '바이트'])])
+      .setFontWeight('bold')
+      .setBackground('#eaf4ff');
+    sh.getRange(1, outputCol, 1, 2).setBackground('#fff2cc');
+    sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    sh.setFrozenRows(1);
+    inputCols.forEach(col => sh.setColumnWidth(col, 360));
+    sh.setColumnWidth(outputCol, 420);
+    sh.getRange(2, 1, rows.length, width).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP).setVerticalAlignment('top');
+    return backup;
+  });
+
+  writeConfigValues_({
+    MANUAL_START_ROW: '2',
+    MANUAL_INPUT_COLS: inputCols.map(colToA1_).join(','),
+    MANUAL_OUTPUT_COL: colToA1_(outputCol),
+  });
+
+  log_('uiImportManualCsv', 'OK', `CSV ${rows.length}행으로 수동추가 시트 생성 (입력 ${inputCols.map(colToA1_).join(',')}, 출력 ${colToA1_(outputCol)})${backupName ? `, 기존 시트는 ${backupName}` : ''}`);
+  return Object.assign(uiGetManual(), { imported: rows.length, backupName });
 }
 
 function uiSaveManualSetup(setup) {

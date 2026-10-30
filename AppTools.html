@@ -228,7 +228,7 @@
     const cols = d.headers.filter(c => c.name && c.col !== d.outputCol && c.col !== d.outputCol + 1);
     return `
       <details class="card">
-        <summary><b>한 줄 직접 추가</b> <span class="muted small">여러 명은 시트에 붙여넣는 게 더 빨라요.</span></summary>
+        <summary><b>한 줄 직접 추가</b> <span class="muted small">빠진 학생을 한 명씩 더할 때 써요.</span></summary>
         ${cols.map(c => `
           <label class="field"><span>${esc(c.name)}</span>
             ${d.inputCols.includes(c.col)
@@ -236,6 +236,92 @@
               : `<input type="text" class="manual-new" data-col="${c.col}">`}</label>`).join('')}
         <div class="row" style="justify-content:flex-end"><button class="btn primary" data-action="add-manual-row">추가</button></div>
       </details>`;
+  }
+
+  // ---- CSV 올리기 -----------------------------------------------------------
+  const PERSONAL_COL = /번호|이름|성명|학번|이메일|e-?mail|성별|^반$|학년/i;
+
+  function manualUploadCard(d) {
+    const c = S.csv;
+    if (!c) {
+      return `
+        <h2>CSV 파일 올리기</h2>
+        <p class="muted" style="margin:0 0 12px">첫 줄이 열 이름인 CSV 파일을 고르면, 그 내용으로 '수동추가' 시트를 만들어요.
+          엑셀에서 '다른 이름으로 저장 → CSV'로 만든 파일도 괜찮아요.</p>
+        <input type="file" id="manual-csv" accept=".csv,.tsv,.txt,text/csv" ${S.busy ? 'disabled' : ''}>`;
+    }
+
+    const preview = c.rows.slice(0, 3);
+    const cut = v => { v = String(v || ''); return v.length > 40 ? v.slice(0, 40) + '…' : v; };
+    return `
+      <div class="row between"><h2 style="margin:0">${esc(c.fileName)}</h2><span class="muted">${c.rows.length}행 · ${c.headers.length}열</span></div>
+      <div class="field" style="margin-top:14px"><span>AI에게 보낼 열 (여러 개 가능)</span>
+        <div class="chips">${c.headers.map((h, i) => `
+          <label class="chip ${c.inputCols.includes(i + 1) ? 'on' : ''}"><input type="checkbox" class="csv-input-col" value="${i + 1}" ${c.inputCols.includes(i + 1) ? 'checked' : ''}> ${esc(h || `${columnLetter(i + 1)}열`)}</label>`).join('')}</div>
+        <div class="help">활동 내용이 담긴 열을 고르세요. 이름·학번·이메일처럼 개인정보가 담긴 열은 고르지 마세요.</div></div>
+      <div class="table-wrap" style="max-height:200px;margin-bottom:12px"><table>
+        <tr>${c.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr>
+        ${preview.map(r => `<tr>${c.headers.map((_, i) => `<td class="small">${esc(cut(r[i]))}</td>`).join('')}</tr>`).join('')}
+      </table></div>
+      ${d.exists ? `<div class="help" style="margin-bottom:10px">지금 있는 '수동추가' 시트는 지우지 않고 '수동추가_백업_날짜' 이름으로 남겨 둬요.</div>` : ''}
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" data-action="cancel-csv">다른 파일 고르기</button>
+        <button class="btn primary" data-action="import-manual-csv" ${S.busy ? 'disabled' : ''}>이 내용으로 시트 만들기</button>
+      </div>`;
+  }
+
+  // 엑셀에서 저장한 CSV는 EUC-KR(CP949)인 경우가 많아서, UTF-8로 안 읽히면 EUC-KR로 다시 읽는다.
+  async function readCsvFile(file) {
+    const buf = await file.arrayBuffer();
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    } catch (err) {
+      text = new TextDecoder('euc-kr').decode(buf);
+    }
+    return parseCsv(text.replace(/^\uFEFF/, ''));
+  }
+
+  function parseCsv(text) {
+    const firstLine = text.split(/\r?\n/, 1)[0] || '';
+    const delim = (firstLine.match(/\t/g) || []).length > (firstLine.match(/,/g) || []).length ? '\t' : ',';
+    const rows = [];
+    let row = [], field = '', quoted = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+        else if (ch === '"') quoted = false;
+        else field += ch;
+      } else if (ch === '"' && field === '') {
+        quoted = true;
+      } else if (ch === delim) {
+        row.push(field); field = '';
+      } else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        row.push(field); rows.push(row); row = []; field = '';
+      } else {
+        field += ch;
+      }
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+
+    const data = rows.filter(r => r.some(v => String(v).trim() !== ''));
+    if (data.length < 2) throw new Error('CSV에 열 이름 줄과 데이터가 있어야 해요.');
+    const width = Math.max.apply(null, data.map(r => r.length));
+    const headers = Array.from({ length: width }, (_, i) => String(data[0][i] || '').trim());
+    return { headers, rows: data.slice(1).map(r => headers.map((_, i) => String(r[i] == null ? '' : r[i]).trim())) };
+  }
+
+  // 개인정보로 보이지 않는 열 중 글이 긴 열을 AI에게 보낼 열로 미리 골라 둔다.
+  function guessInputCols(headers, rows) {
+    const avg = headers.map((_, i) => rows.reduce((sum, r) => sum + String(r[i] || '').length, 0) / Math.max(rows.length, 1));
+    const candidates = headers.map((h, i) => i).filter(i => !PERSONAL_COL.test(headers[i]));
+    const long = candidates.filter(i => avg[i] >= 15);
+    if (long.length) return long.map(i => i + 1);
+    const best = candidates.sort((a, b) => avg[b] - avg[a])[0];
+    return best === undefined ? [] : [best + 1];
   }
 
   function manualStatusPill(status) {
@@ -252,12 +338,7 @@
         <h1>수동추가</h1>
         <p class="lead">Classroom에 없는 활동(동아리, 대회, 프로젝트 등)의 내용을 직접 넣어 생기부를 만들어요.</p>
         ${busyNote()}
-        <div class="card hero">
-          <h2>'수동추가' 시트를 만들까요?</h2>
-          <p class="lead">번호 · 이름 · 활동 내용 · 생기부 · 바이트 열이 있는 시트를 만들어요.<br>
-            활동 내용(C열)을 AI에게 보내고, 결과는 생기부(D열)에 적어요. 열 구성은 나중에 바꿀 수 있어요.</p>
-          <button class="btn primary lg" data-action="create-manual-sheet" ${S.busy ? 'disabled' : ''}>수동추가 시트 만들기</button>
-        </div>`;
+        <div class="card hero">${manualUploadCard(d)}</div>`;
     }
 
     const pending = d.rows.filter(r => r.status === '대기').length;
@@ -266,8 +347,12 @@
 
     return `
       <h1>수동추가</h1>
-      <p class="lead">'수동추가' 시트의 각 행 내용을 AI에게 보내 생기부를 만들어요. 시트에 여러 줄을 한 번에 붙여넣어도 돼요.</p>
+      <p class="lead">올린 CSV의 각 행 내용을 AI에게 보내 생기부를 만들어요.</p>
       ${busyNote()}
+      <details class="card" ${S.csv ? 'open' : ''}>
+        <summary><b>새 CSV 올리기</b> <span class="muted small">다른 파일로 '수동추가' 시트를 다시 만들어요.</span></summary>
+        ${manualUploadCard(d)}
+      </details>
       ${manualSetupCard(d, !d.configured)}
       ${d.configured ? `
         ${manualAddCard(d)}
@@ -281,7 +366,7 @@
           <button class="btn" data-action="reload-manual">새로고침</button>
         </div>
         ${d.truncated ? '<div class="help">행이 많아 앞쪽 500행만 보여줘요.</div>' : ''}
-        ${rows.length === 0 ? '<div class="card empty">아직 데이터가 없어요. 시트에 붙여넣거나 [한 줄 직접 추가]를 써 주세요.</div>' : rows.map(r => `
+        ${rows.length === 0 ? '<div class="card empty">아직 데이터가 없어요. CSV를 올리거나 [한 줄 직접 추가]를 써 주세요.</div>' : rows.map(r => `
           <div class="record">
             <div class="row between">
               <div><b>${esc(r.label || `${r.row}행`)}</b> <span class="muted small">${r.row}행</span></div>
@@ -423,10 +508,19 @@
       await withBusy('불러오는 중…', async () => { S.behavior = await call('uiListBehaviorRows'); S.bDraft = null; });
     },
 
-    async 'create-manual-sheet'() {
+    'cancel-csv'() {
+      S.csv = null;
+      render();
+    },
+    async 'import-manual-csv'() {
+      const c = S.csv;
+      if (!c.inputCols.length) return banner('AI에게 보낼 열을 하나 이상 고르세요.', 'err');
+      if (S.manual.exists && !await confirmModal('시트 다시 만들기', `'수동추가' 시트를 ${c.fileName} 내용으로 새로 만들까요?\n지금 시트는 백업 이름으로 바뀌어 남아 있어요.`, '새로 만들기')) return;
       await withBusy('시트를 만드는 중…', async () => {
-        S.manual = await call('uiCreateManualSheet');
-        banner("'수동추가' 시트를 만들었어요. 시트에 내용을 붙여넣거나 아래에서 한 줄씩 추가하세요.", 'ok');
+        const result = await call('uiImportManualCsv', { headers: c.headers, rows: c.rows, inputCols: c.inputCols });
+        S.csv = null;
+        S.manual = result;
+        banner(`${result.imported}행으로 '수동추가' 시트를 만들었어요.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} [생기부 만들기]를 누르세요.`, 'ok');
       });
     },
     async 'save-manual-setup'() {
@@ -530,6 +624,19 @@
   function handleToolChange(el) {
     if (el.classList.contains('manual-input-col')) {
       el.closest('.chip').classList.toggle('on', el.checked);
+    }
+    if (el.classList.contains('csv-input-col')) {
+      el.closest('.chip').classList.toggle('on', el.checked);
+      S.csv.inputCols = Array.from(document.querySelectorAll('.csv-input-col:checked')).map(x => Number(x.value));
+    }
+    if (el.id === 'manual-csv' && el.files && el.files[0]) {
+      const file = el.files[0];
+      readCsvFile(file)
+        .then(data => {
+          S.csv = { fileName: file.name, headers: data.headers, rows: data.rows, inputCols: guessInputCols(data.headers, data.rows) };
+          render();
+        })
+        .catch(err => { el.value = ''; banner(`CSV를 읽지 못했어요: ${err.message || err}`, 'err'); });
     }
   }
 
