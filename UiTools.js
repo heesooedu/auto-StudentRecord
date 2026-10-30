@@ -74,6 +74,35 @@ function uiUpdateCommonPhrase(row, expected, text) {
   });
 }
 
+// 문구 하나를 지우고 아래 문구를 한 칸씩 올린다. 바이트 수식도 함께 올라간다.
+function uiDeleteCommonPhrase(row, expected) {
+  withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.commonPhrases);
+    row = Number(row);
+    if (row < 3 || row > sh.getLastRow()) throw new Error('지울 문구를 찾을 수 없습니다. 새로고침해 주세요.');
+    if (String(sh.getRange(row, 2).getValue() || '').trim() !== String(expected || '').trim()) {
+      throw new Error('시트 내용이 바뀌어 지우지 못했습니다. 새로고침한 뒤 다시 시도해 주세요.');
+    }
+    sh.getRange(row, 2, 1, 2).deleteCells(SpreadsheetApp.Dimension.ROWS);
+  });
+
+  return uiGetCommonPhrases();
+}
+
+function uiClearCommonPhrases() {
+  withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.commonPhrases);
+    const rows = sh.getLastRow() - 2;
+    if (rows > 0) {
+      const range = sh.getRange(3, 2, rows, 2);
+      range.clearContent();
+      range.clearNote();
+    }
+  });
+
+  return uiGetCommonPhrases();
+}
+
 // --- 행발 추천 ------------------------------------------------------------
 
 const BEHAVIOR_INPUT_FIELDS = ['studentName', 'selectedTraits', 'customTraits', 'positiveObservation', 'improvementNeeded', 'growthEvidence'];
@@ -206,6 +235,31 @@ function uiDeleteBehaviorRow(row, expectedName) {
     const sh = getSheet_(SHEET_NAMES.behaviorRecommendations);
     assertBehaviorRow_(sh, row, expectedName);
     sh.deleteRow(row);
+  });
+
+  return uiListBehaviorRows();
+}
+
+// 입력한 특성·관찰 내용은 두고 추천 문구만 모두 지운다.
+function uiClearBehaviorResults() {
+  withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.behaviorRecommendations);
+    const h = headerMap_(sh);
+    const rows = sh.getLastRow() - 1;
+    if (rows < 1 || !h.recommendedRecord) return;
+
+    const range = sh.getRange(2, h.recommendedRecord, rows, 3);
+    range.clearContent();
+    range.clearNote();
+  });
+
+  return uiListBehaviorRows();
+}
+
+function uiDeleteAllBehaviorRows() {
+  withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.behaviorRecommendations);
+    deleteRowsFrom_(sh, 2);
   });
 
   return uiListBehaviorRows();
@@ -446,6 +500,36 @@ function uiResetManualOutput(row, expectedInput) {
   });
 }
 
+function uiDeleteManualRow(row, expectedInput) {
+  withDocumentLock_(() => {
+    const ctx = assertManualRow_(row, expectedInput);
+    if (ctx.sh.getMaxRows() - ctx.sh.getFrozenRows() > 1) {
+      ctx.sh.deleteRow(Number(row));
+    } else {
+      ctx.sh.getRange(Number(row), 1, 1, ctx.sh.getMaxColumns()).clearContent().clearNote();
+    }
+  });
+
+  return uiGetManual();
+}
+
+// 원본 데이터는 두고 생기부 열과 바이트 열, 메모만 모두 지운다.
+function uiClearManualOutputs() {
+  withDocumentLock_(() => {
+    const sh = getSheet_(MANUAL_SHEET_NAME);
+    const config = getManualRecordConfig_(getConfigMap_());
+    const rows = sh.getLastRow() - config.startRow + 1;
+    if (rows < 1) return;
+
+    const output = sh.getRange(config.startRow, config.outputCol, rows, 1);
+    output.clearContent();
+    output.clearNote();
+    sh.getRange(config.startRow, config.byteCol, rows, 1).clearContent();
+  });
+
+  return uiGetManual();
+}
+
 function uiStartManual() {
   const result = runWithCollectedUi_(() => generateManualAddedRecords());
   return Object.assign(result, { status: uiGetStatus(), data: uiGetManual() });
@@ -471,6 +555,20 @@ function assertManualRow_(row, expectedInput) {
 }
 
 // --- 공용 -----------------------------------------------------------------
+
+// 시트에는 고정되지 않은 행이 하나는 남아 있어야 해서, 모두 지울 때는 마지막 한 행을 비워 둔다.
+function deleteRowsFrom_(sh, startRow) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < startRow) return;
+
+  const count = lastRow - startRow + 1;
+  if (sh.getMaxRows() - sh.getFrozenRows() > count) {
+    sh.deleteRows(startRow, count);
+  } else {
+    if (count > 1) sh.deleteRows(startRow + 1, count - 1);
+    sh.getRange(startRow, 1, 1, sh.getMaxColumns()).clearContent().clearNote();
+  }
+}
 
 function withDocumentLock_(fn) {
   const lock = LockService.getDocumentLock();
