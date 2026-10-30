@@ -245,16 +245,19 @@
     const c = S.csv;
     if (!c) {
       return `
-        <h2>CSV 파일 올리기</h2>
-        <p class="muted" style="margin:0 0 12px">첫 줄이 열 이름인 CSV 파일을 고르면, 그 내용으로 '수동추가' 시트를 만들어요.
-          엑셀에서 '다른 이름으로 저장 → CSV'로 만든 파일도 괜찮아요.</p>
-        <input type="file" id="manual-csv" accept=".csv,.tsv,.txt,text/csv" ${S.busy ? 'disabled' : ''}>`;
+        <h2>파일 올리기</h2>
+        <p class="muted" style="margin:0 0 12px">첫 줄이 열 이름인 엑셀(.xlsx, .xls) 또는 CSV 파일을 고르면, 그 내용으로 '수동추가' 시트를 만들어요.</p>
+        <input type="file" id="manual-csv" accept="${UPLOAD_ACCEPT}" ${S.busy ? 'disabled' : ''}>
+        ${S.csvLoading ? '<div class="help"><span class="spinner"></span> 파일을 읽는 중…</div>' : ''}`;
     }
 
     const preview = c.rows.slice(0, 3);
     const cut = v => { v = String(v || ''); return v.length > 40 ? v.slice(0, 40) + '…' : v; };
     return `
       <div class="row between"><h2 style="margin:0">${esc(c.fileName)}</h2><span class="muted">${c.rows.length}행 · ${c.headers.length}열</span></div>
+      ${c.sheets && c.sheets.length > 1 ? `
+        <label class="field" style="margin:12px 0 0"><span>사용할 시트</span>
+          <select id="csv-sheet">${c.sheets.map(name => `<option ${name === c.sheetName ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select></label>` : ''}
       <div class="field" style="margin-top:14px"><span>AI에게 보낼 열 (여러 개 가능)</span>
         <div class="chips">${c.headers.map((h, i) => `
           <label class="chip ${c.inputCols.includes(i + 1) ? 'on' : ''}"><input type="checkbox" class="csv-input-col" value="${i + 1}" ${c.inputCols.includes(i + 1) ? 'checked' : ''}> ${esc(h || `${columnLetter(i + 1)}열`)}</label>`).join('')}</div>
@@ -270,9 +273,45 @@
       </div>`;
   }
 
-  // 엑셀에서 저장한 CSV는 EUC-KR(CP949)인 경우가 많아서, UTF-8로 안 읽히면 EUC-KR로 다시 읽는다.
-  async function readCsvFile(file) {
+  const UPLOAD_ACCEPT = '.xlsx,.xls,.csv,.tsv,.txt';
+  const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+
+  // 엑셀 파일을 읽는 라이브러리는 엑셀을 고를 때만 불러온다.
+  function loadSheetJs() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = SHEETJS_URL;
+      script.onload = () => resolve(window.XLSX);
+      script.onerror = () => reject(new Error('엑셀 읽기 도구를 불러오지 못했어요. 인터넷 연결을 확인하거나 CSV로 저장해 올려 주세요.'));
+      document.head.appendChild(script);
+    });
+  }
+
+  async function readUploadFile(file) {
+    const ext = (file.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
     const buf = await file.arrayBuffer();
+    if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm') {
+      const XLSX = await loadSheetJs();
+      const book = XLSX.read(buf, { type: 'array' });
+      const sheets = book.SheetNames.filter(name => {
+        const ws = book.Sheets[name];
+        return ws && ws['!ref'];
+      });
+      if (!sheets.length) throw new Error('엑셀 파일에 내용이 있는 시트가 없어요.');
+      return { book, sheets, sheetName: sheets[0], table: sheetToTable(XLSX, book, sheets[0]) };
+    }
+    if (['csv', 'tsv', 'txt'].includes(ext)) return { table: readCsvBuffer(buf) };
+    throw new Error('엑셀(.xlsx, .xls) 또는 CSV 파일만 올릴 수 있어요.');
+  }
+
+  function sheetToTable(XLSX, book, name) {
+    const rows = XLSX.utils.sheet_to_json(book.Sheets[name], { header: 1, raw: false, defval: '' });
+    return tableFromRows(rows);
+  }
+
+  // 엑셀에서 저장한 CSV는 EUC-KR(CP949)인 경우가 많아서, UTF-8로 안 읽히면 EUC-KR로 다시 읽는다.
+  function readCsvBuffer(buf) {
     let text;
     try {
       text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
@@ -306,9 +345,12 @@
       }
     }
     if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return tableFromRows(rows);
+  }
 
+  function tableFromRows(rows) {
     const data = rows.filter(r => r.some(v => String(v).trim() !== ''));
-    if (data.length < 2) throw new Error('CSV에 열 이름 줄과 데이터가 있어야 해요.');
+    if (data.length < 2) throw new Error('첫 줄에 열 이름, 그 아래에 데이터가 있어야 해요.');
     const width = Math.max.apply(null, data.map(r => r.length));
     const headers = Array.from({ length: width }, (_, i) => String(data[0][i] || '').trim());
     return { headers, rows: data.slice(1).map(r => headers.map((_, i) => String(r[i] == null ? '' : r[i]).trim())) };
@@ -322,6 +364,10 @@
     if (long.length) return long.map(i => i + 1);
     const best = candidates.sort((a, b) => avg[b] - avg[a])[0];
     return best === undefined ? [] : [best + 1];
+  }
+
+  function csvTable(table) {
+    return { headers: table.headers, rows: table.rows, inputCols: guessInputCols(table.headers, table.rows) };
   }
 
   function manualStatusPill(status) {
@@ -347,10 +393,10 @@
 
     return `
       <h1>수동추가</h1>
-      <p class="lead">올린 CSV의 각 행 내용을 AI에게 보내 생기부를 만들어요.</p>
+      <p class="lead">올린 파일의 각 행 내용을 AI에게 보내 생기부를 만들어요.</p>
       ${busyNote()}
       <details class="card" ${S.csv ? 'open' : ''}>
-        <summary><b>새 CSV 올리기</b> <span class="muted small">다른 파일로 '수동추가' 시트를 다시 만들어요.</span></summary>
+        <summary><b>새 파일 올리기</b> <span class="muted small">다른 엑셀·CSV 파일로 '수동추가' 시트를 다시 만들어요.</span></summary>
         ${manualUploadCard(d)}
       </details>
       ${manualSetupCard(d, !d.configured)}
@@ -366,7 +412,7 @@
           <button class="btn" data-action="reload-manual">새로고침</button>
         </div>
         ${d.truncated ? '<div class="help">행이 많아 앞쪽 500행만 보여줘요.</div>' : ''}
-        ${rows.length === 0 ? '<div class="card empty">아직 데이터가 없어요. CSV를 올리거나 [한 줄 직접 추가]를 써 주세요.</div>' : rows.map(r => `
+        ${rows.length === 0 ? '<div class="card empty">아직 데이터가 없어요. 파일을 올리거나 [한 줄 직접 추가]를 써 주세요.</div>' : rows.map(r => `
           <div class="record">
             <div class="row between">
               <div><b>${esc(r.label || `${r.row}행`)}</b> <span class="muted small">${r.row}행</span></div>
@@ -631,12 +677,22 @@
     }
     if (el.id === 'manual-csv' && el.files && el.files[0]) {
       const file = el.files[0];
-      readCsvFile(file)
-        .then(data => {
-          S.csv = { fileName: file.name, headers: data.headers, rows: data.rows, inputCols: guessInputCols(data.headers, data.rows) };
-          render();
+      S.csvLoading = true;
+      render();
+      readUploadFile(file)
+        .then(result => {
+          S.csv = Object.assign({ fileName: file.name, book: result.book, sheets: result.sheets, sheetName: result.sheetName }, csvTable(result.table));
         })
-        .catch(err => { el.value = ''; banner(`CSV를 읽지 못했어요: ${err.message || err}`, 'err'); });
+        .catch(err => banner(`파일을 읽지 못했어요: ${err.message || err}`, 'err'))
+        .finally(() => { S.csvLoading = false; render(); });
+    }
+    if (el.id === 'csv-sheet') {
+      try {
+        Object.assign(S.csv, { sheetName: el.value }, csvTable(sheetToTable(window.XLSX, S.csv.book, el.value)));
+      } catch (err) {
+        banner(`이 시트를 읽지 못했어요: ${err.message || err}`, 'err');
+      }
+      render();
     }
   }
 
