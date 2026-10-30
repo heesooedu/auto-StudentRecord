@@ -690,6 +690,82 @@ function finalRecordRowKey_(r) {
   return String(r.finalQueueKey || `${r.studentNo}|${r.studentName}`);
 }
 
+// 화면에서 고른 초안(kind='review') 또는 최종 생기부(kind='final') 행을 지운다.
+// items: [{row, key}] — 행 번호가 바뀌었을 수 있으므로 같은 행의 키가 일치할 때만 지운다.
+function uiDeleteRecords(kind, items) {
+  const isDraft = kind === 'review';
+  const sheetName = isDraft ? SHEET_NAMES.records : SHEET_NAMES.studentFinalRecords;
+  const keyOf = isDraft ? r => String(r.submissionKey) : finalRecordRowKey_;
+  const targets = (items || []).map(it => ({ row: Number(it.row), key: String(it.key) }));
+  if (targets.length === 0) throw new Error('지울 항목을 선택하세요.');
+
+  const deleted = withDocumentLock_(() => {
+    const sh = getSheet_(sheetName);
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    const all = sh.getRange(1, 1, lastRow, lastCol).getValues();
+    const headers = all[0].map(v => String(v || '').trim());
+
+    const rows = targets.filter(t => {
+      if (t.row < 2 || t.row > lastRow) return false;
+      const values = all[t.row - 1];
+      const current = {};
+      headers.forEach((header, i) => {
+        if (header) current[header] = values[i];
+      });
+      return keyOf(current) === t.key;
+    }).map(t => t.row);
+
+    if (rows.length < targets.length) {
+      throw new Error('시트 내용이 바뀌어 지우지 못했습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.');
+    }
+
+    // 아래 행부터 지워야 위쪽 행 번호가 바뀌지 않는다.
+    Array.from(new Set(rows)).sort((a, b) => b - a).forEach(row => {
+      if (sh.getMaxRows() - sh.getFrozenRows() > 1) {
+        sh.deleteRow(row);
+      } else {
+        sh.getRange(row, 1, 1, lastCol).clearContent();
+      }
+    });
+
+    if (isDraft) resetDeletedDraftStatus_(targets.map(t => t.key));
+    SpreadsheetApp.flush();
+    return rows.length;
+  });
+
+  log_('uiDeleteRecords', 'OK', `${sheetName}: ${deleted}개 삭제`);
+  return { deleted };
+}
+
+// 초안을 지운 제출물은 제출물 시트의 aiStatus를 비워 '초안 없음'으로 되돌린다.
+function resetDeletedDraftStatus_(keys) {
+  const remaining = new Set(
+    readSheetRecords_(SHEET_NAMES.records, ['submissionKey'], 'submissionKey').map(r => String(r.submissionKey))
+  );
+  const keySet = new Set(keys.filter(k => !remaining.has(k)));
+  if (keySet.size === 0) return;
+
+  const sh = getSheet_(SHEET_NAMES.submissions);
+  const h = headerMap_(sh);
+  const lastRow = sh.getLastRow();
+  if (!h.submissionKey || !h.aiStatus || lastRow < 2) return;
+
+  const keyValues = sh.getRange(2, h.submissionKey, lastRow - 1, 1).getValues();
+  const statusRange = sh.getRange(2, h.aiStatus, lastRow - 1, 1);
+  const statuses = statusRange.getValues();
+  let changed = false;
+
+  keyValues.forEach((r, i) => {
+    if (keySet.has(String(r[0])) && ['생성완료', '근거부족'].includes(String(statuses[i][0]))) {
+      statuses[i][0] = '';
+      changed = true;
+    }
+  });
+
+  if (changed) statusRange.setValues(statuses);
+}
+
 // 화면에서 수정한 finalRecord / teacherChecked를 저장한다.
 // 화면을 연 뒤 행이 바뀌었을 수 있으므로 같은 행의 키가 일치할 때만 쓴다.
 function updateRecordRow_(sheetName, row, key, patch, keyOf) {

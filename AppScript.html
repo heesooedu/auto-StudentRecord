@@ -651,6 +651,7 @@
         <div class="row between">
           <span class="small bytes ${byteClass}" data-bytes="${esc(editKey)}">${text.length}자 · ${bytes} / ${max} 바이트</span>
           <div class="row">
+            <button class="btn danger" data-action="delete-record" data-kind="${kind}" data-row="${r.row}" data-key="${esc(r.key)}" ${S.busy ? 'disabled' : ''}>삭제</button>
             <button class="btn" data-action="copy-record" data-kind="${kind}" data-key="${esc(r.key)}">복사</button>
             <button class="btn primary" data-action="save-record" data-kind="${kind}" data-row="${r.row}" data-key="${esc(r.key)}" ${dirty ? '' : 'disabled'}>저장</button>
           </div>
@@ -674,6 +675,8 @@
     const rows = filterRecords(list, kind);
     const shown = rows.slice(0, S.pageSize[kind]);
     return `
+      ${rows.length ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px">
+        <button class="btn danger" data-action="delete-filtered" data-kind="${kind}" ${S.busy ? 'disabled' : ''}>목록의 ${rows.length}개 모두 삭제</button></div>` : ''}
       ${shown.map(r => recordCard(r, kind)).join('') || '<div class="card empty">조건에 맞는 항목이 없어요.</div>'}
       ${rows.length > shown.length ? `<button class="btn" data-action="more" data-kind="${kind}">더 보기 (${rows.length - shown.length}개 남음)</button>` : ''}`;
   }
@@ -772,6 +775,25 @@
     const record = findRecord(kind, key);
     if (record) Object.assign(record, updated);
     delete S.edits[`${kind}:${key}`];
+  }
+
+  async function deleteRecords(kind, items) {
+    await withBusy('지우는 중…', async () => {
+      try {
+        const result = await call('uiDeleteRecords', kind, items);
+        items.forEach(it => delete S.edits[`${kind}:${it.key}`]);
+        banner(`${result.deleted}개를 지웠어요.`, 'ok');
+      } finally {
+        // 행 번호가 바뀌므로 목록을 다시 읽는다. 초안을 지우면 제출물의 '초안 있음' 표시도 바뀐다.
+        if (kind === 'review') {
+          S.drafts = await call('uiListDrafts');
+          S.submissions = null;
+        } else {
+          S.finals = await call('uiListFinalRecords');
+        }
+        S.boot = await call('uiGetBootstrap');
+      }
+    });
   }
 
   const actions = {
@@ -961,6 +983,20 @@
     more(el) {
       S.pageSize[el.dataset.kind] += 30;
       render();
+    },
+    async 'delete-record'(el) {
+      const { kind, row, key } = el.dataset;
+      const r = findRecord(kind, key);
+      const name = r ? `${r.studentNo} ${r.studentName}`.trim() : '';
+      if (!await confirmModal('삭제', `${name} 학생의 ${kind === 'review' ? '초안' : '최종 생기부'}을 지울까요?\n시트에서도 지워지고 되돌릴 수 없어요.`, '삭제')) return;
+      await deleteRecords(kind, [{ row, key }]);
+    },
+    async 'delete-filtered'(el) {
+      const kind = el.dataset.kind;
+      const rows = filterRecords((kind === 'review' ? S.drafts : S.finals) || [], kind);
+      if (!rows.length) return;
+      if (!await confirmModal('모두 삭제', `지금 목록(검색·필터 결과)에 있는 ${kind === 'review' ? '초안' : '최종 생기부'} ${rows.length}개를 모두 지울까요?\n시트에서도 지워지고 되돌릴 수 없어요.`, `${rows.length}개 삭제`)) return;
+      await deleteRecords(kind, rows.map(r => ({ row: r.row, key: r.key })));
     },
     async 'reload-drafts'() {
       await withBusy('불러오는 중…', async () => { S.drafts = await call('uiListDrafts'); });
