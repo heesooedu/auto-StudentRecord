@@ -269,8 +269,6 @@ function uiGetManual() {
     startRow: manualConfig ? manualConfig.startRow : Math.max(Number(config.MANUAL_START_ROW || 2), 1),
     inputCols: manualConfig ? manualConfig.inputCols : [],
     outputCol: manualConfig ? manualConfig.outputCol : 0,
-    prompt: String(config.MANUAL_PROMPT || '').trim() || defaultManualRecordPrompt_(),
-    defaultPrompt: defaultManualRecordPrompt_(),
     rows: [],
     truncated: false,
   };

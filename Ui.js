@@ -340,7 +340,17 @@ function uiGetSettings() {
     });
   });
 
-  return { groups };
+  // 화면에서 비어 있는 프롬프트 대신 보여줄 기본값
+  const defaults = {};
+  ASSISTANT_SETTING_GROUPS.prompts.forEach(key => {
+    try {
+      defaults[key] = uiGetDefaultPrompt(key);
+    } catch (err) {
+      // 기본값이 없는 키는 건너뛴다.
+    }
+  });
+
+  return { groups, defaults };
 }
 
 function uiSaveSettings(patch) {

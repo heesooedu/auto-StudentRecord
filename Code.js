@@ -3747,6 +3747,11 @@ function ensureJsonResponseGuide_(systemGuide) {
 
 function defaultRecordDraftPrompt_() {
   return [
+    '[교사 안내] 초안을 만들기 전에 채워 주세요.',
+    '- 과목/작성 영역: ',
+    '- 강조할 점(선택): ',
+    '(예시) 과목/작성 영역: 2학년 사회 세부능력 및 특기사항 / 강조할 점: 자료를 근거로 자신의 주장을 펼치는 능력',
+    '',
     '수업명: {{courseName}}',
     '과제명: {{assignmentTitle}}',
     '제출상태: {{state}}',
@@ -3767,6 +3772,7 @@ function defaultRecordDraftPrompt_() {
     '학생의 수행 근거는 반드시 아래 [학생 제출물 원문]에서 확인되는 내용만 사용한다.',
     '',
     '[record_draft 작성 조건]',
+    '[교사 안내]의 과목/작성 영역에 맞는 어휘와 관점으로 쓰고, 강조할 점은 제출물에 근거가 있을 때만 반영한다.',
     'record_draft 값만 공백 포함 {{recordDraftMinChars}}자 이상 {{recordDraftMaxChars}}자 이하로 작성한다.',
     'evidence_summary와 caution은 글자수 제한 대상이 아니다.',
     '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
@@ -3778,10 +3784,16 @@ function defaultRecordDraftPrompt_() {
 
 function defaultStudentFinalRecordPrompt_() {
   return [
+    '[교사 안내] 최종 생기부를 만들기 전에 채워 주세요.',
+    '- 과목/작성 영역: ',
+    '- 강조할 점(선택): ',
+    '(예시) 과목/작성 영역: 2학년 사회 세부능력 및 특기사항 / 강조할 점: 한 학기 동안 탐구 주제를 넓혀 간 과정',
+    '',
     '수업명: {{courseName}}',
     '반영 과제 수: {{assignmentCount}}',
     '',
     '[작성 조건]',
+    '[교사 안내]의 과목/작성 영역에 맞는 어휘와 관점으로 쓰고, 강조할 점은 과제별 근거가 있을 때만 반영한다.',
     'record_draft 값만 공백 포함 {{recordDraftMinChars}}자 이상 {{recordDraftMaxChars}}자 이하로 작성한다.',
     '여러 과제를 단순 나열하지 말고, 학생의 수행 특성이 자연스럽게 드러나도록 종합한다.',
     '단, 과제별 근거에 없는 내용은 절대 추정하지 않는다.',
