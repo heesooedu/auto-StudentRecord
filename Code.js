@@ -140,7 +140,7 @@ const HEADERS = {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('생기부 자동화')
-    //.addItem('1. 시트 초기 설정', 'setupSheets')
+    .addItem('1. 시트 초기 설정 (모델 목록 갱신)', 'setupSheets')
     .addItem('2. Claude API 키 저장', 'saveClaudeApiKey')
     .addItem('Claude API 키 삭제', 'clearClaudeApiKey')
     .addItem('GPT API 키 저장', 'saveOpenAiApiKey')
@@ -160,7 +160,7 @@ function onOpen() {
     .addItem('5-1. 선택 제출물 대기열에 넣기', 'markSelectedSubmissionsPending')
     //.addItem('대기열 1회 처리', 'processPendingRecordDrafts')
     .addItem('5-2. 자동 생성 트리거 시작', 'startAutoRecordDraftTrigger')
-    .addItem('5-3. 선택한 제출물로 생기부 초안 생성', 'generateRecordsForSelectedSubmissions')
+    //.addItem('5-3. 선택한 제출물로 생기부 초안 생성', 'generateRecordsForSelectedSubmissions')
     .addItem('자동 생성 트리거 중지', 'stopAutoRecordDraftTrigger')
     .addItem('자동 생성 상태 확인', 'showAutoRecordDraftStatus')
     .addSeparator()
@@ -181,6 +181,12 @@ function onOpen() {
     .addSeparator()
     .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
     .addToUi();
+
+  try {
+    syncConfigModelsOnOpen_();
+  } catch (err) {
+    // onOpen에서 설정 시트 동기화 실패 시 메뉴 표시는 유지
+  }
 }
 
 function saveOpenAiApiKey() {
@@ -1878,9 +1884,9 @@ function setupSheets() {
 
   const defaults = [
     ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
-    ['CLAUDE_MODEL', 'claude-sonnet-4-6', 'claude-sonnet-4-6 / claude-haiku-4-5\nclaude-sonnet-4-6 - 상대적으로 비쌈. 조금 느리지만 똑똑한 편\nclaude-haiku-4-5 - 값이 쌈. 대답이 빠르나 성능이 조금 떨어짐.'],
-    ['GPT_MODEL', 'gpt-5.1', 'gpt-5.4 / gpt-5.1 / gpt-5.4-mini\ngpt-5.4 / sonnet과 비슷\ngpt-5.1 / 충분히 무난하게 쓸 수 있음\ngpt-5.4-mini / haiku와 비슷'],
-    ['GEMINI_MODEL', 'gemini-3.1-flash-lite', 'gemini-3.5-flash / 성능이 더 필요한 경우 사용\ngemini-3.5-flash-lite / 3.5 계열의 빠르고 저렴한 모델\ngemini-3.1-flash-lite / 무료로 쓰시려면 이 모델 사용, 할당량 채우면 오류남, 매일 갱신됨'],
+    ['CLAUDE_MODEL', 'claude-sonnet-5-5', 'claude-sonnet-5-5 / claude-haiku-5-5\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 똑똑한 편\nclaude-haiku-5-5 - 값이 쌈. 대답이 빠르나 성능이 조금 떨어짐.'],
+    ['GPT_MODEL', 'gpt-6-luna', 'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델'],
+    ['GEMINI_MODEL', 'gemini-3.8-flash', 'gemini-3.8-flash / gemini-3.7-flash / gemini-3.6-flash / gemini-3.5-flash'],
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
     ['MAX_RECORD_CHARS', '500', '생기부 초안 최대 글자수'],
     ['MAX_INPUT_CHARS', '30000', 'Claude에 보낼 과제 원문 최대 글자수'],
@@ -1909,8 +1915,8 @@ function setupSheets() {
     config.getRange(config.getLastRow() + 1, 1, rows.length, 3).setValues(rows);
   }
 
-  syncConfigDefaults_(config, defaults);
   applyConfigValidations_(config);
+  syncConfigDefaults_(config, defaults);
   styleConfigSheet_();
 
   ensureBehaviorRecommendationSheet_();
@@ -2347,7 +2353,7 @@ function applyClaudeReasoning_(payload, model, reasoning) {
   payload.max_tokens = getClaudeMaxTokens_(reasoning);
   delete payload.temperature;
 
-  if (String(model || '').indexOf('sonnet-4-6') !== -1) {
+  if (String(model || '').indexOf('sonnet-4-6') !== -1 || String(model || '').indexOf('sonnet-5-5') !== -1) {
     payload.thinking = {
       type: 'adaptive',
     };
@@ -2393,7 +2399,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
   const baseMaxOutputTokens = getOpenAiMaxOutputTokens_(reasoning);
 
   const payload = {
-    model: model || 'gpt-5.1',
+    model: model || 'gpt-6-luna',
     reasoning: {
       effort: reasoning,
     },
@@ -2533,7 +2539,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
   reasoning = normalizeReasoning_(reasoning);
 
   const payload = {
-    model: model || 'gemini-3.1-flash-lite',
+    model: model || 'gemini-3.8-flash',
     system_instruction: systemGuide,
     input: userPrompt,
     generation_config: {
@@ -2874,6 +2880,32 @@ function getConfigMap_() {
   return map;
 }
 
+const CONFIG_VALIDATION_OPTIONS = {
+  AI_PROVIDER: ['claude', 'gpt', 'gemini'],
+  CLAUDE_MODEL: ['claude-sonnet-5-5', 'claude-haiku-5-5'],
+  GPT_MODEL: ['gpt-6-luna', 'gpt-6.1-terra'],
+  GEMINI_MODEL: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  REASONING: ['none', 'low', 'medium'],
+};
+
+function syncConfigModelsOnOpen_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) return;
+
+  const config = ss.getSheetByName(SHEET_NAMES.config);
+  if (!config || config.getLastRow() < 2) return;
+
+  migrateLegacyConfigKeys_(config);
+  applyConfigValidations_(config);
+  syncConfigDefaults_(config, [
+    ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
+    ['CLAUDE_MODEL', 'claude-sonnet-5-5', 'claude-sonnet-5-5 / claude-haiku-5-5\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 똑똑한 편\nclaude-haiku-5-5 - 값이 쌈. 대답이 빠르나 성능이 조금 떨어짐.'],
+    ['GPT_MODEL', 'gpt-6-luna', 'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델'],
+    ['GEMINI_MODEL', 'gemini-3.8-flash', 'gemini-3.8-flash / gemini-3.7-flash / gemini-3.6-flash / gemini-3.5-flash'],
+    ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
+  ]);
+}
+
 function syncConfigDefaults_(config, defaults) {
   const lastRow = config.getLastRow();
   if (lastRow < 2) return;
@@ -2905,10 +2937,23 @@ function syncConfigDefaults_(config, defaults) {
       } else if (provider === 'google') {
         config.getRange(sheetRow, 2).setValue('gemini');
       }
+    } else if (key === 'CLAUDE_MODEL') {
+      const model = String(row[1] || '').trim();
+
+      if (!CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL.includes(model)) {
+        const nextModel = model.indexOf('haiku') !== -1 ? 'claude-haiku-5-5' : defaultMap[key][1];
+        config.getRange(sheetRow, 2).setValue(nextModel);
+      }
+    } else if (key === 'GPT_MODEL') {
+      const model = String(row[1] || '').trim();
+
+      if (!CONFIG_VALIDATION_OPTIONS.GPT_MODEL.includes(model)) {
+        config.getRange(sheetRow, 2).setValue(defaultMap[key][1]);
+      }
     } else if (key === 'GEMINI_MODEL') {
       const model = String(row[1] || '').trim();
 
-      if (!model) {
+      if (!CONFIG_VALIDATION_OPTIONS.GEMINI_MODEL.includes(model)) {
         config.getRange(sheetRow, 2).setValue(defaultMap[key][1]);
       }
     } else if (key === 'REASONING') {
@@ -2979,8 +3024,8 @@ function migrateLegacyConfigKeys_(config) {
     const migratedRow = openAiModelRows.shift();
     config.getRange(migratedRow, 1, 1, 3).setValues([[
       'GPT_MODEL',
-      firstOpenAiModelValue || 'gpt-5.1',
-      'gpt-5.4 / gpt-5.1 / gpt-5.4-mini\ngpt-5.4 / sonnet과 비슷\ngpt-5.1 / 충분히 무난하게 쓸 수 있음\ngpt-5.4-mini / haiku와 비슷',
+      firstOpenAiModelValue || 'gpt-6-luna',
+      'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델',
     ]]);
   }
 
@@ -3051,13 +3096,7 @@ function applyConfigValidations_(config) {
   if (lastRow < 2) return;
 
   const values = config.getRange(2, 1, lastRow - 1, 1).getValues();
-  const validationOptions = {
-    AI_PROVIDER: ['claude', 'gpt', 'gemini'],
-    CLAUDE_MODEL: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
-    GPT_MODEL: ['gpt-5.4', 'gpt-5.1', 'gpt-5.4-mini'],
-    GEMINI_MODEL: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.5-flash'],
-    REASONING: ['none', 'low', 'medium'],
-  };
+  const validationOptions = CONFIG_VALIDATION_OPTIONS;
 
   values.forEach((row, index) => {
     const key = String(row[0] || '').trim();
@@ -6573,12 +6612,12 @@ function getAiProviderAndModel_(config) {
   const provider = normalizeAiProvider_(config.AI_PROVIDER);
   const reasoning = normalizeReasoning_(config.REASONING || config.reasoning);
 
-  let model = config.CLAUDE_MODEL || 'claude-sonnet-4-6';
+  let model = config.CLAUDE_MODEL || 'claude-sonnet-5-5';
 
   if (provider === 'gpt') {
-    model = config.GPT_MODEL || config.OPENAI_MODEL || 'gpt-5.1';
+    model = config.GPT_MODEL || config.OPENAI_MODEL || 'gpt-6-luna';
   } else if (provider === 'gemini') {
-    model = config.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+    model = config.GEMINI_MODEL || 'gemini-3.8-flash';
   }
 
   return {
