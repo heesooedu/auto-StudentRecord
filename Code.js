@@ -3793,11 +3793,8 @@ function defaultManualRecordPrompt_() {
     '(예시) 자료 종류: 2학년 사회 수행평가 보고서 / 작성할 영역: 사회 세부능력 및 특기사항',
     '(예시) 자료 종류: 과학 동아리 실험 기록 / 작성할 영역: 동아리활동 특기사항',
     '',
-    '[수동추가 데이터]',
-    '{{manualInput}}',
-    '',
     '[작성 원칙]',
-    '1. 위 데이터에서 학생이 직접 한 활동, 결과물, 생각, 탐구 과정만 근거로 쓴다. 데이터에 없는 사실, 성격, 역량을 지어내지 않는다.',
+    '1. [수동추가 데이터]에서 학생이 직접 한 활동, 결과물, 생각, 탐구 과정만 근거로 쓴다. 데이터에 없는 사실, 성격, 역량을 지어내지 않는다.',
     '2. 데이터 형태가 무엇이든(활동지 답변, 보고서, 교사 관찰 메모, 점수표 등) 먼저 학생이 실제로 한 것이 무엇인지 파악한 뒤 쓴다.',
     '3. 문항, 안내문, 평가 기준처럼 학생이 쓴 것이 아닌 내용은 근거로 삼지 않는다.',
     '4. [ ] 안의 열 이름은 데이터가 무엇인지 알려 주는 힌트로만 쓰고 본문에 옮겨 적지 않는다.',
@@ -3808,9 +3805,6 @@ function defaultManualRecordPrompt_() {
     "9. 문장 끝은 '~함', '~임', '~보임' 같은 명사형 어미로 쓰되 같은 어미를 연달아 쓰지 않는다.",
     '10. record_draft는 공백 포함 {{recordDraftMinChars}}자 이상 {{recordDraftMaxChars}}자 이하로 쓴다.',
     '11. evidence_summary에는 근거로 쓴 데이터 내용을 짧게 정리하고, caution에는 교사가 확인할 점이 있을 때만 쓴다.',
-    '',
-    '반드시 JSON 형식으로만 답한다.',
-    '{"evidence_summary":"", "record_draft":"", "caution":""}',
   ].join('\n');
 }
 
@@ -6586,6 +6580,13 @@ function buildManualRecordPrompt_(data) {
     parts.push([
       '[수동추가 데이터]',
       data.manualInput,
+    ].join('\n'));
+  }
+
+  if (!/JSON\s*형식으로만\s*답/i.test(template)) {
+    parts.push([
+      '반드시 JSON 형식으로만 답한다.',
+      '{"evidence_summary":"", "record_draft":"", "caution":""}',
     ].join('\n'));
   }
 
