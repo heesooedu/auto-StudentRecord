@@ -589,39 +589,60 @@ function uiGetStatus() {
   const triggers = ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
   const triggerCount = name => triggers.filter(n => n === name).length;
 
+  // 자동 작업은 실행 중에 스크립트 잠금을 잡고, 끝날 때 다음 트리거를 만든다.
+  // 그래서 'ON'인데 트리거도 없고 잠금도 비어 있으면, 예전에 멈춘 작업이 남긴 표시이므로 끈다.
+  let idle = null;
+  const isIdle = () => {
+    if (idle === null) {
+      const lock = LockService.getScriptLock();
+      idle = lock.tryLock(0);
+      if (idle) lock.releaseLock();
+    }
+    return idle;
+  };
+  const stateOf = (prop, handler) => {
+    const state = props.getProperty(prop) || 'OFF';
+    if (state === 'ON' && triggerCount(handler) === 0 && isIdle()) {
+      props.setProperty(prop, 'OFF');
+      log_('uiGetStatus', 'RESET', `${prop}: 실행 중인 작업과 트리거가 없어 OFF로 바꿈`);
+      return 'OFF';
+    }
+    return state;
+  };
+
   return {
     collect: {
-      state: props.getProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY) || 'OFF',
+      state: stateOf(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'autoProcessPendingSubmissionCollections'),
       triggers: triggerCount('autoProcessPendingSubmissionCollections'),
       remaining: countPendingSubmissionCollections_(),
       last: getAutoSubmissionCollectionLastResult_(),
     },
     drafts: {
-      state: props.getProperty('AUTO_RECORD_DRAFT_TRIGGER') || 'OFF',
+      state: stateOf('AUTO_RECORD_DRAFT_TRIGGER', 'autoProcessPendingRecordDrafts'),
       triggers: triggerCount('autoProcessPendingRecordDrafts'),
       remaining: countPendingRecordDrafts_(),
       last: getAutoRecordDraftLastResult_(),
     },
     final: {
-      state: props.getProperty('AUTO_STUDENT_FINAL_TRIGGER') || 'OFF',
+      state: stateOf('AUTO_STUDENT_FINAL_TRIGGER', 'autoProcessPendingStudentFinalRecords'),
       triggers: triggerCount('autoProcessPendingStudentFinalRecords'),
       remaining: countPendingStudentFinalRecords_(),
       last: getAutoStudentFinalLastResult_(),
     },
     common: {
-      state: props.getProperty('AUTO_COMMON_PHRASE_TRIGGER') || 'OFF',
+      state: stateOf('AUTO_COMMON_PHRASE_TRIGGER', 'autoProcessPendingCommonPhrases'),
       triggers: triggerCount('autoProcessPendingCommonPhrases'),
       remaining: countPendingCommonPhrases_(),
       last: getAutoCommonPhraseLastResult_(),
     },
     behavior: {
-      state: props.getProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY) || 'OFF',
+      state: stateOf(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'autoProcessPendingBehaviorRecommendations'),
       triggers: triggerCount('autoProcessPendingBehaviorRecommendations'),
       remaining: countPendingBehaviorRecommendationRows_(),
       last: null,
     },
     manual: {
-      state: props.getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF',
+      state: stateOf(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'autoProcessPendingManualAddedRecords'),
       triggers: triggerCount('autoProcessPendingManualAddedRecords'),
       remaining: countPendingManualAddedRows_(),
       last: null,
