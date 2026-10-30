@@ -322,6 +322,8 @@
   }
 
   // ---- 화면 렌더링 -----------------------------------------------------------
+  let renderedView = null;
+
   function render() {
     renderNav();
     const views = Object.assign({ home: viewHome, start: viewStart, assignments: viewAssignments, collect: viewCollect, drafts: viewDrafts, review: viewReview, final: viewFinal, settings: viewSettings }, TOOL_VIEWS);
@@ -335,9 +337,13 @@
         <p class="lead">처음 한 번만 하면 돼요.</p><button class="btn primary" data-go="start">시작하기로 이동</button></div>`;
       return;
     }
+    // 표처럼 따로 스크롤되는 상자도 같은 화면을 다시 그릴 때는 위치를 유지한다.
+    const innerScrolls = renderedView === S.view ? [...document.querySelectorAll('#view .table-wrap')].map(el => el.scrollTop) : [];
     $('#view').innerHTML = views[S.view]();
+    renderedView = S.view;
     document.querySelectorAll('#view .record textarea').forEach(autoGrow);
     $('#view').scrollTop = scroll;
+    document.querySelectorAll('#view .table-wrap').forEach((el, i) => { if (innerScrolls[i]) el.scrollTop = innerScrolls[i]; });
   }
 
   // 생기부 글 상자는 스크롤 없이 글 전체가 보이도록 내용 높이에 맞춘다.
