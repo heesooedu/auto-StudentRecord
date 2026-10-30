@@ -415,7 +415,7 @@
       <details class="card ${missing ? 'hero' : ''}" data-prompt-card="${key}" ${missing || dirty || S.promptOpen[key] ? 'open' : ''}>
         <summary><b>${esc(title)}</b> ${pill}
           <span class="muted small">${filled.length ? esc(filled.join(' · ')) : '과목이나 작성 영역을 적어 주면 결과가 좋아져요.'}</span></summary>
-        <p class="muted small" style="margin:10px 0">맨 위 안내 줄에 과목·작성 영역을 적어 주세요. <b>{{ }}</b> 자리에는 과제 정보와 학생 내용이 자동으로 들어가요.
+        <p class="muted small" style="margin:10px 0">맨 위 안내 줄에 과목·작성 영역을 적어 주세요. 과제 정보, 학생 제출물, 글자수, 점수 규칙은 여기에 없어도 자동으로 함께 보내져요.
           설정 화면의 프롬프트와 같은 값이에요.</p>
         <textarea data-prompt-key="${key}" rows="12">${esc(text)}</textarea>
         <div class="row" style="justify-content:flex-end;margin-top:8px">
