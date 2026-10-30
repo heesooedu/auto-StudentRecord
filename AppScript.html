@@ -550,7 +550,7 @@
       const key = `${s.courseId}|${s.courseWorkId}`;
       if (assignmentFilter === 'included' && !included.has(key)) return false;
       if (assignmentFilter && assignmentFilter !== 'included' && assignmentFilter !== key) return false;
-      if (text && !`${s.studentNo} ${s.studentName} ${s.assignmentTitle}`.toLowerCase().includes(text)) return false;
+      if (text && !`${s.studentNo} ${s.studentName} ${s.courseName} ${s.assignmentTitle}`.toLowerCase().includes(text)) return false;
       return true;
     });
   }
@@ -584,16 +584,16 @@
       <h2>수집한 제출물</h2>
       <div class="toolbar">
         <select id="collect-assignment">${assignmentOptions(S.filters.collectAssignment)}</select>
-        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호·수업으로 찾기" value="${esc(S.filters.search)}">
         <span class="muted">${rows.length}개</span>
       </div>
       ${rows.length === 0 ? '<div class="card empty">수집한 제출물이 없어요.</div>' : `
       <div class="table-wrap"><table>
-        <thead><tr><th>번호</th><th>이름</th><th>과제</th><th>제출</th><th>글자수</th><th>초안</th></tr></thead>
+        <thead><tr><th>번호</th><th>이름</th><th>수업</th><th>과제</th><th>제출</th><th>글자수</th><th>초안</th></tr></thead>
         <tbody>${rows.map(s => `
           <tr class="clickable" data-action="show-text" data-key="${esc(s.submissionKey)}">
             <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td>
-            <td>${esc(s.assignmentTitle)}</td>
+            <td class="muted">${esc(s.courseName)}</td><td>${esc(s.assignmentTitle)}</td>
             <td>${esc(s.state)}${s.late === true || s.late === 'TRUE' ? ' <span class="pill warn">지각</span>' : ''}</td>
             <td>${Number(s.textChars) > 0 ? esc(s.textChars) : '<span class="pill warn">내용 없음</span>'}</td>
             <td>${draftStatusPill(s)}</td>
@@ -622,7 +622,7 @@
       ${promptCard('PROMPT_1', '초안 프롬프트 확인')}
       <div class="toolbar">
         <select id="draft-assignment">${assignmentOptions(S.filters.draftAssignment)}</select>
-        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호·수업으로 찾기" value="${esc(S.filters.search)}">
       </div>
       <div class="toolbar">
         <button class="btn" data-action="select-no-draft">초안 없는 것만 선택</button>
@@ -634,11 +634,11 @@
       ${rows.length === 0 ? '<div class="card empty">제출물이 없어요. 먼저 [제출물 수집]을 진행하세요.</div>' : `
       <div class="table-wrap"><table>
         <thead><tr><th><input type="checkbox" data-action="select-all" ${allSelected ? 'checked' : ''}></th>
-          <th>번호</th><th>이름</th><th>과제</th><th>글자수</th><th>상태</th></tr></thead>
+          <th>번호</th><th>이름</th><th>수업</th><th>과제</th><th>글자수</th><th>상태</th></tr></thead>
         <tbody>${rows.map(s => `
           <tr>
             <td><input type="checkbox" data-action="select-one" data-key="${esc(s.submissionKey)}" ${S.selected.has(String(s.submissionKey)) ? 'checked' : ''}></td>
-            <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td><td>${esc(s.assignmentTitle)}</td>
+            <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td><td class="muted">${esc(s.courseName)}</td><td>${esc(s.assignmentTitle)}</td>
             <td>${Number(s.textChars) > 0 ? esc(s.textChars) : '<span class="pill warn">내용 없음</span>'}</td>
             <td>${draftStatusPill(s)}</td>
           </tr>`).join('')}</tbody>
