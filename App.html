@@ -9,12 +9,24 @@
     window.__bootErrors = [];
     window.addEventListener('error', e => {
       window.__bootErrors.push(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno || ''})`);
+      // 문법 오류면 문제가 된 스크립트의 해당 줄 근처를 함께 보여준다.
+      if (e.message && e.message.indexOf('SyntaxError') !== -1 && e.lineno) {
+        Array.prototype.forEach.call(document.scripts, (script, i) => {
+          try {
+            new Function(script.textContent);
+          } catch (err) {
+            const lines = script.textContent.split('\n');
+            const around = n => lines.slice(Math.max(n - 3, 0), n + 2).map((l, k) => `${Math.max(n - 3, 0) + k + 1}: ${l.trim()}`).join('\n');
+            window.__bootErrors.push(`[script ${i}] ${err.message}\n${around(e.lineno - 1)}`);
+          }
+        });
+      }
     });
     setTimeout(() => {
       const loading = document.querySelector('#view .loading');
       if (!loading) return;
       loading.innerHTML = window.__bootErrors.length
-        ? '화면을 여는 중 오류가 났어요. 아래 내용을 알려 주세요.<br><br>' + window.__bootErrors.map(m => String(m).replace(/</g, '&lt;')).join('<br>')
+        ? '화면을 여는 중 오류가 났어요. 아래 내용을 알려 주세요.<br><br>' + '<pre style="white-space:pre-wrap;text-align:left;user-select:text">' + window.__bootErrors.map(m => String(m).replace(/</g, '&lt;')).join('\n\n') + '</pre>'
         : '서버 응답을 기다리고 있어요. 계속 이 상태면 대화상자를 닫고 다시 열어 주세요.';
     }, 15000);
   </script>
