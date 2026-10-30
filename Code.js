@@ -1929,7 +1929,7 @@ function setupSheets() {
 
   const defaults = [
     ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
-    ['CLAUDE_MODEL', 'claude-sonnet-5-5', 'claude-sonnet-5-5 / claude-haiku-5-5\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 똑똑한 편\nclaude-haiku-5-5 - 값이 쌈. 대답이 빠르나 성능이 조금 떨어짐.'],
+    ['CLAUDE_MODEL', 'claude-haiku-5-5', 'claude-haiku-5-5 / claude-sonnet-5-5\nclaude-haiku-5-5 - 기본값. 값이 싸고 대답이 빠름. 생기부 문장 쓰기에 충분함\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 더 똑똑한 편'],
     ['GPT_MODEL', 'gpt-6-luna', 'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델'],
     ['GEMINI_MODEL', 'gemini-3.8-flash', 'gemini-3.8-flash / gemini-3.7-flash / gemini-3.6-flash / gemini-3.5-flash'],
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
@@ -2445,6 +2445,8 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
 
   const payload = {
     model: model || 'gpt-6-luna',
+    // 응답을 OpenAI 서버에 대화 기록으로 남기지 않는다(기본값은 30일 보관).
+    store: false,
     reasoning: {
       effort: reasoning,
     },
@@ -2585,6 +2587,8 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
 
   const payload = {
     model: model || 'gemini-3.8-flash',
+    // 요청을 Gemini 서버에 대화 기록으로 남기지 않는다(기본값은 보관).
+    store: false,
     system_instruction: systemGuide,
     input: userPrompt,
     generation_config: {
@@ -2927,7 +2931,7 @@ function getConfigMap_() {
 
 const CONFIG_VALIDATION_OPTIONS = {
   AI_PROVIDER: ['claude', 'gpt', 'gemini'],
-  CLAUDE_MODEL: ['claude-sonnet-5-5', 'claude-haiku-5-5'],
+  CLAUDE_MODEL: ['claude-haiku-5-5', 'claude-sonnet-5-5'],
   GPT_MODEL: ['gpt-6-luna', 'gpt-6.1-terra'],
   GEMINI_MODEL: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
   REASONING: ['none', 'low', 'medium'],
@@ -2944,7 +2948,7 @@ function syncConfigModelsOnOpen_() {
   applyConfigValidations_(config);
   syncConfigDefaults_(config, [
     ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
-    ['CLAUDE_MODEL', 'claude-sonnet-5-5', 'claude-sonnet-5-5 / claude-haiku-5-5\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 똑똑한 편\nclaude-haiku-5-5 - 값이 쌈. 대답이 빠르나 성능이 조금 떨어짐.'],
+    ['CLAUDE_MODEL', 'claude-haiku-5-5', 'claude-haiku-5-5 / claude-sonnet-5-5\nclaude-haiku-5-5 - 기본값. 값이 싸고 대답이 빠름. 생기부 문장 쓰기에 충분함\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 더 똑똑한 편'],
     ['GPT_MODEL', 'gpt-6-luna', 'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델'],
     ['GEMINI_MODEL', 'gemini-3.8-flash', 'gemini-3.8-flash / gemini-3.7-flash / gemini-3.6-flash / gemini-3.5-flash'],
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
@@ -2986,7 +2990,7 @@ function syncConfigDefaults_(config, defaults) {
       const model = String(row[1] || '').trim();
 
       if (!CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL.includes(model)) {
-        const nextModel = model.indexOf('haiku') !== -1 ? 'claude-haiku-5-5' : defaultMap[key][1];
+        const nextModel = model.indexOf('sonnet') !== -1 ? 'claude-sonnet-5-5' : defaultMap[key][1];
         config.getRange(sheetRow, 2).setValue(nextModel);
       }
     } else if (key === 'GPT_MODEL') {
@@ -6659,7 +6663,7 @@ function getAiProviderAndModel_(config) {
   const provider = normalizeAiProvider_(config.AI_PROVIDER);
   const reasoning = normalizeReasoning_(config.REASONING || config.reasoning);
 
-  let model = config.CLAUDE_MODEL || 'claude-sonnet-5-5';
+  let model = config.CLAUDE_MODEL || 'claude-haiku-5-5';
 
   if (provider === 'gpt') {
     model = config.GPT_MODEL || config.OPENAI_MODEL || 'gpt-6-luna';

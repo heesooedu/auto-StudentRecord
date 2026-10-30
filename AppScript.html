@@ -52,9 +52,9 @@
   };
 
   const PROVIDERS = [
-    { id: 'claude', name: 'Claude', desc: '글이 자연스럽고 지시를 잘 따라요.', keyUrl: 'https:\/\/console.anthropic.com/settings/keys', modelKey: 'CLAUDE_MODEL' },
-    { id: 'gpt', name: 'GPT', desc: 'OpenAI 모델이에요.', keyUrl: 'https:\/\/platform.openai.com/api-keys', modelKey: 'GPT_MODEL' },
-    { id: 'gemini', name: 'Gemini', desc: '무료 할당량으로 써 볼 수 있어요.', keyUrl: 'https:\/\/aistudio.google.com/apikey', modelKey: 'GEMINI_MODEL' },
+    { id: 'claude', name: 'Claude', desc: 'Anthropic의 AI예요. 한국어 문장이 자연스럽고 지시를 잘 따라요. 사용한 만큼 요금을 내요.', keyUrl: 'https:\/\/console.anthropic.com/settings/keys', modelKey: 'CLAUDE_MODEL' },
+    { id: 'gpt', name: 'GPT', desc: 'ChatGPT를 만든 OpenAI의 AI예요. 사용한 만큼 요금을 내요.', keyUrl: 'https:\/\/platform.openai.com/api-keys', modelKey: 'GPT_MODEL' },
+    { id: 'gemini', name: 'Gemini', desc: '구글의 AI예요. 무료 키로도 쓸 수 있지만, 무료로 쓰면 보낸 내용이 구글 AI 학습에 쓰일 수 있어요.', keyUrl: 'https:\/\/aistudio.google.com/apikey', modelKey: 'GEMINI_MODEL' },
   ];
 
   // ---- 공통 유틸 -----------------------------------------------------------
@@ -428,6 +428,10 @@
       <div class="card">
         <h2>${b.isSetup ? '①' : '②'} 사용할 AI 고르기</h2>
         <div class="choices">${providerCards}</div>
+        <div class="help">Claude와 GPT의 API는 보낸 내용을 AI 학습에 쓰지 않아요. Gemini는 결제를 연결한 유료 키일 때만 학습에 쓰지 않아요.
+          Classroom 과제 글에 있는 학생 이름·학번·이메일은 지운 뒤 보내요.</div>
+        ${b.provider === 'gemini' ? `<div class="caution" style="margin-top:8px">Gemini <b>무료</b> API 키를 쓰면 보낸 과제 내용과 AI의 답이 구글 제품 개선(AI 학습)에 쓰이고, 사람이 직접 읽을 수도 있어요.
+          학생 글을 보내기 전에 Google AI Studio에서 결제(유료 등급)를 연결하는 것을 권장해요.</div>` : ''}
 
         <label class="field"><span>${esc(provider.name)} API 키</span>
           ${hasKey ? `
