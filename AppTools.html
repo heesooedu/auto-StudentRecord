@@ -293,7 +293,7 @@
 
   // ---- 엑셀로 받기 (초안 · 최종 · 공통문구 · 행발 · 수동추가 공용) ---------------
   function downloadButton(kind) {
-    return `<button class="btn" data-action="download" data-kind="${kind}" ${S.busy ? 'disabled' : ''}>엑셀로 받기</button>`;
+    return `<button class="btn download" data-action="download" data-kind="${kind}" ${S.busy ? 'disabled' : ''}>⬇ 엑셀로 받기</button>`;
   }
 
   function saveBlob(blob, name) {
@@ -634,14 +634,25 @@
       S.bDraft.dirty = true;
       render();
     },
+    // 입력 칸은 바로 닫고 저장은 뒤에서 한다. 실패하면 입력 칸을 다시 연다.
     async 'save-behavior'() {
       const draft = S.bDraft;
-      await withBusy('저장하는 중…', async () => {
+      const r = findBehavior(draft.row);
+      const before = Object.assign({}, r);
+      Object.assign(r, draft.fields);
+      S.bDraft = null;
+      render();
+      banner('저장했어요.', 'ok');
+      try {
         const updated = await call('uiSaveBehaviorRow', draft.row, draft.name, draft.fields);
         replaceBehavior(updated);
-        S.bDraft = null;
-        banner('저장했어요.', 'ok');
-      });
+        if (S.view === 'behavior' && !isEditing()) render();
+      } catch (err) {
+        Object.assign(r, before);
+        if (!S.bDraft) S.bDraft = draft;
+        if (S.view === 'behavior') render();
+        showError(err);
+      }
     },
     async 'reset-behavior'(el) {
       if (!await confirmModal('다시 만들기', '추천 문구를 지울까요?\n지운 뒤 [추천 문구 만들기]를 누르면 새로 만들어요.', '지우기')) return;

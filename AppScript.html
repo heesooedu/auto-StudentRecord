@@ -336,7 +336,14 @@
       return;
     }
     $('#view').innerHTML = views[S.view]();
+    document.querySelectorAll('#view .record textarea').forEach(autoGrow);
     $('#view').scrollTop = scroll;
+  }
+
+  // 생기부 글 상자는 스크롤 없이 글 전체가 보이도록 내용 높이에 맞춘다.
+  function autoGrow(el) {
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight + 2}px`;
   }
 
   function viewHome() {
@@ -1087,6 +1094,7 @@
   let searchTimer = null;
   document.addEventListener('input', event => {
     const el = event.target;
+    if (el.tagName === 'TEXTAREA' && el.closest('.record')) autoGrow(el);
 
     if (el.id === 'search') {
       S.filters.search = el.value;

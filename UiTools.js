@@ -150,18 +150,26 @@ function uiSaveBehaviorRow(row, expectedName, data) {
       }
     }
 
-    BEHAVIOR_INPUT_FIELDS.forEach(field => {
-      if (values[field] !== undefined && h[field]) {
-        try {
-          sh.getRange(row, h[field]).setValue(String(values[field]).trim());
-        } catch (err) {
-          if (field === 'selectedTraits' && String(values.selectedTraits).includes(',')) {
-            throw new Error('특성 칸 드롭다운이 여러 개 선택을 허용하지 않아요. 시트의 selectedTraits 열 → 데이터 확인에서 "여러 항목 선택 허용"을 켜거나, 특성을 하나만 골라 주세요.');
-          }
-          throw err;
-        }
+    const fields = BEHAVIOR_INPUT_FIELDS.filter(field => values[field] !== undefined && h[field]);
+    const cols = fields.map(field => h[field]);
+    const first = Math.min.apply(null, cols);
+    const contiguous = fields.length > 0 && Math.max.apply(null, cols) - first + 1 === fields.length;
+
+    try {
+      if (contiguous) {
+        // 입력 열이 붙어 있으면 한 번에 쓴다(칸마다 쓰면 느리다).
+        const rowValues = [];
+        fields.forEach(field => { rowValues[h[field] - first] = String(values[field]).trim(); });
+        sh.getRange(row, first, 1, fields.length).setValues([rowValues]);
+      } else {
+        fields.forEach(field => sh.getRange(row, h[field]).setValue(String(values[field]).trim()));
       }
-    });
+    } catch (err) {
+      if (String(values.selectedTraits || '').includes(',')) {
+        throw new Error('특성 칸 드롭다운이 여러 개 선택을 허용하지 않아요. 시트의 selectedTraits 열 → 데이터 확인에서 "여러 항목 선택 허용"을 켜거나, 특성을 하나만 골라 주세요.');
+      }
+      throw err;
+    }
 
     return readBehaviorRow_(sh, h, row);
   });

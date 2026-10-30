@@ -123,6 +123,8 @@
   .btn:hover { background: var(--bg); }
   .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
   .btn.primary:hover { filter: brightness(1.05); }
+  .btn.download { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; }
+  .btn.download:hover { filter: brightness(1.08); }
   .btn.danger { color: var(--err); }
   .btn.lg { padding: 11px 22px; font-size: 15px; font-weight: 600; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -196,7 +198,7 @@
   /* 초안 카드 */
   .record { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px; }
   .record.checked { border-color: var(--ok); }
-  .record textarea { min-height: 120px; margin: 10px 0 6px; }
+  .record textarea { min-height: 120px; margin: 10px 0 6px; overflow-y: hidden; }
   .record .caution { background: var(--warn-soft); color: var(--warn); border-radius: 6px; padding: 6px 10px; font-size: 12px; margin-top: 8px; white-space: pre-line; }
   .bytes.over { color: var(--err); font-weight: 600; }
   .bytes.near { color: var(--warn); font-weight: 600; }

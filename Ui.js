@@ -2,8 +2,8 @@
 // 시트는 DB로 그대로 쓰고, 화면은 google.script.run으로 아래 ui* 함수만 호출한다.
 
 const ASSISTANT_DIALOG_TITLE = '생기부 도우미';
-const ASSISTANT_DIALOG_WIDTH = 1100;
-const ASSISTANT_DIALOG_HEIGHT = 750;
+const ASSISTANT_DIALOG_WIDTH = 1280;
+const ASSISTANT_DIALOG_HEIGHT = 880;
 const AUTO_OPEN_ASSISTANT_PROPERTY = 'AUTO_OPEN_ASSISTANT';
 
 const API_KEY_PROPERTY_BY_PROVIDER = {
