@@ -1,0 +1,1047 @@
+<script>
+  // ---- 상태 ---------------------------------------------------------------
+  const S = {
+    boot: null,
+    view: 'home',
+    settings: null,
+    settingsTab: 'basic',
+    assignments: null,
+    submissions: null,
+    drafts: null,
+    finals: null,
+    selected: new Set(),
+    edits: {},
+    filters: { collectAssignment: 'included', draftAssignment: 'included', reviewAssignment: '', search: '', uncheckedOnly: false },
+    pageSize: { review: 30, final: 30 },
+    busy: '',
+    pollTimer: null,
+  };
+
+  const STEPS = [
+    { id: 'home', label: '홈', num: '⌂' },
+    { id: 'start', label: '시작하기', num: 1 },
+    { id: 'assignments', label: '과제 고르기', num: 2 },
+    { id: 'collect', label: '제출물 수집', num: 3 },
+    { id: 'drafts', label: '초안 만들기', num: 4 },
+    { id: 'review', label: '초안 확인', num: 5 },
+    { id: 'final', label: '최종 생기부', num: 6 },
+  ];
+
+  const NEXT_GUIDE = {
+    start: { title: 'AI 연결부터 시작해요', desc: '사용할 AI(Claude·GPT·Gemini)를 고르고 API 키를 저장하면 준비가 끝나요.', button: '시작하기' },
+    assignments: { title: '생기부에 쓸 과제를 골라요', desc: 'Google Classroom에서 과제 목록을 가져온 뒤, 생기부에 반영할 과제에 체크하세요.', button: '과제 고르기' },
+    collect: { title: '학생 제출물을 가져와요', desc: '체크한 과제의 학생 제출물(문서 내용 포함)을 한 번에 모아요.', button: '제출물 수집하기' },
+    drafts: { title: 'AI로 과제별 초안을 만들어요', desc: '제출물을 골라 AI에게 생기부 초안을 맡겨요. 창을 닫아도 자동으로 이어서 만들어요.', button: '초안 만들기' },
+    review: { title: '초안을 확인하고 다듬어요', desc: '만들어진 초안을 읽고 고친 뒤 \'확인함\'에 체크하세요.', button: '초안 확인하기' },
+    final: { title: '학생별 최종 생기부를 만들어요', desc: '체크한 과제의 초안을 학생별로 묶어 하나의 생기부로 완성해요.', button: '최종 생기부 만들기' },
+  };
+
+  const PROVIDERS = [
+    { id: 'claude', name: 'Claude', desc: '글이 자연스럽고 지시를 잘 따라요.', keyUrl: 'https://console.anthropic.com/settings/keys', modelKey: 'CLAUDE_MODEL' },
+    { id: 'gpt', name: 'GPT', desc: 'OpenAI 모델이에요.', keyUrl: 'https://platform.openai.com/api-keys', modelKey: 'GPT_MODEL' },
+    { id: 'gemini', name: 'Gemini', desc: '무료 할당량으로 써 볼 수 있어요.', keyUrl: 'https://aistudio.google.com/apikey', modelKey: 'GEMINI_MODEL' },
+  ];
+
+  // ---- 공통 유틸 -----------------------------------------------------------
+  function call(name, ...args) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)[name](...args);
+    });
+  }
+
+  function esc(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function $(selector) { return document.querySelector(selector); }
+
+  // 나이스 바이트 근사치 (Code.js의 neisByteCount_와 같은 계산)
+  function neisBytes(text) {
+    let bytes = 0;
+    for (const ch of String(text || '')) bytes += ch.codePointAt(0) <= 0x7f ? 1 : 3;
+    return bytes;
+  }
+
+  function settingValue(key, fallback) {
+    if (!S.settings) return fallback;
+    for (const group of Object.values(S.settings.groups)) {
+      const found = group.find(item => item.key === key);
+      if (found && found.value !== '') return found.value;
+    }
+    return fallback;
+  }
+
+  function banner(message, type) {
+    const el = $('#banner');
+    if (!message) {
+      el.className = 'banner hidden';
+      el.innerHTML = '';
+      return;
+    }
+    el.className = `banner ${type || 'info'}`;
+    el.innerHTML = `<div class="grow">${esc(message)}</div><button class="icon" onclick="banner('')" aria-label="닫기">✕</button>`;
+  }
+
+  function showError(err) {
+    const message = err && err.message ? err.message : String(err);
+    banner(message.replace(/^Exception:\s*/, ''), 'err');
+  }
+
+  function showMessages(result, fallback) {
+    const messages = (result && result.messages) || [];
+    banner(messages.length ? messages.join('\n\n') : fallback || '', 'info');
+  }
+
+  async function withBusy(label, fn) {
+    if (S.busy) return;
+    S.busy = label;
+    banner('');
+    render();
+    try {
+      return await fn();
+    } catch (err) {
+      showError(err);
+    } finally {
+      S.busy = '';
+      render();
+    }
+  }
+
+  function busyNote() {
+    return S.busy ? `<div class="card"><span class="spinner"></span> ${esc(S.busy)}</div>` : '';
+  }
+
+  function openModal(title, bodyHtml) {
+    $('#modal-title').textContent = title;
+    $('#modal-body').innerHTML = bodyHtml;
+    $('#modal').classList.remove('hidden');
+  }
+
+  function closeModal() {
+    $('#modal').classList.add('hidden');
+    $('#modal-body').innerHTML = '';
+  }
+
+  function confirmModal(title, message, okLabel) {
+    return new Promise(resolve => {
+      openModal(title, `
+        <div style="white-space:pre-line">${esc(message)}</div>
+        <div class="row" style="justify-content:flex-end;margin-top:18px">
+          <button class="btn" id="confirm-cancel">취소</button>
+          <button class="btn primary" id="confirm-ok">${esc(okLabel || '확인')}</button>
+        </div>`);
+      $('#confirm-cancel').onclick = () => { closeModal(); resolve(false); };
+      $('#confirm-ok').onclick = () => { closeModal(); resolve(true); };
+    });
+  }
+
+  function copyText(text) {
+    const done = () => banner('복사했어요.', 'ok');
+    const fallback = () => {
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+      done();
+    };
+    try {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } catch (err) {
+      fallback();
+    }
+  }
+
+  // ---- 단계 상태 -----------------------------------------------------------
+  function stepState(id) {
+    const b = S.boot;
+    if (!b) return '';
+    const c = b.counts || {};
+    const st = b.status || {};
+    const on = job => st[job] && st[job].state === 'ON';
+
+    switch (id) {
+      case 'start': return b.isSetup && b.keys[b.provider] ? 'done' : '';
+      case 'assignments': return c.includedAssignments > 0 ? 'done' : '';
+      case 'collect': return on('collect') ? 'running' : c.submissions > 0 ? 'done' : '';
+      case 'drafts': return on('drafts') ? 'running' : c.drafts > 0 ? 'done' : '';
+      case 'review': return c.drafts > 0 && c.draftsChecked >= c.drafts ? 'done' : '';
+      case 'final': return on('final') ? 'running' : c.finalRecords > 0 ? 'done' : '';
+      default: return '';
+    }
+  }
+
+  function nextStep() {
+    const order = ['start', 'assignments', 'collect', 'drafts', 'review', 'final'];
+    return order.find(id => stepState(id) !== 'done') || 'final';
+  }
+
+  function renderNav() {
+    const next = nextStep();
+    $('#steps').innerHTML = STEPS.map(step => {
+      const state = stepState(step.id);
+      let dotClass = state;
+      let dotText = step.num;
+      if (state === 'done') dotText = '✓';
+      if (state === 'running') dotText = '●';
+      if (!state && step.id === next) dotClass = 'next';
+      return `<button class="step ${S.view === step.id ? 'active' : ''}" data-go="${step.id}">
+        <span class="dot ${dotClass}">${dotText}</span>${esc(step.label)}</button>`;
+    }).join('');
+
+    const b = S.boot;
+    $('#ai-badge').textContent = b ? `AI: ${b.provider} · ${b.model}` : '';
+  }
+
+  // ---- 데이터 불러오기 ------------------------------------------------------
+  async function refreshBoot() {
+    S.boot = await call('uiGetBootstrap');
+    if (S.boot.isSetup && !S.settings) S.settings = await call('uiGetSettings');
+    updatePolling();
+    render();
+  }
+
+  async function ensureData(view) {
+    const loaders = {
+      assignments: async () => { if (!S.assignments) S.assignments = await call('uiListAssignments'); },
+      collect: async () => {
+        if (!S.assignments) S.assignments = await call('uiListAssignments');
+        if (!S.submissions) S.submissions = await call('uiListSubmissions');
+      },
+      drafts: async () => {
+        if (!S.assignments) S.assignments = await call('uiListAssignments');
+        if (!S.submissions) S.submissions = await call('uiListSubmissions');
+      },
+      review: async () => { if (!S.drafts) S.drafts = await call('uiListDrafts'); },
+      final: async () => { if (!S.finals) S.finals = await call('uiListFinalRecords'); },
+      settings: async () => { if (!S.settings) S.settings = await call('uiGetSettings'); },
+    };
+    if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
+    await loaders[view]();
+  }
+
+  async function go(view) {
+    S.view = view;
+    S.selected = new Set();
+    render();
+    try {
+      await ensureData(view);
+    } catch (err) {
+      showError(err);
+    }
+    render();
+    $('#view').scrollTop = 0;
+  }
+
+  // 진행 중인 자동 작업이 있으면 5초마다 상태를 새로 읽는다.
+  function updatePolling() {
+    const st = (S.boot && S.boot.status) || {};
+    const running = ['collect', 'drafts', 'final'].some(job => st[job] && st[job].state === 'ON');
+
+    if (running && !S.pollTimer) {
+      S.pollTimer = setInterval(pollStatus, 5000);
+    } else if (!running && S.pollTimer) {
+      clearInterval(S.pollTimer);
+      S.pollTimer = null;
+    }
+  }
+
+  async function pollStatus() {
+    try {
+      const before = S.boot.status;
+      const status = await call('uiGetStatus');
+      S.boot.status = status;
+
+      const finished = ['collect', 'drafts', 'final'].filter(job => before[job].state === 'ON' && status[job].state !== 'ON');
+      if (finished.length) {
+        if (finished.includes('collect')) { S.submissions = null; S.assignments = null; }
+        if (finished.includes('drafts')) { S.submissions = null; S.drafts = null; }
+        if (finished.includes('final')) S.finals = null;
+        await refreshBoot();
+        await ensureData(S.view);
+      } else if (S.view === 'drafts' || S.view === 'collect') {
+        // 진행 중에도 남은 개수와 행 상태를 갱신해서 보여준다.
+        S.submissions = await call('uiListSubmissions');
+      }
+      updatePolling();
+      if (!S.busy && !isEditing()) render();
+      else renderNav();
+    } catch (err) {
+      // 폴링 실패는 다음 주기에 다시 시도한다.
+    }
+  }
+
+  function isEditing() {
+    const el = document.activeElement;
+    return el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT');
+  }
+
+  // ---- 화면 렌더링 -----------------------------------------------------------
+  function render() {
+    renderNav();
+    const views = { home: viewHome, start: viewStart, assignments: viewAssignments, collect: viewCollect, drafts: viewDrafts, review: viewReview, final: viewFinal, settings: viewSettings };
+    const scroll = $('#view').scrollTop;
+    if (!S.boot) {
+      $('#view').innerHTML = '<div class="loading">불러오는 중…</div>';
+      return;
+    }
+    if (!S.boot.isSetup && S.view !== 'start' && S.view !== 'home') {
+      $('#view').innerHTML = `<div class="card hero"><h2>먼저 시트를 준비해 주세요</h2>
+        <p class="lead">처음 한 번만 하면 돼요.</p><button class="btn primary" data-go="start">시작하기로 이동</button></div>`;
+      return;
+    }
+    $('#view').innerHTML = views[S.view]();
+    $('#view').scrollTop = scroll;
+  }
+
+  function viewHome() {
+    const b = S.boot;
+    const c = b.counts || {};
+    const next = nextStep();
+    const guide = NEXT_GUIDE[next];
+    const allDone = stepState('final') === 'done' && next === 'final';
+
+    return `
+      <h1>생기부 도우미</h1>
+      <p class="lead">Classroom 과제 → 제출물 수집 → AI 초안 → 확인 → 학생별 최종 생기부 순서로 진행해요.<br>
+        왼쪽 단계를 차례대로 따라가면 돼요.</p>
+
+      <div class="card hero">
+        <div class="muted small">${allDone ? '모든 단계를 한 번 마쳤어요' : '지금 할 일'}</div>
+        <h2 style="font-size:18px;margin-top:4px">${esc(guide.title)}</h2>
+        <p class="lead" style="margin-bottom:14px">${esc(guide.desc)}</p>
+        <button class="btn primary lg" data-go="${next}">${esc(guide.button)} →</button>
+      </div>
+
+      ${b.isSetup ? `
+      <div class="stats">
+        <div class="stat"><span class="muted small">체크한 과제</span><b>${c.includedAssignments || 0}<span class="muted small"> / ${c.assignments || 0}</span></b></div>
+        <div class="stat"><span class="muted small">수집한 제출물</span><b>${c.submissions || 0}</b></div>
+        <div class="stat"><span class="muted small">초안 (확인함)</span><b>${c.drafts || 0}<span class="muted small"> (${c.draftsChecked || 0})</span></b></div>
+        <div class="stat"><span class="muted small">최종 생기부</span><b>${c.finalRecords || 0}</b></div>
+      </div>` : ''}
+
+      <div class="card" style="margin-top:16px">
+        <h2>다른 기능</h2>
+        <p class="muted" style="margin:0">공통문구 생성, 행발 추천 문구, 수동추가 데이터 생기부는 시트 메뉴
+          <b>[생기부 자동화]</b>에서 사용할 수 있어요. 기존 메뉴 전체는 <b>[고급 (기존 메뉴)]</b>에 그대로 있어요.</p>
+      </div>`;
+  }
+
+  function viewStart() {
+    const b = S.boot;
+    const provider = PROVIDERS.find(p => p.id === b.provider) || PROVIDERS[0];
+    const hasKey = b.keys[provider.id];
+
+    const setupCard = b.isSetup ? '' : `
+      <div class="card hero">
+        <h2>① 시트 준비하기</h2>
+        <p class="lead">필요한 시트와 기본 설정을 만들어요. 처음 한 번만 누르면 돼요.</p>
+        <button class="btn primary lg" data-action="setup" ${S.busy ? 'disabled' : ''}>시트 준비하기</button>
+      </div>`;
+
+    const providerCards = PROVIDERS.map(p => `
+      <button class="choice ${p.id === b.provider ? 'selected' : ''}" data-action="provider" data-id="${p.id}" ${b.isSetup ? '' : 'disabled'}>
+        <b>${esc(p.name)}</b>
+        <div class="muted small">${esc(p.desc)}</div>
+        <div style="margin-top:8px">${b.keys[p.id] ? '<span class="pill ok">키 저장됨</span>' : '<span class="pill">키 없음</span>'}</div>
+      </button>`).join('');
+
+    const modelSetting = S.settings && S.settings.groups.ai.find(item => item.key === provider.modelKey);
+    const reasoningSetting = S.settings && S.settings.groups.ai.find(item => item.key === 'REASONING');
+    const select = (setting, id) => setting && setting.options ? `
+      <select id="${id}">${setting.options.map(o => `<option ${o === setting.value ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>` : '';
+
+    return `
+      <h1>시작하기</h1>
+      <p class="lead">AI 서비스를 연결해요. API 키는 내 구글 계정에만 저장되고, 화면이나 시트에는 보이지 않아요.</p>
+      ${busyNote()}
+      ${setupCard}
+
+      <div class="card">
+        <h2>${b.isSetup ? '①' : '②'} 사용할 AI 고르기</h2>
+        <div class="choices">${providerCards}</div>
+
+        <label class="field"><span>${esc(provider.name)} API 키</span>
+          ${hasKey ? `
+            <div class="row"><span class="pill ok">저장됨 ●●●●●●●●</span>
+              <button class="btn" data-action="show-key-input">다른 키로 바꾸기</button>
+              <button class="btn danger" data-action="clear-key" data-id="${provider.id}">키 삭제</button></div>
+            <div class="row hidden" id="key-row" style="margin-top:8px">` : '<div class="row" id="key-row">'}
+              <input type="password" id="api-key" class="grow" placeholder="API 키를 붙여넣으세요" autocomplete="off" ${b.isSetup ? '' : 'disabled'}>
+              <button class="btn primary" data-action="save-key" data-id="${provider.id}" ${b.isSetup ? '' : 'disabled'}>저장</button>
+            </div>
+          <div class="help">키 발급: <a href="${provider.keyUrl}" target="_blank" rel="noopener">${esc(provider.keyUrl)}</a></div>
+        </label>
+
+        ${modelSetting ? `
+        <div class="row">
+          <label class="field"><span>모델</span>${select(modelSetting, 'model-select')}</label>
+          <label class="field"><span>추론 수준</span>${select(reasoningSetting, 'reasoning-select')}</label>
+          <button class="btn" data-action="save-model" style="margin-top:10px">모델 저장</button>
+        </div>
+        <div class="help">${esc(modelSetting.description)}</div>` : ''}
+      </div>
+
+      ${b.isSetup ? `
+      <div class="card">
+        <h2>시트를 열 때 도우미 자동으로 열기</h2>
+        <label class="row"><input type="checkbox" data-action="auto-open" ${b.autoOpen ? 'checked' : ''}>
+          시트를 열면 이 화면이 바로 뜨게 해요.</label>
+      </div>` : ''}
+
+      ${stepState('start') === 'done' ? '<button class="btn primary lg" data-go="assignments">다음: 과제 고르기 →</button>' : ''}`;
+  }
+
+  function assignmentGroups(assignments, filterText) {
+    const text = (filterText || '').trim().toLowerCase();
+    const groups = {};
+    assignments.forEach(a => {
+      if (text && !`${a.courseName} ${a.section} ${a.assignmentTitle}`.toLowerCase().includes(text)) return;
+      const name = a.section ? `${a.courseName} · ${a.section}` : a.courseName;
+      (groups[name] = groups[name] || []).push(a);
+    });
+    return groups;
+  }
+
+  function viewAssignments() {
+    const list = S.assignments || [];
+    const groups = assignmentGroups(list, S.filters.search);
+    const included = list.filter(a => a.includeInFinal).length;
+
+    const groupHtml = Object.keys(groups).map(name => {
+      const items = groups[name];
+      const allChecked = items.every(a => a.includeInFinal);
+      return `
+        <div class="group-head">
+          <input type="checkbox" data-action="toggle-group" data-keys="${esc(items.map(a => a.key).join(','))}" ${allChecked ? 'checked' : ''}>
+          <span class="grow">${esc(name)}</span><span class="muted small">${items.filter(a => a.includeInFinal).length} / ${items.length}</span>
+        </div>
+        ${items.map(a => `
+        <label class="item">
+          <input type="checkbox" data-action="toggle-assignment" data-key="${esc(a.key)}" ${a.includeInFinal ? 'checked' : ''}>
+          <span class="grow">${esc(a.assignmentTitle)}
+            ${a.dueAt ? `<span class="muted small"> · 마감 ${esc(a.dueAt)}</span>` : ''}</span>
+          ${a.collectStatus ? `<span class="pill">${esc(a.collectStatus)}</span>` : ''}
+          ${a.alternateLink ? `<a href="${esc(a.alternateLink)}" target="_blank" rel="noopener" class="small">열기 ↗</a>` : ''}
+        </label>`).join('')}`;
+    }).join('');
+
+    return `
+      <h1>과제 고르기</h1>
+      <p class="lead">생기부에 반영할 과제에 체크하세요. 체크한 과제만 제출물을 모으고 초안을 만들어요.</p>
+      ${busyNote()}
+      <div class="toolbar">
+        <button class="btn primary" data-action="import-assignments" ${S.busy ? 'disabled' : ''}>Classroom에서 과제 가져오기</button>
+        <input type="search" id="search" class="grow" placeholder="수업명이나 과제명으로 찾기" value="${esc(S.filters.search)}">
+        <span class="muted">체크한 과제 <b>${included}</b>개</span>
+      </div>
+      ${list.length === 0
+        ? '<div class="card empty">아직 가져온 과제가 없어요.<br>위의 [Classroom에서 과제 가져오기]를 눌러 주세요.</div>'
+        : `<div class="list">${groupHtml || '<div class="empty">검색 결과가 없어요.</div>'}</div>`}
+      ${included > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="collect">다음: 제출물 수집 →</button></div>' : ''}`;
+  }
+
+  function statusPanel(job, unit) {
+    const st = S.boot.status && S.boot.status[job];
+    if (!st) return '';
+    const running = st.state === 'ON';
+    const last = st.last;
+    const lastLine = last ? `<div class="muted small" style="margin-top:6px">마지막 실행 ${esc(last.updatedAt || '')} · 완료 ${last.processed || 0}${unit} · 실패 ${last.failed || 0}${unit} · 건너뜀 ${last.skipped || 0}${unit}</div>` : '';
+    const blocked = last && last.blocked && !running
+      ? `<div class="banner err" style="margin:10px 0 0">${esc(last.blockingReason || '중단됨')}\n${esc(last.blockingMessage || '')}</div>` : '';
+
+    return `
+      <div class="card">
+        <div class="row between">
+          <div>
+            ${running ? `<span class="pill run"><span class="spinner"></span> 자동 진행 중</span>` : st.remaining > 0 ? '<span class="pill warn">멈춤</span>' : '<span class="pill ok">대기 없음</span>'}
+            <span style="margin-left:8px">남은 작업 <b>${st.remaining}</b>${unit}</span>
+          </div>
+          ${running ? `<button class="btn danger" data-action="stop-all">중지</button>` : ''}
+        </div>
+        ${running ? '<div class="muted small" style="margin-top:6px">자동으로 나누어 처리하고 있어요. 이 창을 닫아도 계속 진행돼요.</div>' : ''}
+        ${lastLine}${blocked}
+      </div>`;
+  }
+
+  function includedAssignmentKeys() {
+    return new Set((S.assignments || []).filter(a => a.includeInFinal).map(a => a.key));
+  }
+
+  function assignmentOptions(selected) {
+    const list = S.assignments || [];
+    return `<option value="included" ${selected === 'included' ? 'selected' : ''}>체크한 과제 전체</option>
+      <option value="" ${selected === '' ? 'selected' : ''}>모든 과제</option>
+      ${list.map(a => `<option value="${esc(a.key)}" ${selected === a.key ? 'selected' : ''}>${esc(a.courseName)} · ${esc(a.assignmentTitle)}</option>`).join('')}`;
+  }
+
+  function filterSubmissions(assignmentFilter) {
+    const included = includedAssignmentKeys();
+    const text = S.filters.search.trim().toLowerCase();
+    return (S.submissions || []).filter(s => {
+      const key = `${s.courseId}|${s.courseWorkId}`;
+      if (assignmentFilter === 'included' && !included.has(key)) return false;
+      if (assignmentFilter && assignmentFilter !== 'included' && assignmentFilter !== key) return false;
+      if (text && !`${s.studentNo} ${s.studentName} ${s.assignmentTitle}`.toLowerCase().includes(text)) return false;
+      return true;
+    });
+  }
+
+  function draftStatusPill(s) {
+    const status = String(s.aiStatus || '');
+    if (status === '대기' || status === '생성중') return `<span class="pill run">${esc(status)}</span>`;
+    if (status === '오류' || status === '재시도필요') return `<span class="pill err">${esc(status)}</span>`;
+    if (s.hasDraft) return '<span class="pill ok">초안 있음</span>';
+    return status ? `<span class="pill">${esc(status)}</span>` : '<span class="pill">초안 없음</span>';
+  }
+
+  function viewCollect() {
+    const c = S.boot.counts;
+    const running = S.boot.status.collect.state === 'ON';
+    const rows = filterSubmissions(S.filters.collectAssignment);
+
+    return `
+      <h1>제출물 수집</h1>
+      <p class="lead">체크한 과제의 학생 제출물과 첨부 문서 내용을 가져와요. 과제가 많으면 나누어 자동으로 이어서 가져와요.</p>
+      ${busyNote()}
+      <div class="card">
+        <div class="row between">
+          <div>체크한 과제 <b>${c.includedAssignments}</b>개의 제출물을 가져와요.</div>
+          <button class="btn primary" data-action="collect" ${S.busy || running || !c.includedAssignments ? 'disabled' : ''}>제출물 수집 시작</button>
+        </div>
+        ${!c.includedAssignments ? '<div class="help">먼저 [과제 고르기]에서 과제를 체크하세요.</div>' : ''}
+      </div>
+      ${statusPanel('collect', '개 과제')}
+
+      <h2>수집한 제출물</h2>
+      <div class="toolbar">
+        <select id="collect-assignment">${assignmentOptions(S.filters.collectAssignment)}</select>
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+        <span class="muted">${rows.length}개</span>
+      </div>
+      ${rows.length === 0 ? '<div class="card empty">수집한 제출물이 없어요.</div>' : `
+      <div class="table-wrap"><table>
+        <thead><tr><th>번호</th><th>이름</th><th>과제</th><th>제출</th><th>글자수</th><th>초안</th></tr></thead>
+        <tbody>${rows.map(s => `
+          <tr class="clickable" data-action="show-text" data-key="${esc(s.submissionKey)}">
+            <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td>
+            <td>${esc(s.assignmentTitle)}</td>
+            <td>${esc(s.state)}${s.late === true || s.late === 'TRUE' ? ' <span class="pill warn">지각</span>' : ''}</td>
+            <td>${Number(s.textChars) > 0 ? esc(s.textChars) : '<span class="pill warn">내용 없음</span>'}</td>
+            <td>${draftStatusPill(s)}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="help">행을 누르면 제출물 원문을 볼 수 있어요.</div>`}
+      ${c.submissions > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="drafts">다음: 초안 만들기 →</button></div>' : ''}`;
+  }
+
+  function viewDrafts() {
+    const c = S.boot.counts;
+    const st = S.boot.status.drafts;
+    const running = st.state === 'ON';
+    const rows = filterSubmissions(S.filters.draftAssignment);
+    const allSelected = rows.length > 0 && rows.every(s => S.selected.has(String(s.submissionKey)));
+
+    return `
+      <h1>초안 만들기</h1>
+      <p class="lead">초안을 만들 제출물을 고른 뒤 아래 버튼을 누르세요. AI 사용 비용은 선택한 개수만큼 들어요.</p>
+      ${busyNote()}
+      ${statusPanel('drafts', '개')}
+      ${!running && st.remaining > 0 ? `
+        <div class="card row between"><div>만들지 못하고 남은 제출물이 <b>${st.remaining}</b>개 있어요.</div>
+          <button class="btn" data-action="resume-drafts" ${S.busy ? 'disabled' : ''}>남은 것 이어서 만들기</button></div>` : ''}
+
+      <div class="toolbar">
+        <select id="draft-assignment">${assignmentOptions(S.filters.draftAssignment)}</select>
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+      </div>
+      <div class="toolbar">
+        <button class="btn" data-action="select-no-draft">초안 없는 것만 선택</button>
+        <button class="btn" data-action="select-clear">선택 해제</button>
+        <span class="grow"></span>
+        <span class="muted">선택 <b>${S.selected.size}</b>개</span>
+        <button class="btn primary" data-action="make-drafts" ${S.busy || running || !S.selected.size ? 'disabled' : ''}>선택한 ${S.selected.size}개 초안 만들기</button>
+      </div>
+      ${rows.length === 0 ? '<div class="card empty">제출물이 없어요. 먼저 [제출물 수집]을 진행하세요.</div>' : `
+      <div class="table-wrap"><table>
+        <thead><tr><th><input type="checkbox" data-action="select-all" ${allSelected ? 'checked' : ''}></th>
+          <th>번호</th><th>이름</th><th>과제</th><th>글자수</th><th>상태</th></tr></thead>
+        <tbody>${rows.map(s => `
+          <tr>
+            <td><input type="checkbox" data-action="select-one" data-key="${esc(s.submissionKey)}" ${S.selected.has(String(s.submissionKey)) ? 'checked' : ''}></td>
+            <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td><td>${esc(s.assignmentTitle)}</td>
+            <td>${Number(s.textChars) > 0 ? esc(s.textChars) : '<span class="pill warn">내용 없음</span>'}</td>
+            <td>${draftStatusPill(s)}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>`}
+      ${c.drafts > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="review">다음: 초안 확인 →</button></div>' : ''}`;
+  }
+
+  function recordCard(r, kind) {
+    const editKey = `${kind}:${r.key}`;
+    const text = S.edits[editKey] !== undefined ? S.edits[editKey] : String(r.finalRecord || '');
+    const dirty = S.edits[editKey] !== undefined && S.edits[editKey] !== String(r.finalRecord || '');
+    const max = Number(settingValue('NEIS_MAX_BYTES', 1500));
+    const warn = Number(settingValue('NEIS_WARNING_BYTES', 1400));
+    const bytes = neisBytes(text);
+    const byteClass = bytes > max ? 'over' : bytes > warn ? 'near' : '';
+    const title = kind === 'review'
+      ? `${esc(r.courseName)} · ${esc(r.assignmentTitle)}`
+      : `${esc(r.courseName)} · 과제 ${esc(r.assignmentCount)}개`;
+    const status = kind === 'final' && r.finalStatus && r.finalStatus !== '생성완료'
+      ? `<span class="pill ${r.finalStatus === '오류' ? 'err' : 'run'}">${esc(r.finalStatus)}</span>` : '';
+
+    return `
+      <div class="record ${r.teacherChecked ? 'checked' : ''}">
+        <div class="row between">
+          <div><b>${esc(r.studentNo)} ${esc(r.studentName)}</b> <span class="muted small">${title}</span> ${status}</div>
+          <label class="row small"><input type="checkbox" data-action="check-record" data-kind="${kind}" data-row="${r.row}" data-key="${esc(r.key)}" ${r.teacherChecked ? 'checked' : ''}> 확인함</label>
+        </div>
+        <textarea data-action="edit-record" data-kind="${kind}" data-key="${esc(r.key)}">${esc(text)}</textarea>
+        <div class="row between">
+          <span class="small bytes ${byteClass}" data-bytes="${esc(editKey)}">${text.length}자 · ${bytes} / ${max} 바이트</span>
+          <div class="row">
+            <button class="btn" data-action="copy-record" data-kind="${kind}" data-key="${esc(r.key)}">복사</button>
+            <button class="btn primary" data-action="save-record" data-kind="${kind}" data-row="${r.row}" data-key="${esc(r.key)}" ${dirty ? '' : 'disabled'}>저장</button>
+          </div>
+        </div>
+        ${r.caution ? `<div class="caution">${esc(r.caution)}</div>` : ''}
+        ${kind === 'final' && r.finalError ? `<div class="caution">${esc(r.finalError)}</div>` : ''}
+      </div>`;
+  }
+
+  function filterRecords(list, kind) {
+    const text = S.filters.search.trim().toLowerCase();
+    return list.filter(r => {
+      if (kind === 'review' && S.filters.reviewAssignment && `${r.courseName}|${r.assignmentTitle}` !== S.filters.reviewAssignment) return false;
+      if (S.filters.uncheckedOnly && r.teacherChecked) return false;
+      if (text && !`${r.studentNo} ${r.studentName}`.toLowerCase().includes(text)) return false;
+      return true;
+    });
+  }
+
+  function recordList(list, kind) {
+    const rows = filterRecords(list, kind);
+    const shown = rows.slice(0, S.pageSize[kind]);
+    return `
+      ${shown.map(r => recordCard(r, kind)).join('') || '<div class="card empty">조건에 맞는 항목이 없어요.</div>'}
+      ${rows.length > shown.length ? `<button class="btn" data-action="more" data-kind="${kind}">더 보기 (${rows.length - shown.length}개 남음)</button>` : ''}`;
+  }
+
+  function viewReview() {
+    const drafts = S.drafts || [];
+    const assignments = Array.from(new Set(drafts.map(r => `${r.courseName}|${r.assignmentTitle}`)));
+    const checked = drafts.filter(r => r.teacherChecked).length;
+
+    return `
+      <h1>초안 확인</h1>
+      <p class="lead">초안을 읽고 고친 뒤 [저장]을 누르세요. 다 봤으면 [확인함]에 체크하세요. 바이트는 나이스 기준 근사치예요.</p>
+      <div class="toolbar">
+        <select id="review-assignment">
+          <option value="">모든 과제</option>
+          ${assignments.map(a => `<option value="${esc(a)}" ${S.filters.reviewAssignment === a ? 'selected' : ''}>${esc(a.replace('|', ' · '))}</option>`).join('')}
+        </select>
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+        <label class="row small"><input type="checkbox" id="unchecked-only" ${S.filters.uncheckedOnly ? 'checked' : ''}> 확인 안 한 것만</label>
+        <span class="muted">확인 ${checked} / ${drafts.length}</span>
+        <button class="btn" data-action="reload-drafts">새로고침</button>
+      </div>
+      ${drafts.length === 0 ? '<div class="card empty">아직 초안이 없어요. [초안 만들기]에서 먼저 만들어 주세요.</div>' : recordList(drafts, 'review')}
+      ${drafts.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="final">다음: 최종 생기부 →</button></div>' : ''}`;
+  }
+
+  function viewFinal() {
+    const c = S.boot.counts;
+    const running = S.boot.status.final.state === 'ON';
+    const finals = S.finals || [];
+
+    return `
+      <h1>최종 생기부</h1>
+      <p class="lead">체크한 과제(${c.includedAssignments}개)의 초안을 학생별로 묶어 하나의 생기부로 만들어요.</p>
+      ${busyNote()}
+      <div class="card row between">
+        <div>초안 <b>${c.drafts}</b>개를 바탕으로 만들어요.</div>
+        <button class="btn primary" data-action="make-final" ${S.busy || running || !c.drafts ? 'disabled' : ''}>학생별 최종 생기부 만들기</button>
+      </div>
+      ${statusPanel('final', '명')}
+      <div class="toolbar">
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+        <label class="row small"><input type="checkbox" id="unchecked-only" ${S.filters.uncheckedOnly ? 'checked' : ''}> 확인 안 한 것만</label>
+        <button class="btn" data-action="reload-finals">새로고침</button>
+      </div>
+      ${finals.length === 0 ? '<div class="card empty">아직 최종 생기부가 없어요.</div>' : recordList(finals, 'final')}`;
+  }
+
+  function viewSettings() {
+    if (!S.settings) return '<div class="loading">불러오는 중…</div>';
+    const tabs = [
+      { id: 'basic', label: '기본' },
+      { id: 'prompts', label: '프롬프트' },
+      { id: 'advanced', label: '고급' },
+    ];
+    const items = S.settingsTab === 'basic'
+      ? S.settings.groups.ai.concat(S.settings.groups.basic)
+      : S.settings.groups[S.settingsTab];
+
+    const field = item => {
+      const id = `set-${item.key}`;
+      let input;
+      if (item.options) {
+        input = `<select id="${id}" data-setting="${item.key}">${item.options.map(o => `<option ${o === item.value ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+      } else if (S.settingsTab === 'prompts') {
+        input = `<textarea id="${id}" data-setting="${item.key}" rows="14">${esc(item.value)}</textarea>
+          <button class="link small" data-action="default-prompt" data-key="${item.key}">기본값 불러오기</button>`;
+      } else {
+        input = `<input type="text" id="${id}" data-setting="${item.key}" value="${esc(item.value)}">`;
+      }
+      return `<label class="field"><span>${esc(item.label)}</span>${input}
+        ${item.description ? `<div class="help">${esc(item.description)}</div>` : ''}</label>`;
+    };
+
+    return `
+      <h1>설정</h1>
+      <p class="lead">자주 바꾸는 설정만 모았어요. 행발·공통문구·수동추가 설정은 아직 '설정' 시트에서 바꿔 주세요.</p>
+      ${busyNote()}
+      <div class="tabs">${tabs.map(t => `<button class="tab ${S.settingsTab === t.id ? 'active' : ''}" data-action="settings-tab" data-id="${t.id}">${t.label}</button>`).join('')}</div>
+      <div class="card">${items.map(field).join('')}
+        <div class="row"><button class="btn primary" data-action="save-settings" ${S.busy ? 'disabled' : ''}>저장</button>
+          <span class="muted small">이 탭에서 바꾼 항목만 저장돼요.</span></div>
+      </div>`;
+  }
+
+  // ---- 동작 ---------------------------------------------------------------
+  function findRecord(kind, key) {
+    return ((kind === 'review' ? S.drafts : S.finals) || []).find(r => r.key === key);
+  }
+
+  async function saveRecord(kind, row, key, patch) {
+    const fn = kind === 'review' ? 'uiUpdateDraft' : 'uiUpdateFinalRecord';
+    const updated = await call(fn, Number(row), key, patch);
+    const record = findRecord(kind, key);
+    if (record) Object.assign(record, updated);
+    delete S.edits[`${kind}:${key}`];
+  }
+
+  const actions = {
+    async setup() {
+      await withBusy('시트를 준비하는 중… (1분 정도 걸릴 수 있어요)', async () => {
+        const result = await call('uiRunSetup');
+        S.boot = result.bootstrap;
+        S.settings = await call('uiGetSettings');
+        showMessages(result, '시트를 준비했어요. 이제 AI를 연결하세요.');
+      });
+    },
+    async provider(el) {
+      await withBusy('AI 서비스를 바꾸는 중…', async () => {
+        S.settings = await call('uiSaveSettings', { AI_PROVIDER: el.dataset.id });
+        S.boot = await call('uiGetBootstrap');
+      });
+    },
+    'show-key-input'() {
+      $('#key-row').classList.remove('hidden');
+      $('#api-key').focus();
+    },
+    async 'save-key'(el) {
+      const key = $('#api-key').value.trim();
+      if (!key) return banner('API 키를 입력하세요.', 'err');
+      await withBusy('API 키를 저장하는 중…', async () => {
+        S.boot = await call('uiSaveApiKey', el.dataset.id, key);
+        banner('API 키를 저장했어요.', 'ok');
+      });
+    },
+    async 'clear-key'(el) {
+      if (!await confirmModal('API 키 삭제', '저장된 API 키를 삭제할까요?', '삭제')) return;
+      await withBusy('API 키를 삭제하는 중…', async () => {
+        S.boot = await call('uiClearApiKey', el.dataset.id);
+      });
+    },
+    async 'save-model'() {
+      const provider = PROVIDERS.find(p => p.id === S.boot.provider);
+      const patch = { [provider.modelKey]: $('#model-select').value };
+      if ($('#reasoning-select')) patch.REASONING = $('#reasoning-select').value;
+      await withBusy('모델을 저장하는 중…', async () => {
+        S.settings = await call('uiSaveSettings', patch);
+        S.boot = await call('uiGetBootstrap');
+        banner('모델을 저장했어요.', 'ok');
+      });
+    },
+    async 'auto-open'(el) {
+      await withBusy('설정을 바꾸는 중…', async () => {
+        const result = await call('uiSetAutoOpen', el.checked);
+        S.boot.autoOpen = result.autoOpen;
+      });
+    },
+    async 'import-assignments'() {
+      await withBusy('Classroom에서 과제를 가져오는 중…', async () => {
+        const result = await call('uiImportAssignments');
+        S.assignments = result.assignments;
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result);
+      });
+    },
+    async 'toggle-assignment'(el) {
+      await setIncluded([el.dataset.key], el.checked);
+    },
+    async 'toggle-group'(el) {
+      await setIncluded(el.dataset.keys.split(','), el.checked);
+    },
+    async collect() {
+      const count = S.boot.counts.includedAssignments;
+      if (!await confirmModal('제출물 수집', `체크한 과제 ${count}개의 제출물을 가져올까요?\n과제가 많으면 나누어 자동으로 이어서 가져와요.`, '수집 시작')) return;
+      await withBusy('제출물을 가져오는 중… 첫 묶음은 몇 분 걸릴 수 있어요.', async () => {
+        const result = await call('uiStartCollect');
+        S.boot.status = result.status;
+        S.submissions = await call('uiListSubmissions');
+        S.assignments = await call('uiListAssignments');
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result);
+        updatePolling();
+      });
+    },
+    'show-text': async el => {
+      openModal('제출물 원문', '<div class="loading">불러오는 중…</div>');
+      try {
+        const s = await call('uiGetSubmissionText', el.dataset.key);
+        $('#modal-title').textContent = `${s.studentName} · ${s.assignmentTitle}`;
+        const files = s.fileTitles ? `<div class="muted small" style="margin-bottom:10px">첨부: ${esc(s.fileTitles)}</div>` : '';
+        const link = s.submissionLink ? `<div style="margin-bottom:10px"><a href="${esc(s.submissionLink)}" target="_blank" rel="noopener">Classroom에서 열기 ↗</a></div>` : '';
+        $('#modal-body').innerHTML = files + link + (esc(s.extractedText) || '<span class="muted">가져온 내용이 없어요.</span>');
+      } catch (err) {
+        $('#modal-body').textContent = String(err.message || err);
+      }
+    },
+    'select-one'(el) {
+      const key = el.dataset.key;
+      if (el.checked) S.selected.add(key); else S.selected.delete(key);
+      render();
+    },
+    'select-all'(el) {
+      filterSubmissions(S.filters.draftAssignment).forEach(s => {
+        if (el.checked) S.selected.add(String(s.submissionKey)); else S.selected.delete(String(s.submissionKey));
+      });
+      render();
+    },
+    'select-no-draft'() {
+      S.selected = new Set(filterSubmissions(S.filters.draftAssignment)
+        .filter(s => !s.hasDraft && Number(s.textChars) > 0)
+        .map(s => String(s.submissionKey)));
+      render();
+    },
+    'select-clear'() {
+      S.selected = new Set();
+      render();
+    },
+    async 'make-drafts'() {
+      const keys = Array.from(S.selected);
+      if (!await confirmModal('초안 만들기', `선택한 제출물 ${keys.length}개의 초안을 AI로 만들까요?\n이미 초안이 있는 제출물은 새로 만들어져요.`, '만들기')) return;
+      await withBusy('초안을 만드는 중… 첫 묶음은 몇 분 걸릴 수 있어요. 창을 닫아도 계속 진행돼요.', async () => {
+        await call('uiQueueDrafts', keys);
+        const result = await call('uiStartDrafts');
+        S.selected = new Set();
+        S.submissions = await call('uiListSubmissions');
+        S.drafts = null;
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result, '초안 만들기를 시작했어요. 남은 것은 자동으로 이어서 만들어요.');
+        updatePolling();
+      });
+    },
+    async 'resume-drafts'() {
+      await withBusy('남은 초안을 이어서 만드는 중…', async () => {
+        const result = await call('uiStartDrafts');
+        S.submissions = await call('uiListSubmissions');
+        S.drafts = null;
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result, '이어서 만들기를 시작했어요.');
+        updatePolling();
+      });
+    },
+    async 'stop-all'() {
+      if (!await confirmModal('자동 작업 중지', '진행 중인 자동 작업(수집·초안·최종 생기부 등)을 모두 멈출까요?\n이미 만든 결과는 그대로 남아요.', '중지')) return;
+      await withBusy('중지하는 중…', async () => {
+        const result = await call('uiStopAll');
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result);
+        updatePolling();
+      });
+    },
+    async 'make-final'() {
+      if (!await confirmModal('최종 생기부 만들기', '체크한 과제의 초안을 학생별로 묶어 최종 생기부를 만들까요?', '만들기')) return;
+      await withBusy('학생별 최종 생기부를 만드는 중… 몇 분 걸릴 수 있어요.', async () => {
+        const result = await call('uiStartFinalRecords');
+        S.finals = await call('uiListFinalRecords');
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result, '최종 생기부 만들기를 시작했어요.');
+        updatePolling();
+      });
+    },
+    async 'check-record'(el) {
+      const { kind, row, key } = el.dataset;
+      try {
+        await saveRecord(kind, row, key, { teacherChecked: el.checked });
+        S.boot = await call('uiGetBootstrap');
+      } catch (err) {
+        el.checked = !el.checked;
+        showError(err);
+      }
+      render();
+    },
+    async 'save-record'(el) {
+      const { kind, row, key } = el.dataset;
+      el.disabled = true;
+      try {
+        await saveRecord(kind, row, key, { finalRecord: S.edits[`${kind}:${key}`] });
+        banner('저장했어요.', 'ok');
+      } catch (err) {
+        showError(err);
+      }
+      render();
+    },
+    'copy-record'(el) {
+      const { kind, key } = el.dataset;
+      const record = findRecord(kind, key);
+      const edited = S.edits[`${kind}:${key}`];
+      copyText(edited !== undefined ? edited : String((record && record.finalRecord) || ''));
+    },
+    more(el) {
+      S.pageSize[el.dataset.kind] += 30;
+      render();
+    },
+    async 'reload-drafts'() {
+      await withBusy('불러오는 중…', async () => { S.drafts = await call('uiListDrafts'); });
+    },
+    async 'reload-finals'() {
+      await withBusy('불러오는 중…', async () => { S.finals = await call('uiListFinalRecords'); });
+    },
+    'settings-tab'(el) {
+      S.settingsTab = el.dataset.id;
+      render();
+    },
+    async 'default-prompt'(el) {
+      try {
+        const text = await call('uiGetDefaultPrompt', el.dataset.key);
+        $(`#set-${el.dataset.key}`).value = text;
+        banner('기본값을 불러왔어요. [저장]을 눌러야 적용돼요.', 'info');
+      } catch (err) {
+        showError(err);
+      }
+    },
+    async 'save-settings'() {
+      const patch = {};
+      document.querySelectorAll('[data-setting]').forEach(input => {
+        const key = input.dataset.setting;
+        const original = Object.values(S.settings.groups).flat().find(item => item.key === key);
+        if (!original || original.value !== input.value) patch[key] = input.value;
+      });
+      if (!Object.keys(patch).length) return banner('바뀐 항목이 없어요.', 'info');
+      await withBusy('설정을 저장하는 중…', async () => {
+        S.settings = await call('uiSaveSettings', patch);
+        S.boot = await call('uiGetBootstrap');
+        banner('설정을 저장했어요.', 'ok');
+      });
+    },
+  };
+
+  async function setIncluded(keys, value) {
+    try {
+      S.assignments = await call('uiSetAssignmentsIncluded', keys, value);
+      S.boot = await call('uiGetBootstrap');
+    } catch (err) {
+      showError(err);
+    }
+    render();
+  }
+
+  // ---- 이벤트 연결 ------------------------------------------------------------
+  document.addEventListener('click', event => {
+    const goEl = event.target.closest('[data-go]');
+    if (goEl) {
+      event.preventDefault();
+      go(goEl.dataset.go);
+      return;
+    }
+
+    const actionEl = event.target.closest('[data-action]');
+    if (!actionEl) return;
+    const name = actionEl.dataset.action;
+    // 체크박스/입력 동작은 change·input 이벤트에서 처리한다.
+    if (actionEl.tagName === 'INPUT' || actionEl.tagName === 'TEXTAREA' || actionEl.tagName === 'SELECT') return;
+    if (actions[name]) {
+      event.preventDefault();
+      actions[name](actionEl);
+    }
+  });
+
+  document.addEventListener('change', event => {
+    const el = event.target;
+    if (el.dataset.action && el.type === 'checkbox' && actions[el.dataset.action]) {
+      actions[el.dataset.action](el);
+      return;
+    }
+    if (el.id === 'collect-assignment') { S.filters.collectAssignment = el.value; render(); }
+    if (el.id === 'draft-assignment') { S.filters.draftAssignment = el.value; S.selected = new Set(); render(); }
+    if (el.id === 'review-assignment') { S.filters.reviewAssignment = el.value; render(); }
+    if (el.id === 'unchecked-only') { S.filters.uncheckedOnly = el.checked; render(); }
+  });
+
+  let searchTimer = null;
+  document.addEventListener('input', event => {
+    const el = event.target;
+
+    if (el.id === 'search') {
+      S.filters.search = el.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        const pos = el.selectionStart;
+        render();
+        const again = $('#search');
+        if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+      }, 250);
+      return;
+    }
+
+    if (el.dataset.action === 'edit-record') {
+      const editKey = `${el.dataset.kind}:${el.dataset.key}`;
+      S.edits[editKey] = el.value;
+      const max = Number(settingValue('NEIS_MAX_BYTES', 1500));
+      const warn = Number(settingValue('NEIS_WARNING_BYTES', 1400));
+      const bytes = neisBytes(el.value);
+      const counter = document.querySelector(`[data-bytes="${CSS.escape(editKey)}"]`);
+      if (counter) {
+        counter.textContent = `${el.value.length}자 · ${bytes} / ${max} 바이트`;
+        counter.className = `small bytes ${bytes > max ? 'over' : bytes > warn ? 'near' : ''}`;
+      }
+      const saveBtn = el.closest('.record').querySelector('[data-action="save-record"]');
+      const record = findRecord(el.dataset.kind, el.dataset.key);
+      if (saveBtn) saveBtn.disabled = record && el.value === String(record.finalRecord || '');
+    }
+  });
+
+  $('#modal-close').onclick = closeModal;
+  $('#modal').addEventListener('click', event => { if (event.target.id === 'modal') closeModal(); });
+
+  window.addEventListener('beforeunload', event => {
+    if (Object.keys(S.edits).length) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
+
+  refreshBoot()
+    .then(() => {
+      if (!S.boot.isSetup || !S.boot.keys[S.boot.provider]) go('start');
+    })
+    .catch(err => {
+      S.boot = { isSetup: false, keys: {}, provider: 'claude', model: '', counts: null, status: null };
+      render();
+      showError(err);
+    });
+</script>

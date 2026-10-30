@@ -138,8 +138,11 @@ const HEADERS = {
 };
 
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('생기부 자동화')
+  const ui = getUi_();
+
+  // 기존 메뉴는 '고급' 하위 메뉴로 유지하고, 기본 흐름은 도우미 화면에서 진행한다.
+  const advancedMenu = ui
+    .createMenu('고급 (기존 메뉴)')
     .addItem('1. 시트 초기 설정 (모델 목록 갱신)', 'setupSheets')
     .addItem('2. Claude API 키 저장', 'saveClaudeApiKey')
     .addItem('Claude API 키 삭제', 'clearClaudeApiKey')
@@ -179,7 +182,16 @@ function onOpen() {
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
     //.addItem('현황판 새로고침', 'refreshDashboard')
     .addSeparator()
-    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
+    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn');
+
+  ui.createMenu('생기부 자동화')
+    .addItem('▶ 생기부 도우미 열기', 'openAssistant')
+    .addSeparator()
+    .addItem('공통문구 생성', 'generateCommonPhrases')
+    .addItem('행발 추천 문구 생성', 'generateBehaviorRecommendationsForSelectedRows')
+    .addItem('수동추가 데이터 생기부 생성', 'generateManualAddedRecords')
+    .addSeparator()
+    .addSubMenu(advancedMenu)
     .addToUi();
 
   try {
@@ -187,10 +199,12 @@ function onOpen() {
   } catch (err) {
     // onOpen에서 설정 시트 동기화 실패 시 메뉴 표시는 유지
   }
+
+  showAssistantHintOnOpen_();
 }
 
 function saveOpenAiApiKey() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const res = ui.prompt(
     'OpenAI API 키 저장',
     '본인 OpenAI API 키를 입력하세요. 이 키는 현재 사용자 계정의 User Properties에만 저장됩니다.',
@@ -212,7 +226,7 @@ function saveOpenAiApiKey() {
 }
 
 function saveGeminiApiKey() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const res = ui.prompt(
     'Gemini API 키 저장',
     '본인 Gemini API 키를 입력하세요. 이 키는 현재 사용자 계정의 User Properties에만 저장됩니다.',
@@ -244,11 +258,11 @@ function clearAiApiKeys() {
   PropertiesService.getScriptProperties().deleteProperty('GEMINI_API_KEY');
 
   log_('clearAiApiKeys', 'OK', 'Claude/OpenAI/Gemini API 키 삭제 완료');
-  SpreadsheetApp.getUi().alert('Claude/OpenAI/Gemini API 키를 삭제했습니다.');
+  getUi_().alert('Claude/OpenAI/Gemini API 키를 삭제했습니다.');
 }
 
 function generateCommonPhrases() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const sh = getOrCreateSheet_(SHEET_NAMES.commonPhrases);
 
   ensureCommonPhraseSheet_();
@@ -302,7 +316,7 @@ function checkCommonPhraseDuplicates() {
   const rowCount = Math.max(sh.getLastRow() - 2, configuredCount, runTotal, 0);
 
   if (rowCount < 1) {
-    SpreadsheetApp.getUi().alert('검사할 공통문구가 없습니다.\nB3 아래에 생성된 문구가 있는지 확인하세요.');
+    getUi_().alert('검사할 공통문구가 없습니다.\nB3 아래에 생성된 문구가 있는지 확인하세요.');
     return;
   }
 
@@ -332,7 +346,7 @@ function checkCommonPhraseDuplicates() {
   });
 
   if (nonEmptyCount === 0) {
-    SpreadsheetApp.getUi().alert('검사할 공통문구가 없습니다.\nB3 아래에 생성된 문구가 있는지 확인하세요.');
+    getUi_().alert('검사할 공통문구가 없습니다.\nB3 아래에 생성된 문구가 있는지 확인하세요.');
     return;
   }
 
@@ -364,7 +378,7 @@ function checkCommonPhraseDuplicates() {
   );
 
   if (duplicateGroups.length === 0) {
-    SpreadsheetApp.getUi().alert(`공통문구 중복검사 완료\n\n검사 문구: ${nonEmptyCount}개\n중복 없음`);
+    getUi_().alert(`공통문구 중복검사 완료\n\n검사 문구: ${nonEmptyCount}개\n중복 없음`);
     return;
   }
 
@@ -374,7 +388,7 @@ function checkCommonPhraseDuplicates() {
     .join('\n');
   const extra = duplicateGroups.length > 10 ? `\n외 ${duplicateGroups.length - 10}개 그룹` : '';
 
-  SpreadsheetApp.getUi().alert(
+  getUi_().alert(
     `공통문구 중복검사 완료\n\n` +
     `검사 문구: ${nonEmptyCount}개\n` +
     `중복 그룹: ${duplicateGroups.length}개\n` +
@@ -693,7 +707,7 @@ function startAutoCommonPhraseTrigger_() {
     'https://www.googleapis.com/auth/script.external_request',
   ]);
 
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const pendingCount = countPendingCommonPhrases_();
 
   if (pendingCount === 0) {
@@ -1064,7 +1078,7 @@ function styleBehaviorRecommendationSheet_() {
 }
 
 function generateBehaviorRecommendationsForSelectedRows() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const lock = LockService.getScriptLock();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getActiveSheet();
@@ -1930,7 +1944,7 @@ function setupSheets() {
 }
 
 function saveClaudeApiKey() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const res = ui.prompt(
     'Claude API 키 저장',
     '본인 Claude API 키를 입력하세요. 이 키는 현재 사용자 계정의 User Properties에만 저장됩니다.',
@@ -1954,7 +1968,7 @@ function saveClaudeApiKey() {
 function importClassroomAssignments() {
   const result = importClassroomAssignmentsCore_();
 
-  SpreadsheetApp.getUi().alert(`${result.assignmentCount}개 과제를 가져왔습니다.`);
+  getUi_().alert(`${result.assignmentCount}개 과제를 가져왔습니다.`);
 }
 
 function importClassroomAssignmentsCore_() {
@@ -2058,13 +2072,13 @@ function collectSubmissionsForSelectedAssignment() {
   const sh = ss.getActiveSheet();
 
   if (sh.getName() !== SHEET_NAMES.assignments) {
-    SpreadsheetApp.getUi().alert('과제목록 시트에서 과제 행 하나를 선택한 뒤 실행하세요.');
+    getUi_().alert('과제목록 시트에서 과제 행 하나를 선택한 뒤 실행하세요.');
     return;
   }
 
   const row = sh.getActiveRange().getRow();
   if (row <= 1) {
-    SpreadsheetApp.getUi().alert('헤더가 아닌 과제 행을 선택하세요.');
+    getUi_().alert('헤더가 아닌 과제 행을 선택하세요.');
     return;
   }
 
@@ -2077,7 +2091,7 @@ function collectSubmissionsForSelectedAssignment() {
   const assignmentDescription = valueAt_(sh, row, h.assignmentDescription);
 
   if (!isMyTeacherCourse_(courseId)) {
-    SpreadsheetApp.getUi().alert(
+    getUi_().alert(
       '안전 차단: 이 수업은 현재 계정이 교사로 등록된 수업이 아닙니다.\n' +
       '관리자 권한으로 보이는 다른 교사의 수업일 가능성이 있어 제출물 수집을 중단합니다.'
     );
@@ -2086,7 +2100,7 @@ function collectSubmissionsForSelectedAssignment() {
   }  
 
   if (!courseId || !courseWorkId) {
-    SpreadsheetApp.getUi().alert('courseId 또는 courseWorkId가 비어 있습니다.');
+    getUi_().alert('courseId 또는 courseWorkId가 비어 있습니다.');
     return;
   }
 
@@ -2140,11 +2154,11 @@ function collectSubmissionsForSelectedAssignment() {
   upsertByKey_(SHEET_NAMES.submissions, 'submissionKey', rows);
 
   log_('collectSubmissionsForSelectedAssignment', 'OK', `${rows.length}개 제출물 수집`);
-  SpreadsheetApp.getUi().alert(`${rows.length}개 제출물을 수집했습니다.`);
+  getUi_().alert(`${rows.length}개 제출물을 수집했습니다.`);
 }
 
 function generateRecordsForSelectedSubmissions() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const selection = getSelectedSubmissionRows_();
 
   if (selection.error) {
@@ -3180,7 +3194,7 @@ function ensureSheetHeaders_(sheetName) {
 }
 
 function deleteActiveSheetStudentData() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const sh = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   if (!sh) return;
 
@@ -3996,7 +4010,7 @@ function testMyClassroomCoursesOnly() {
     Logger.log(`${course.name} / ${course.id}`);
   });
 
-  SpreadsheetApp.getUi().alert(`내가 교사인 수업만 조회 성공: ${courses.length}개`);
+  getUi_().alert(`내가 교사인 수업만 조회 성공: ${courses.length}개`);
 }
 
 function isMyTeacherCourse_(courseId) {
@@ -4145,7 +4159,7 @@ function clearClaudeApiKey() {
   PropertiesService.getScriptProperties().deleteProperty('CLAUDE_API_KEY');
 
   log_('clearClaudeApiKey', 'OK', 'Claude API 키 삭제 완료');
-  SpreadsheetApp.getUi().alert('현재 사용자 및 Script Properties의 Claude API 키를 삭제했습니다.');
+  getUi_().alert('현재 사용자 및 Script Properties의 Claude API 키를 삭제했습니다.');
 }
 
 
@@ -4172,7 +4186,7 @@ function applyFrontendLayout() {
 
   refreshDashboard();
   organizeSheetTabs_();
-  SpreadsheetApp.getUi().alert('화면 정리와 서식 적용을 완료했습니다.');
+  getUi_().alert('화면 정리와 서식 적용을 완료했습니다.');
 }
 
 function styleSheetBase_(sheetName) {
@@ -4677,7 +4691,7 @@ function cleanEmptyRecordRows_() {
   }
 
   log_('cleanEmptyRecordRows_', 'OK', `생기부초안 빈 하단 행 정리 완료. 실제 마지막 데이터 행: ${lastDataRow}`);
-  SpreadsheetApp.getUi().alert(`생기부초안 빈 하단 행을 정리했습니다.\n실제 마지막 데이터 행: ${lastDataRow}`);
+  getUi_().alert(`생기부초안 빈 하단 행을 정리했습니다.\n실제 마지막 데이터 행: ${lastDataRow}`);
 }
 function styleLogsSheet_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.logs);
@@ -4830,16 +4844,16 @@ function toggleExtractedTextColumn() {
   const col = h.extractedText;
 
   if (!col) {
-    SpreadsheetApp.getUi().alert('extractedText 열을 찾을 수 없습니다.');
+    getUi_().alert('extractedText 열을 찾을 수 없습니다.');
     return;
   }
 
   if (sh.isColumnHiddenByUser(col)) {
     sh.showColumns(col);
-    SpreadsheetApp.getUi().alert('extractedText 원문 열을 표시했습니다.');
+    getUi_().alert('extractedText 원문 열을 표시했습니다.');
   } else {
     sh.hideColumns(col);
-    SpreadsheetApp.getUi().alert('extractedText 원문 열을 숨겼습니다.');
+    getUi_().alert('extractedText 원문 열을 숨겼습니다.');
   }
 }
 
@@ -5048,7 +5062,7 @@ function applyNeisByteFormulasToRecords_(targetRows) {
   const h = headerMap_(sh);
 
   if (!h.charCount || !h.finalRecord) {
-    SpreadsheetApp.getUi().alert('charCount 또는 finalRecord 열을 찾을 수 없습니다.');
+    getUi_().alert('charCount 또는 finalRecord 열을 찾을 수 없습니다.');
     return;
   }
 
@@ -5292,14 +5306,14 @@ function reorganizeRecordsSheetLayout_() {
   styleRecordsSheet_();
 
   log_('reorganizeRecordsSheetLayout_', 'OK', `생기부초안 열 재배열 완료: ${newRows.length - 1}행`);
-  SpreadsheetApp.getUi().alert(`생기부초안 열 재배열을 완료했습니다.\n데이터 ${newRows.length - 1}행`);
+  getUi_().alert(`생기부초안 열 재배열을 완료했습니다.\n데이터 ${newRows.length - 1}행`);
 }
 
 function markSelectedSubmissionsPending() {
   const selection = getSelectedSubmissionRows_();
 
   if (selection.error) {
-    SpreadsheetApp.getUi().alert(selection.error);
+    getUi_().alert(selection.error);
     return;
   }
 
@@ -5309,7 +5323,7 @@ function markSelectedSubmissionsPending() {
   log_('markSelectedSubmissionsPending', 'OK', `${rows.length}개 제출물을 대기 상태로 표시`);
   refreshDashboard();
 
-  SpreadsheetApp.getUi().alert(`${rows.length}개 제출물을 대기 상태로 표시했습니다.`);
+  getUi_().alert(`${rows.length}개 제출물을 대기 상태로 표시했습니다.`);
 }
 
 function getSelectedSubmissionRows_() {
@@ -5559,7 +5573,7 @@ function processPendingRecordDrafts() {
   const result = processPendingRecordDraftsCore_(true);
   saveAutoRecordDraftLastResult_(result.blocked ? 'BLOCKED' : 'MANUAL_RUN', result);
 
-  SpreadsheetApp.getUi().alert(buildRecordDraftResultMessage_('이번 실행 결과', result));
+  getUi_().alert(buildRecordDraftResultMessage_('이번 실행 결과', result));
 }
 
 function autoProcessPendingRecordDrafts() {
@@ -5884,7 +5898,7 @@ function startAutoRecordDraftTrigger() {
     'https://www.googleapis.com/auth/classroom.rosters.readonly',
     'https://www.googleapis.com/auth/classroom.profile.emails'
   ]);  
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
 
 
   try {
@@ -6000,7 +6014,7 @@ function stopAutoRecordDraftTrigger(showUi) {
   log_('stopAutoRecordDraftTrigger', 'OK', '자동 생성 트리거 중지');
 
   if (showUi !== false) {
-    SpreadsheetApp.getUi().alert('제출물 수집/생기부초안/학생별 최종 생기부/공통문구/수동추가/행발 추천 자동 트리거를 중지했습니다.');
+    getUi_().alert('제출물 수집/생기부초안/학생별 최종 생기부/공통문구/수동추가/행발 추천 자동 트리거를 중지했습니다.');
   }
 }
 
@@ -6039,7 +6053,7 @@ function showAutoRecordDraftStatus() {
   const studentFinalLastResult = formatAutoLastResultForStatus_('마지막 학생별 최종 자동 생성 결과', getAutoStudentFinalLastResult_(), '명');
   const commonPhraseLastResult = formatAutoLastResultForStatus_('마지막 공통문구 자동 생성 결과', getAutoCommonPhraseLastResult_(), '개');
 
-  SpreadsheetApp.getUi().alert(
+  getUi_().alert(
     `자동 생성 상태\n\n` +
     `[제출물 수집]\n` +
     `상태값: ${submissionCollectionStatus}\n` +
@@ -6113,7 +6127,7 @@ function deleteAutoRecordDraftTriggers_() {
 }
 
 function generateManualAddedRecords() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
@@ -6635,7 +6649,7 @@ function clearOpenAiApiKey() {
   PropertiesService.getScriptProperties().deleteProperty('OPENAI_API_KEY');
 
   log_('clearOpenAiApiKey', 'OK', 'OpenAI API 키 삭제 완료');
-  SpreadsheetApp.getUi().alert('현재 사용자 계정의 OpenAI API 키를 삭제했습니다.');
+  getUi_().alert('현재 사용자 계정의 OpenAI API 키를 삭제했습니다.');
 }
 
 function clearGeminiApiKey() {
@@ -6643,7 +6657,7 @@ function clearGeminiApiKey() {
   PropertiesService.getScriptProperties().deleteProperty('GEMINI_API_KEY');
 
   log_('clearGeminiApiKey', 'OK', 'Gemini API 키 삭제 완료');
-  SpreadsheetApp.getUi().alert('현재 사용자 계정의 Gemini API 키를 삭제했습니다.');
+  getUi_().alert('현재 사용자 계정의 Gemini API 키를 삭제했습니다.');
 }
 
 function markSelectedAssignmentsIncluded() {
@@ -6658,13 +6672,13 @@ function setSelectedAssignmentsIncluded_(value) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
 
   if (sh.getName() !== SHEET_NAMES.assignments) {
-    SpreadsheetApp.getUi().alert('과제목록 시트에서 과제 행을 선택한 뒤 실행하세요.');
+    getUi_().alert('과제목록 시트에서 과제 행을 선택한 뒤 실행하세요.');
     return;
   }
 
   const h = headerMap_(sh);
   if (!h.includeInFinal) {
-    SpreadsheetApp.getUi().alert('includeInFinal 열을 찾을 수 없습니다. 먼저 시트 초기 설정을 실행하세요.');
+    getUi_().alert('includeInFinal 열을 찾을 수 없습니다. 먼저 시트 초기 설정을 실행하세요.');
     return;
   }
 
@@ -6673,7 +6687,7 @@ function setSelectedAssignmentsIncluded_(value) {
   const numRows = range.getNumRows();
 
   if (startRow <= 1) {
-    SpreadsheetApp.getUi().alert('헤더가 아닌 과제 행을 선택하세요.');
+    getUi_().alert('헤더가 아닌 과제 행을 선택하세요.');
     return;
   }
 
@@ -6684,7 +6698,7 @@ function setSelectedAssignmentsIncluded_(value) {
 
   sh.getRange(startRow, h.includeInFinal, numRows, 1).setValues(values);
 
-  SpreadsheetApp.getUi().alert(
+  getUi_().alert(
     value
       ? `${numRows}개 과제를 생기부 반영 대상으로 체크했습니다.`
       : `${numRows}개 과제의 생기부 반영 체크를 해제했습니다.`
@@ -6703,7 +6717,7 @@ function collectSubmissionsForIncludedAssignments() {
     'https://www.googleapis.com/auth/classroom.profile.emails'
   ]);
 
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const sh = ensureSheetHeaders_(SHEET_NAMES.assignments);
   const h = headerMap_(sh);
   const lastRow = sh.getLastRow();
@@ -7230,7 +7244,7 @@ function sortSubmissionsSheet_() {
 }
 
 function generateStudentFinalRecordsForIncludedAssignments() {
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const checkedAssignments = getIncludedAssignmentKeySet_();
 
   if (checkedAssignments.size === 0) {
@@ -7706,7 +7720,7 @@ function startAutoStudentFinalRecordTrigger_() {
     'https://www.googleapis.com/auth/classroom.profile.emails'
   ]);
 
-  const ui = SpreadsheetApp.getUi();
+  const ui = getUi_();
   const pendingCount = countPendingStudentFinalRecords_();
 
   if (pendingCount === 0) {
