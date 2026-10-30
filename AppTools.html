@@ -289,7 +289,8 @@
 
   // 구글이 화면 코드의 '//' 뒤를 주석으로 잘라 내는 경우가 있어서 URL의 슬래시는 \/로 쓴다.
   const UPLOAD_ACCEPT = '.xlsx,.xls,.csv,.tsv,.txt';
-  const SHEETJS_URL = 'https:\/\/cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  // SheetJS 0.18.5에 셀 서식(자동 줄바꿈) 저장을 더한 판. 읽기는 원래 SheetJS와 같다.
+  const SHEETJS_URL = 'https:\/\/cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
 
   // 엑셀 파일을 읽는 라이브러리는 엑셀을 고를 때만 불러온다.
   function loadSheetJs() {
@@ -350,6 +351,11 @@
       ws['!cols'] = headers.map((h, i) => ({
         wch: i === textCol ? 80 : Math.min(40, Math.max(6, ...table.map(r => String(r[i] === undefined ? '' : r[i]).length + 2))),
       }));
+      // 모든 칸을 자동 줄바꿈 · 위쪽 정렬로, 첫 줄(열 이름)은 굵게
+      Object.keys(ws).filter(addr => addr[0] !== '!').forEach(addr => {
+        ws[addr].s = { alignment: { wrapText: true, vertical: 'top' } };
+        if (XLSX.utils.decode_cell(addr).r === 0) ws[addr].s.font = { bold: true };
+      });
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, data.fileName.slice(0, 31));
       XLSX.writeFile(wb, `${base}.xlsx`);
