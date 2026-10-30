@@ -231,6 +231,7 @@
   async function go(view) {
     S.view = view;
     S.selected = new Set();
+    banner('');
     render();
     try {
       await ensureData(view);
@@ -308,6 +309,8 @@
     const next = nextStep();
     const guide = NEXT_GUIDE[next];
     const allDone = stepState('final') === 'done' && next === 'final';
+    const running = stepState(next) === 'running';
+    const step = STEPS.find(s => s.id === next);
 
     return `
       <h1>생기부 도우미</h1>
@@ -315,10 +318,10 @@
         왼쪽 단계를 차례대로 따라가면 돼요.</p>
 
       <div class="card hero">
-        <div class="muted small">${allDone ? '모든 단계를 한 번 마쳤어요' : '지금 할 일'}</div>
-        <h2 style="font-size:18px;margin-top:4px">${esc(guide.title)}</h2>
-        <p class="lead" style="margin-bottom:14px">${esc(guide.desc)}</p>
-        <button class="btn primary lg" data-go="${next}">${esc(guide.button)} →</button>
+        <div class="muted small">${allDone ? '모든 단계를 한 번 마쳤어요' : running ? '자동으로 진행 중' : '지금 할 일'}</div>
+        <h2 style="font-size:18px;margin-top:4px">${running ? `<span class="spinner"></span> ${esc(step.label)} 진행 중이에요` : esc(guide.title)}</h2>
+        <p class="lead" style="margin-bottom:14px">${running ? '이 창을 닫아도 계속 진행돼요. 진행 상황은 해당 단계에서 볼 수 있어요.' : esc(guide.desc)}</p>
+        <button class="btn primary lg" data-go="${next}">${running ? '진행 상황 보기' : esc(guide.button)} →</button>
       </div>
 
       ${b.isSetup ? `
