@@ -273,8 +273,9 @@
       </div>`;
   }
 
+  // 구글이 화면 코드의 '//' 뒤를 주석으로 잘라 내는 경우가 있어서 URL의 슬래시는 \/로 쓴다.
   const UPLOAD_ACCEPT = '.xlsx,.xls,.csv,.tsv,.txt';
-  const SHEETJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  const SHEETJS_URL = 'https:\/\/cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
 
   // 엑셀 파일을 읽는 라이브러리는 엑셀을 고를 때만 불러온다.
   function loadSheetJs() {
