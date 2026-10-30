@@ -250,9 +250,12 @@
 
   async function go(view) {
     if (S.bDraft && S.bDraft.dirty && !await confirmModal('저장하지 않은 내용', '행발 입력 내용을 저장하지 않았어요. 그래도 이동할까요?', '이동')) return;
+    if (S.mPrompt !== undefined && S.manual && S.mPrompt !== S.manual.prompt &&
+      !await confirmModal('저장하지 않은 내용', '수동추가 프롬프트를 저장하지 않았어요. 그래도 이동할까요?', '이동')) return;
     S.view = view;
     S.selected = new Set();
     S.bDraft = null;
+    S.mPrompt = undefined;
     S.openId = null;
     banner('');
     render();
@@ -804,6 +807,7 @@
       if ($('#reasoning-select')) patch.REASONING = $('#reasoning-select').value;
       await withBusy('모델을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
+        S.manual = null;
         S.boot = await call('uiGetBootstrap');
         banner('모델을 저장했어요.', 'ok');
       });
@@ -978,6 +982,7 @@
       if (!Object.keys(patch).length) return banner('바뀐 항목이 없어요.', 'info');
       await withBusy('설정을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
+        S.manual = null;
         S.boot = await call('uiGetBootstrap');
         banner('설정을 저장했어요.', 'ok');
       });
