@@ -4,6 +4,20 @@
   <base target="_top">
   <meta charset="utf-8">
   <?!= include_('AppStyles'); ?>
+  <script>
+    // 화면이 '불러오는 중'에서 멈출 때 원인을 화면에 보여준다.
+    window.__bootErrors = [];
+    window.addEventListener('error', e => {
+      window.__bootErrors.push(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno || ''})`);
+    });
+    setTimeout(() => {
+      const loading = document.querySelector('#view .loading');
+      if (!loading) return;
+      loading.innerHTML = window.__bootErrors.length
+        ? '화면을 여는 중 오류가 났어요. 아래 내용을 알려 주세요.<br><br>' + window.__bootErrors.map(m => String(m).replace(/</g, '&lt;')).join('<br>')
+        : '서버 응답을 기다리고 있어요. 계속 이 상태면 대화상자를 닫고 다시 열어 주세요.';
+    }, 15000);
+  </script>
 </head>
 <body>
   <div class="app">
