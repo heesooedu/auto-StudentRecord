@@ -698,6 +698,7 @@
         <label class="row small"><input type="checkbox" id="unchecked-only" ${S.filters.uncheckedOnly ? 'checked' : ''}> 확인 안 한 것만</label>
         <span class="muted">확인 ${checked} / ${drafts.length}</span>
         <button class="btn" data-action="reload-drafts">새로고침</button>
+        ${drafts.length ? downloadButton('review') : ''}
       </div>
       ${drafts.length === 0 ? '<div class="card empty">아직 초안이 없어요. [초안 만들기]에서 먼저 만들어 주세요.</div>' : recordList(drafts, 'review')}
       ${drafts.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="final">다음: 최종 생기부 →</button></div>' : ''}`;
@@ -722,6 +723,7 @@
         <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
         <label class="row small"><input type="checkbox" id="unchecked-only" ${S.filters.uncheckedOnly ? 'checked' : ''}> 확인 안 한 것만</label>
         <button class="btn" data-action="reload-finals">새로고침</button>
+        ${finals.length ? downloadButton('final') : ''}
       </div>
       ${finals.length === 0 ? '<div class="card empty">아직 최종 생기부가 없어요.</div>' : recordList(finals, 'final')}`;
   }
@@ -983,6 +985,9 @@
     more(el) {
       S.pageSize[el.dataset.kind] += 30;
       render();
+    },
+    async download(el) {
+      await withBusy('파일을 만드는 중…', () => downloadExport(el.dataset.kind));
     },
     async 'delete-record'(el) {
       const { kind, row, key } = el.dataset;

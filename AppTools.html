@@ -84,6 +84,7 @@
         <div class="row">
           <button class="btn" data-action="reload-common">새로고침</button>
           <button class="btn" data-action="copy-all-common" ${done ? '' : 'disabled'}>모두 복사</button>
+          ${done ? downloadButton('common') : ''}
         </div>
       </div>
       ${d.phrases.length === 0 ? '<div class="card empty">아직 만든 문구가 없어요.</div>' : d.phrases.map((p, i) => `
@@ -167,6 +168,7 @@
         <input type="search" id="search" class="grow" placeholder="학생 이름으로 찾기" value="${esc(S.filters.search)}">
         <button class="btn" data-action="add-behavior-students">학생 추가</button>
         <button class="btn" data-action="reload-behavior">새로고침</button>
+        ${d.rows.length ? downloadButton('behavior') : ''}
       </div>
       ${d.rows.length === 0 ? `<div class="card empty">아직 학생이 없어요.<br>[학생 추가]를 눌러 이름을 넣어 주세요.</div>` : `
       <div class="list">${rows.map(r => {
@@ -287,6 +289,62 @@
       script.onerror = () => reject(new Error('엑셀 읽기 도구를 불러오지 못했어요. 인터넷 연결을 확인하거나 CSV로 저장해 올려 주세요.'));
       document.head.appendChild(script);
     });
+  }
+
+  // ---- 엑셀로 받기 (초안 · 최종 · 공통문구 · 행발 · 수동추가 공용) ---------------
+  function downloadButton(kind) {
+    return `<button class="btn" data-action="download" data-kind="${kind}" ${S.busy ? 'disabled' : ''}>엑셀로 받기</button>`;
+  }
+
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  function csvText(table) {
+    const cell = v => {
+      const s = String(v === null || v === undefined ? '' : v);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    return table.map(r => r.map(cell).join(',')).join('\r\n');
+  }
+
+  // 서버에서 시트 전체를 받아 엑셀 파일로 저장한다. 엑셀 도구를 못 불러오면 CSV로 저장한다.
+  async function downloadExport(kind) {
+    const data = await call('uiExportData', kind);
+    if (!data.rows.length) return banner('받을 내용이 아직 없어요.', 'err');
+
+    const headers = data.headers.slice();
+    let rows = data.rows;
+    const textCol = data.textCol === undefined ? -1 : data.textCol;
+    if (textCol >= 0) {
+      headers.push('바이트');
+      rows = rows.map(r => r.concat(neisBytes(String(r[textCol] || ''))));
+    }
+    const table = [headers].concat(rows);
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const base = `${data.fileName}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+
+    try {
+      const XLSX = await loadSheetJs();
+      const ws = XLSX.utils.aoa_to_sheet(table);
+      ws['!cols'] = headers.map((h, i) => ({
+        wch: i === textCol ? 80 : Math.min(40, Math.max(6, ...table.map(r => String(r[i] === undefined ? '' : r[i]).length + 2))),
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, data.fileName.slice(0, 31));
+      XLSX.writeFile(wb, `${base}.xlsx`);
+    } catch (err) {
+      saveBlob(new Blob(['﻿' + csvText(table)], { type: 'text/csv;charset=utf-8' }), `${base}.csv`);
+    }
+    banner(`${rows.length}개를 파일로 저장했어요. 브라우저의 다운로드 폴더를 확인하세요.`, 'ok');
   }
 
   async function readUploadFile(file) {
@@ -489,6 +547,7 @@
         <div class="toolbar">
           <input type="search" id="search" class="grow" placeholder="이름이나 내용으로 찾기" value="${esc(S.filters.search)}">
           <button class="btn" data-action="reload-manual">새로고침</button>
+          ${d.rows.length ? downloadButton('manual') : ''}
         </div>
         ${d.truncated ? '<div class="help">행이 많아 앞쪽 500행만 보여줘요.</div>' : ''}
         ${rows.length === 0 ? '<div class="card empty">아직 데이터가 없어요. 파일을 올리거나 [한 줄 직접 추가]를 써 주세요.</div>' : rows.map(r => `

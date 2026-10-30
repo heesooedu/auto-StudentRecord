@@ -812,3 +812,77 @@ function updateRecordRow_(sheetName, row, key, patch, keyOf) {
     lock.releaseLock();
   }
 }
+
+// --- 다운로드 -------------------------------------------------------------
+
+// 화면의 [엑셀로 받기]용: 산출물 시트 전체를 { fileName, headers, rows } 표로 돌려준다.
+// textCol이 있으면 화면에서 그 열의 나이스 바이트를 계산해 붙인다.
+function uiExportData(kind) {
+  if (kind === 'review' || kind === 'final') return exportRecordSheet_(kind);
+  if (kind === 'common') return exportCommonPhrases_();
+  if (kind === 'behavior') return exportBehaviorRows_();
+  if (kind === 'manual') return exportManualSheet_();
+  throw new Error('알 수 없는 다운로드 종류입니다.');
+}
+
+function exportRecordSheet_(kind) {
+  const columns = kind === 'review'
+    ? [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentTitle', '과제'],
+      ['finalRecord', '초안'], ['caution', '확인할 점'], ['teacherChecked', '확인함'], ['createdAt', '만든 시각']]
+    : [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentCount', '반영 과제 수'],
+      ['sourceAssignments', '반영 과제'], ['finalRecord', '최종 생기부'], ['caution', '확인할 점'],
+      ['teacherChecked', '확인함'], ['finalStatus', '상태'], ['createdAt', '만든 시각']];
+  const sheetName = kind === 'review' ? SHEET_NAMES.records : SHEET_NAMES.studentFinalRecords;
+  const records = readSheetRecords_(sheetName, columns.map(c => c[0]), kind === 'review' ? 'submissionKey' : 'studentName');
+
+  return {
+    fileName: kind === 'review' ? '초안' : '최종 생기부',
+    headers: columns.map(c => c[1]),
+    rows: records.map(r => columns.map(c => c[0] === 'teacherChecked' ? (isChecked_(r[c[0]]) ? 'O' : '') : r[c[0]])),
+    textCol: columns.findIndex(c => c[0] === 'finalRecord'),
+  };
+}
+
+function exportCommonPhrases_() {
+  const phrases = uiGetCommonPhrases().phrases.filter(p => p.text);
+  return {
+    fileName: '공통문구',
+    headers: ['번호', '문구'],
+    rows: phrases.map((p, i) => [i + 1, p.text]),
+    textCol: 1,
+  };
+}
+
+function exportBehaviorRows_() {
+  const columns = [['studentName', '이름'], ['selectedTraits', '특성'], ['customTraits', '목록에 없는 특성'],
+    ['positiveObservation', '잘한 점'], ['improvementNeeded', '보완할 점'], ['growthEvidence', '성장한 모습'],
+    ['recommendedRecord', '행동특성 및 종합의견']];
+  return {
+    fileName: '행발',
+    headers: columns.map(c => c[1]),
+    rows: uiListBehaviorRows().rows.map(r => columns.map(c => r[c[0]])),
+    textCol: columns.length - 1,
+  };
+}
+
+// 수동추가는 올린 원본 열을 그대로 두고 받는다(화면 목록처럼 500행에서 자르지 않는다).
+function exportManualSheet_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MANUAL_SHEET_NAME);
+  if (!sh || sh.getLastRow() < 1) throw new Error('수동추가 시트가 없습니다.');
+
+  const manualConfig = getManualRecordConfig_(getConfigMap_());
+  const lastCol = Math.max(sh.getLastColumn(), manualConfig.outputCol);
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map((v, i) => String(v || '').trim() || colToA1_(i + 1));
+  const lastRow = sh.getLastRow();
+  const values = lastRow >= manualConfig.startRow
+    ? sh.getRange(manualConfig.startRow, 1, lastRow - manualConfig.startRow + 1, lastCol).getValues()
+    : [];
+
+  return {
+    fileName: '수동추가',
+    headers,
+    rows: values
+      .filter(r => r.some(v => String(v || '').trim() !== ''))
+      .map(r => r.map(toClientValue_)),
+  };
+}
