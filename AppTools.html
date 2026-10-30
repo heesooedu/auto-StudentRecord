@@ -113,7 +113,7 @@
   function behaviorEditor(r) {
     const draft = S.bDraft.fields;
     const selected = splitTraits(draft.selectedTraits);
-    const traits = S.behavior.traits.concat(selected.filter(t => !S.behavior.traits.includes(t)));
+    const traits = S.behavior.traits;
 
     return `
       <div class="record open">
@@ -340,7 +340,15 @@
       if (S.bDraft && S.bDraft.dirty) return banner('열려 있는 학생의 입력 내용을 먼저 저장하거나 닫아 주세요.', 'err');
       const fields = {};
       ['studentName', 'selectedTraits', 'customTraits'].concat(BEHAVIOR_FIELDS.map(f => f.key)).forEach(k => { fields[k] = String(r[k] || ''); });
-      S.bDraft = { row: r.row, name: String(r.studentName || ''), fields, dirty: false };
+      // 드롭다운에 없는 특성(예전 목록 값)은 '목록에 없는 특성' 칸으로 옮긴다.
+      const picked = splitTraits(fields.selectedTraits);
+      const extra = picked.filter(t => !S.behavior.traits.includes(t));
+      if (extra.length) {
+        const custom = splitTraits(fields.customTraits);
+        fields.selectedTraits = picked.filter(t => S.behavior.traits.includes(t)).join(', ');
+        fields.customTraits = custom.concat(extra.filter(t => !custom.includes(t))).join(', ');
+      }
+      S.bDraft = { row: r.row, name: String(r.studentName || ''), fields, dirty: extra.length > 0 };
       render();
     },
     async 'close-behavior'() {

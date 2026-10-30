@@ -81,9 +81,12 @@ const BEHAVIOR_INPUT_FIELDS = ['studentName', 'selectedTraits', 'customTraits', 
 function uiListBehaviorRows() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
   const result = { traits: BEHAVIOR_TRAIT_KEYWORDS, rows: [] };
-  if (!sh || sh.getLastRow() < 2) return result;
+  if (!sh) return result;
 
   const h = headerMap_(sh);
+  result.traits = behaviorTraitOptions_(sh, h);
+  if (sh.getLastRow() < 2) return result;
+
   const lastRow = sh.getLastRow();
   const lastCol = Math.max(sh.getLastColumn(), BEHAVIOR_RECOMMENDATION_HEADERS.length);
   const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
@@ -101,6 +104,15 @@ function uiListBehaviorRows() {
   });
 
   return result;
+}
+
+// 시트의 드롭다운 목록을 그대로 쓴다. 드롭다운이 없으면 기본 목록을 쓴다.
+function behaviorTraitOptions_(sh, h) {
+  if (!h.selectedTraits) return BEHAVIOR_TRAIT_KEYWORDS;
+  const rule = sh.getRange(2, h.selectedTraits).getDataValidation();
+  if (!rule || rule.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) return BEHAVIOR_TRAIT_KEYWORDS;
+  const options = (rule.getCriteriaValues()[0] || []).map(v => String(v || '').trim()).filter(v => v && v !== '없음');
+  return options.length ? options : BEHAVIOR_TRAIT_KEYWORDS;
 }
 
 function uiAddBehaviorStudents(names) {
@@ -123,10 +135,31 @@ function uiSaveBehaviorRow(row, expectedName, data) {
   return withDocumentLock_(() => {
     const sh = getSheet_(SHEET_NAMES.behaviorRecommendations);
     const h = assertBehaviorRow_(sh, row, expectedName);
+    const values = Object.assign({}, data);
+
+    // 드롭다운에 없는 특성은 '목록에 없는 특성' 칸으로 옮긴다.
+    if (values.selectedTraits !== undefined) {
+      const allowed = behaviorTraitOptions_(sh, h);
+      const picked = String(values.selectedTraits || '').split(',').map(t => t.trim()).filter(Boolean);
+      const extra = picked.filter(t => !allowed.includes(t));
+      values.selectedTraits = picked.filter(t => allowed.includes(t)).join(', ');
+      if (extra.length) {
+        const custom = String(values.customTraits !== undefined ? values.customTraits : sh.getRange(row, h.customTraits).getValue() || '')
+          .split(',').map(t => t.trim()).filter(Boolean);
+        values.customTraits = custom.concat(extra.filter(t => !custom.includes(t))).join(', ');
+      }
+    }
 
     BEHAVIOR_INPUT_FIELDS.forEach(field => {
-      if (data && data[field] !== undefined && h[field]) {
-        sh.getRange(row, h[field]).setValue(String(data[field]).trim());
+      if (values[field] !== undefined && h[field]) {
+        try {
+          sh.getRange(row, h[field]).setValue(String(values[field]).trim());
+        } catch (err) {
+          if (field === 'selectedTraits' && String(values.selectedTraits).includes(',')) {
+            throw new Error('특성 칸 드롭다운이 여러 개 선택을 허용하지 않아요. 시트의 selectedTraits 열 → 데이터 확인에서 "여러 항목 선택 허용"을 켜거나, 특성을 하나만 골라 주세요.');
+          }
+          throw err;
+        }
       }
     });
 
