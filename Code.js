@@ -1952,7 +1952,7 @@ function setupSheets() {
     ['BEHAVIOR_RECORD_MIN_CHARS', '', BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION],
     ['BEHAVIOR_RECORD_MAX_CHARS', '', BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION],
     ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '작성하시는 스타일에 맞게 수정하시면 됩니다.'],
-    ['SYSTEM_GUIDE', defaultSystemGuide_(), '공통 작성 지침\n초안, 최종 생기부, 수동추가에 모두 적용되는 원칙입니다.\n과목에 상관없는 원칙(근거, 문체)만 두는 것을 권장합니다.\n\n과제마다 달라지는 내용(예: 첫 문장을 "인공지능과 미래사회에 대한 글쓰기 수행평가에서"로 시작)은\n여기가 아니라 각 프롬프트 맨 위의 "작성 순서/형식(선택)" 줄에 적어 주세요.']
+    ['SYSTEM_GUIDE', defaultSystemGuide_(), '공통 작성 지침\n초안, 초안 합치기, 수동추가에 모두 적용되는 원칙입니다.\n과목에 상관없는 원칙(근거, 문체)만 두는 것을 권장합니다.\n\n과제마다 달라지는 내용(예: 첫 문장을 "인공지능과 미래사회에 대한 글쓰기 수행평가에서"로 시작)은\n여기가 아니라 각 프롬프트 맨 위의 "작성 순서/형식(선택)" 줄에 적어 주세요.']
   ];
 
   const rows = defaults.filter(r => !existing[r[0]]);
@@ -3770,7 +3770,7 @@ function defaultRecordDraftPrompt_() {
 
 function defaultStudentFinalRecordPrompt_() {
   return [
-    '[교사 안내] 최종 생기부를 만들기 전에 채워 주세요.',
+    '[교사 안내] 초안을 합치기 전에 채워 주세요.',
     '- 과목/작성 영역: ',
     '- 강조할 점(선택): ',
     '- 작성 순서/형식(선택): ',
@@ -7295,7 +7295,7 @@ function generateStudentFinalRecordsForIncludedAssignments() {
   const groups = buildStudentFinalRecordGroups_(checkedAssignments);
 
   if (groups.length === 0) {
-    ui.alert('학생별 최종 생기부를 생성할 생기부초안이 없습니다.\n과제목록에서 생기부 반영 대상을 체크하고 생기부초안을 먼저 생성하세요.');
+    ui.alert('학생별로 합칠 생기부초안이 없습니다.\n과제목록에서 생기부 반영 대상을 체크하고 생기부초안을 먼저 생성하세요.');
     return;
   }
 

@@ -304,7 +304,7 @@
     });
   }
 
-  // ---- 엑셀로 받기 (초안 · 최종 · 공통문구 · 행발 · 수동추가 공용) ---------------
+  // ---- 엑셀로 받기 (초안 · 합친 생기부 · 공통문구 · 행발 · 수동추가 공용) ---------------
   function downloadButton(kind) {
     return `<button class="btn download" data-action="download" data-kind="${kind}" ${S.busy ? 'disabled' : ''}>⬇ 엑셀로 받기</button>`;
   }
@@ -447,7 +447,7 @@
     return { headers: table.headers, rows: table.rows, inputCols: guessInputCols(table.headers, table.rows) };
   }
 
-  // ---- 프롬프트 확인 카드 (초안 · 최종 · 수동추가 공용) ------------------------
+  // ---- 프롬프트 확인 카드 (초안 · 초안 합치기 · 수동추가 공용) ------------------------
   // 프롬프트 맨 위 [교사 안내]/[자료 안내]의 '- 항목: 값' 줄을 읽는다. '(선택)'이 붙은 줄은 비워도 된다.
   function promptInfo(text) {
     const lines = String(text || '').split('\n');

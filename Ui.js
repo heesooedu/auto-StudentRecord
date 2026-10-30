@@ -37,7 +37,7 @@ const ASSISTANT_SETTING_LABELS = {
   GEMINI_MODEL: 'Gemini 모델',
   REASONING: '추론 수준',
   PROMPT_1: '과제별 초안 지시사항',
-  PROMPT_2: '학생별 최종 생기부 지시사항',
+  PROMPT_2: '초안 합치기 지시사항',
   SYSTEM_GUIDE: '공통 작성 지침',
   BEHAVIOR_RECORD_PROMPT: '행발 추천 문구 작성 지침',
   MANUAL_PROMPT: '수동추가 생기부 작성 지침',
@@ -629,7 +629,7 @@ function uiGetStatus() {
   };
 }
 
-// --- 초안 확인 / 최종 생기부 ----------------------------------------------
+// --- 초안 확인 / 초안 합치기 ----------------------------------------------
 
 function uiListDrafts() {
   return readSheetRecords_(SHEET_NAMES.records, [
@@ -690,7 +690,7 @@ function finalRecordRowKey_(r) {
   return String(r.finalQueueKey || `${r.studentNo}|${r.studentName}`);
 }
 
-// 화면에서 고른 초안(kind='review') 또는 최종 생기부(kind='final') 행을 지운다.
+// 화면에서 고른 초안(kind='review') 또는 합친 생기부(kind='final') 행을 지운다.
 // items: [{row, key}] — 행 번호가 바뀌었을 수 있으므로 같은 행의 키가 일치할 때만 지운다.
 function uiDeleteRecords(kind, items) {
   const isDraft = kind === 'review';
@@ -830,13 +830,13 @@ function exportRecordSheet_(kind) {
     ? [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentTitle', '과제'],
       ['finalRecord', '초안'], ['caution', '확인할 점'], ['teacherChecked', '확인함'], ['createdAt', '만든 시각']]
     : [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentCount', '반영 과제 수'],
-      ['sourceAssignments', '반영 과제'], ['finalRecord', '최종 생기부'], ['caution', '확인할 점'],
+      ['sourceAssignments', '반영 과제'], ['finalRecord', '합친 생기부'], ['caution', '확인할 점'],
       ['teacherChecked', '확인함'], ['finalStatus', '상태'], ['createdAt', '만든 시각']];
   const sheetName = kind === 'review' ? SHEET_NAMES.records : SHEET_NAMES.studentFinalRecords;
   const records = readSheetRecords_(sheetName, columns.map(c => c[0]), kind === 'review' ? 'submissionKey' : 'studentName');
 
   return {
-    fileName: kind === 'review' ? '초안' : '최종 생기부',
+    fileName: kind === 'review' ? '초안' : '합친 생기부',
     headers: columns.map(c => c[1]),
     rows: records.map(r => columns.map(c => c[0] === 'teacherChecked' ? (isChecked_(r[c[0]]) ? 'O' : '') : r[c[0]])),
     textCol: columns.findIndex(c => c[0] === 'finalRecord'),

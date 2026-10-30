@@ -31,7 +31,7 @@
     { id: 'collect', label: '제출물 수집', num: 3 },
     { id: 'drafts', label: '초안 만들기', num: 4 },
     { id: 'review', label: '초안 확인', num: 5 },
-    { id: 'final', label: '최종 생기부', num: 6 },
+    { id: 'final', label: '초안 합치기', num: 6 },
   ];
 
   // 기본 흐름과 따로 필요할 때 쓰는 도구 (화면은 AppTools.html)
@@ -48,7 +48,7 @@
     collect: { title: '학생 제출물을 가져와요', desc: '체크한 과제의 학생 제출물(문서 내용 포함)을 한 번에 모아요.', button: '제출물 수집하기' },
     drafts: { title: 'AI로 과제별 초안을 만들어요', desc: '제출물을 골라 AI에게 생기부 초안을 맡겨요. 창을 닫아도 자동으로 이어서 만들어요.', button: '초안 만들기' },
     review: { title: '초안을 확인하고 다듬어요', desc: '만들어진 초안을 읽고 고친 뒤 \'확인함\'에 체크하세요.', button: '초안 확인하기' },
-    final: { title: '학생별 최종 생기부를 만들어요', desc: '체크한 과제의 초안을 학생별로 묶어 하나의 생기부로 완성해요.', button: '최종 생기부 만들기' },
+    final: { title: '필요하면 학생별로 초안을 합쳐요', desc: '과제가 여러 개일 때 한 학생의 초안들을 하나의 생기부로 합쳐요. 과제 하나만 기록한다면 여기서 끝내도 돼요.', button: '초안 합치기' },
   };
 
   const PROVIDERS = [
@@ -363,11 +363,11 @@
 
     return `
       <h1>생기부 도우미</h1>
-      <p class="lead">Classroom 과제 → 제출물 수집 → AI 초안 → 확인 → 학생별 최종 생기부 순서로 진행해요.<br>
+      <p class="lead">Classroom 과제 → 제출물 수집 → AI 초안 → 확인 → (필요하면) 초안 합치기 순서로 진행해요.<br>
         왼쪽 단계를 차례대로 따라가면 돼요.</p>
       <div class="card small" style="line-height:1.8">
         <div><b>초안</b> · Classroom 과제 <b>한 개</b>를 생기부 문장으로 바꾼 거예요. 과제 하나만 기록하면 <b>초안 확인</b>에서 끝내도 돼요.</div>
-        <div><b>최종 생기부</b> · 한 학생의 <b>여러 초안을 하나로 합치고 싶을 때만</b> 써요.</div>
+        <div><b>초안 합치기</b> · 한 학생의 <b>여러 초안을 하나로 합치고 싶을 때만</b> 써요.</div>
       </div>
 
       <div class="card hero">
@@ -382,7 +382,7 @@
         <div class="stat"><span class="muted small">체크한 과제</span><b>${c.includedAssignments || 0}<span class="muted small"> / ${c.assignments || 0}</span></b></div>
         <div class="stat"><span class="muted small">수집한 제출물</span><b>${c.submissions || 0}</b></div>
         <div class="stat"><span class="muted small">초안 (확인함)</span><b>${c.drafts || 0}<span class="muted small"> (${c.draftsChecked || 0})</span></b></div>
-        <div class="stat"><span class="muted small">최종 생기부</span><b>${c.finalRecords || 0}</b></div>
+        <div class="stat"><span class="muted small">합친 생기부</span><b>${c.finalRecords || 0}</b></div>
       </div>` : ''}
 
       <div class="help" style="margin-top:14px">생기부 글자수(최소·최대)와 나이스 바이트 기준은 <button class="link" data-go="settings">⚙ 설정</button>에서 바꿀 수 있어요.</div>
@@ -720,7 +720,7 @@
         ${drafts.length ? downloadButton('review') : ''}
       </div>
       ${drafts.length === 0 ? '<div class="card empty">아직 초안이 없어요. [초안 만들기]에서 먼저 만들어 주세요.</div>' : recordList(drafts, 'review')}
-      ${drafts.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="final">다음: 최종 생기부 →</button></div>' : ''}`;
+      ${drafts.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="final">다음: 초안 합치기 (선택) →</button></div>' : ''}`;
   }
 
   function viewFinal() {
@@ -729,13 +729,13 @@
     const finals = S.finals || [];
 
     return `
-      <h1>최종 생기부</h1>
+      <h1>초안 합치기</h1>
       <p class="lead">체크한 과제(${c.includedAssignments}개)의 초안을 학생별로 묶어 하나의 생기부로 만들어요.</p>
       ${busyNote()}
-      ${promptCard('PROMPT_2', '최종 생기부 프롬프트 확인')}
+      ${promptCard('PROMPT_2', '초안 합치기 프롬프트 확인')}
       <div class="card row between">
         <div>초안 <b>${c.drafts}</b>개를 바탕으로 만들어요.</div>
-        <button class="btn primary" data-action="make-final" ${S.busy || running || !c.drafts ? 'disabled' : ''}>학생별 최종 생기부 만들기</button>
+        <button class="btn primary" data-action="make-final" ${S.busy || running || !c.drafts ? 'disabled' : ''}>학생별로 초안 합치기</button>
       </div>
       ${statusPanel('final', '명')}
       <div class="toolbar">
@@ -744,7 +744,7 @@
         <button class="btn" data-action="reload-finals">새로고침</button>
         ${finals.length ? downloadButton('final') : ''}
       </div>
-      ${finals.length === 0 ? '<div class="card empty">아직 최종 생기부가 없어요.</div>' : recordList(finals, 'final')}`;
+      ${finals.length === 0 ? '<div class="card empty">아직 합친 생기부가 없어요.</div>' : recordList(finals, 'final')}`;
   }
 
   function viewSettings() {
@@ -954,7 +954,7 @@
       });
     },
     async 'stop-all'() {
-      if (!await confirmModal('자동 작업 중지', '진행 중인 자동 작업(수집·초안·최종 생기부 등)을 모두 멈출까요?\n이미 만든 결과는 그대로 남아요.', '중지')) return;
+      if (!await confirmModal('자동 작업 중지', '진행 중인 자동 작업(수집·초안·초안 합치기 등)을 모두 멈출까요?\n이미 만든 결과는 그대로 남아요.', '중지')) return;
       await withBusy('중지하는 중…', async () => {
         const result = await call('uiStopAll');
         S.boot = await call('uiGetBootstrap');
@@ -964,12 +964,12 @@
     },
     async 'make-final'() {
       if (!await preparePrompt('PROMPT_2')) return;
-      if (!await confirmModal('최종 생기부 만들기', '체크한 과제의 초안을 학생별로 묶어 최종 생기부를 만들까요?', '만들기')) return;
-      await withBusy('학생별 최종 생기부를 만드는 중… 몇 분 걸릴 수 있어요.', async () => {
+      if (!await confirmModal('초안 합치기', '체크한 과제의 초안을 학생별로 묶어 하나의 생기부로 합칠까요?', '합치기')) return;
+      await withBusy('학생별로 초안을 합치는 중… 몇 분 걸릴 수 있어요.', async () => {
         const result = await call('uiStartFinalRecords');
         S.finals = await call('uiListFinalRecords');
         S.boot = await call('uiGetBootstrap');
-        showMessages(result, '최종 생기부 만들기를 시작했어요.');
+        showMessages(result, '초안 합치기를 시작했어요.');
         updatePolling();
       });
     },
@@ -1012,14 +1012,14 @@
       const { kind, row, key } = el.dataset;
       const r = findRecord(kind, key);
       const name = r ? `${r.studentNo} ${r.studentName}`.trim() : '';
-      if (!await confirmModal('삭제', `${name} 학생의 ${kind === 'review' ? '초안' : '최종 생기부'}을 지울까요?\n시트에서도 지워지고 되돌릴 수 없어요.`, '삭제')) return;
+      if (!await confirmModal('삭제', `${name} 학생의 ${kind === 'review' ? '초안' : '합친 생기부'}를 지울까요?\n시트에서도 지워지고 되돌릴 수 없어요.`, '삭제')) return;
       await deleteRecords(kind, [{ row, key }]);
     },
     async 'delete-filtered'(el) {
       const kind = el.dataset.kind;
       const rows = filterRecords((kind === 'review' ? S.drafts : S.finals) || [], kind);
       if (!rows.length) return;
-      if (!await confirmModal('모두 삭제', `지금 목록(검색·필터 결과)에 있는 ${kind === 'review' ? '초안' : '최종 생기부'} ${rows.length}개를 모두 지울까요?\n시트에서도 지워지고 되돌릴 수 없어요.`, `${rows.length}개 삭제`)) return;
+      if (!await confirmModal('모두 삭제', `지금 목록(검색·필터 결과)에 있는 ${kind === 'review' ? '초안' : '합친 생기부'} ${rows.length}개를 모두 지울까요?\n시트에서도 지워지고 되돌릴 수 없어요.`, `${rows.length}개 삭제`)) return;
       await deleteRecords(kind, rows.map(r => ({ row: r.row, key: r.key })));
     },
     async 'reload-drafts'() {
