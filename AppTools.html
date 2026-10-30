@@ -1,0 +1,528 @@
+<script>
+  // ---- 도구 화면: 공통문구 · 행발 추천 · 수동추가 ------------------------------
+  // AppScript.html의 S, call, esc, withBusy 등을 함께 쓴다.
+
+  const BEHAVIOR_FIELDS = [
+    { key: 'positiveObservation', label: '잘한 점 · 긍정적 관찰', placeholder: '예: 모둠 활동에서 역할을 먼저 맡고 끝까지 책임짐' },
+    { key: 'improvementNeeded', label: '보완할 점', placeholder: '예: 친구의 말을 끝까지 듣지 않고 끼어드는 경우가 있음' },
+    { key: 'growthEvidence', label: '성장한 모습 (있을 때만)', placeholder: '예: 2학기에는 발표 순서를 기다리며 경청하려 노력함' },
+  ];
+
+  async function refreshToolData(view) {
+    if (view === 'common') S.common = await call('uiGetCommonPhrases');
+    if (view === 'behavior' && !S.bDraft) S.behavior = await call('uiListBehaviorRows');
+    if (view === 'manual') S.manual = await call('uiGetManual');
+  }
+
+  // 결과 문구를 고치고 저장하는 공통 블록
+  function toolOriginal(kind, id) {
+    const row = Number(id);
+    if (kind === 'common') { const p = (S.common.phrases || []).find(x => x.row === row); return p ? p.text : ''; }
+    if (kind === 'behavior') { const r = (S.behavior.rows || []).find(x => x.row === row); return r ? String(r.recommendedRecord || '') : ''; }
+    if (kind === 'manual') { const r = (S.manual.rows || []).find(x => x.row === row); return r ? r.output : ''; }
+    return '';
+  }
+
+  function countLine(text) {
+    return `${text.length}자 · ${neisBytes(text)}바이트`;
+  }
+
+  function resultEditor(kind, id, rows) {
+    const editKey = `${kind}:${id}`;
+    const original = toolOriginal(kind, id);
+    const text = S.edits[editKey] !== undefined ? S.edits[editKey] : original;
+    const dirty = text !== original;
+    return `
+      <textarea data-action="edit-tool" data-kind="${kind}" data-id="${id}" rows="${rows || 5}">${esc(text)}</textarea>
+      <div class="row between">
+        <span class="small bytes" data-count="${esc(editKey)}">${countLine(text)}</span>
+        <div class="row">
+          <button class="btn" data-action="copy-tool" data-kind="${kind}" data-id="${id}">복사</button>
+          <button class="btn primary" data-action="save-tool" data-kind="${kind}" data-id="${id}" ${dirty ? '' : 'disabled'}>저장</button>
+        </div>
+      </div>`;
+  }
+
+  function toolStartButton(job, label, disabled) {
+    const running = S.boot.status && S.boot.status[job] && S.boot.status[job].state === 'ON';
+    return `<button class="btn primary" data-action="start-${job}" ${S.busy || running || disabled ? 'disabled' : ''}>${esc(label)}</button>`;
+  }
+
+  // ---- 공통문구 -------------------------------------------------------------
+  function viewCommon() {
+    const d = S.common;
+    if (!d) return '<div class="loading">불러오는 중…</div>';
+
+    const normalize = text => text.trim().replace(/\s+/g, ' ');
+    const seen = {};
+    d.phrases.forEach(p => { if (p.text) seen[normalize(p.text)] = (seen[normalize(p.text)] || 0) + 1; });
+    const dupCount = d.phrases.filter(p => p.text && seen[normalize(p.text)] > 1).length;
+    const done = d.phrases.filter(p => p.text).length;
+
+    return `
+      <h1>공통문구 만들기</h1>
+      <p class="lead">바탕 문구 하나를 주면, 뜻은 같고 표현이 다른 문구를 원하는 개수만큼 만들어요.<br>
+        여러 학생에게 같은 활동을 기록할 때, 문장이 똑같아지지 않게 할 때 좋아요.</p>
+      ${busyNote()}
+      <div class="card">
+        <label class="field"><span>바탕 문구</span>
+          <textarea id="cp-source" rows="4" placeholder="예: 인공지능과 미래사회 단원에서 AI 윤리 쟁점을 조사하고 자신의 입장을 논리적으로 발표함">${esc(d.sourceText)}</textarea></label>
+        <label class="field"><span>어떻게 만들까요? (지시사항)</span>
+          <textarea id="cp-prompt" rows="3" placeholder="예: 의미는 유지하되 문장 구조와 어휘를 바꿔 주세요. 200자 내외, ~함으로 끝내기">${esc(d.prompt)}</textarea></label>
+        <div class="row">
+          <label class="field" style="width:140px"><span>만들 개수</span>
+            <input type="number" id="cp-count" min="1" max="200" value="${esc(d.count)}"></label>
+          <span class="grow"></span>
+          ${toolStartButton('common', '문구 만들기')}
+        </div>
+        <div class="help">이전에 만든 문구는 새로 만들 때 지워져요. 필요하면 먼저 [모두 복사]로 옮겨 두세요.</div>
+      </div>
+      ${statusPanel('common', '개')}
+
+      <div class="row between" style="margin-top:8px">
+        <h2 style="margin:0">만든 문구 <span class="muted small">${done}개${dupCount ? ` · <span class="pill warn">겹치는 문구 ${dupCount}개</span>` : ''}</span></h2>
+        <div class="row">
+          <button class="btn" data-action="reload-common">새로고침</button>
+          <button class="btn" data-action="copy-all-common" ${done ? '' : 'disabled'}>모두 복사</button>
+        </div>
+      </div>
+      ${d.phrases.length === 0 ? '<div class="card empty">아직 만든 문구가 없어요.</div>' : d.phrases.map((p, i) => `
+        <div class="record ${p.text && seen[normalize(p.text)] > 1 ? 'dup' : ''}">
+          <div class="row between"><b>${i + 1}번</b>
+            ${p.text && seen[normalize(p.text)] > 1 ? '<span class="pill warn">다른 문구와 같음</span>' : ''}</div>
+          ${p.text ? resultEditor('common', p.row, 3) : `<div class="caution">${esc(p.error || '아직 만들지 않았어요.')}</div>`}
+        </div>`).join('')}`;
+  }
+
+  // ---- 행발 추천 -------------------------------------------------------------
+  function behaviorState(r) {
+    if (String(r.recommendedRecord || '').trim()) return { label: '추천 완료', cls: 'ok' };
+    const traits = String(r.selectedTraits || '').trim();
+    const obs = BEHAVIOR_FIELDS.some(f => String(r[f.key] || '').trim());
+    if (r.status === '생성중' || r.status === '대기') return { label: r.status, cls: 'run' };
+    if (r.status === '오류' || r.status === '재시도필요' || r.status === '응답형식오류') return { label: r.status, cls: 'err' };
+    if (!traits) return { label: '특성 고르기 필요', cls: 'warn' };
+    if (!obs) return { label: '관찰 내용 필요', cls: 'warn' };
+    return { label: '만들 준비 됨', cls: '' };
+  }
+
+  function splitTraits(text) {
+    return String(text || '').split(',').map(t => t.trim()).filter(Boolean);
+  }
+
+  function behaviorEditor(r) {
+    const draft = S.bDraft.fields;
+    const selected = splitTraits(draft.selectedTraits);
+    const traits = S.behavior.traits.concat(selected.filter(t => !S.behavior.traits.includes(t)));
+
+    return `
+      <div class="record open">
+        <div class="row between">
+          <input type="text" data-bfield="studentName" value="${esc(draft.studentName)}" placeholder="학생 이름" style="max-width:220px">
+          <div class="row">
+            <button class="btn danger" data-action="delete-behavior" data-id="${r.row}">학생 삭제</button>
+            <button class="btn" data-action="close-behavior">닫기</button>
+          </div>
+        </div>
+        <div class="muted small" style="margin:10px 0 6px">특성 고르기 <b>(하나 이상)</b> · 문장의 방향을 정하는 참고용이에요.</div>
+        <div class="chips">${traits.map(t => `<button class="chip ${selected.includes(t) ? 'on' : ''}" data-action="toggle-trait" data-trait="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+        <label class="field"><span>목록에 없는 특성 (쉼표로 구분)</span>
+          <input type="text" data-bfield="customTraits" value="${esc(draft.customTraits)}" placeholder="예: 창의성, 탐구심"></label>
+        ${BEHAVIOR_FIELDS.map(f => `
+          <label class="field"><span>${esc(f.label)}</span>
+            <textarea data-bfield="${f.key}" rows="2" placeholder="${esc(f.placeholder)}">${esc(draft[f.key])}</textarea></label>`).join('')}
+        <div class="help">학생 이름은 AI에게 보내지 않아요. 관찰한 사실만 적어 주세요. 성장한 모습이 없으면 '개선되었다'고 쓰지 않아요.</div>
+        <div class="row" style="justify-content:flex-end;margin-top:8px">
+          <button class="btn primary" data-action="save-behavior" ${S.bDraft.dirty ? '' : 'disabled'}>입력 내용 저장</button>
+        </div>
+        ${String(r.recommendedRecord || '').trim() ? `
+          <div class="divider"></div>
+          <div class="row between"><b>추천 문구</b>
+            <button class="link small" data-action="reset-behavior" data-id="${r.row}">지우고 다시 만들기</button></div>
+          ${resultEditor('behavior', r.row, 5)}
+          ${r.note ? `<div class="caution">${esc(r.note)}</div>` : ''}` : r.note ? `<div class="caution">${esc(r.note)}</div>` : ''}
+      </div>`;
+  }
+
+  function viewBehavior() {
+    const d = S.behavior;
+    if (!d) return '<div class="loading">불러오는 중…</div>';
+    const ready = d.rows.filter(r => behaviorState(r).label === '만들 준비 됨').length;
+    const done = d.rows.filter(r => String(r.recommendedRecord || '').trim()).length;
+    const text = S.filters.search.trim().toLowerCase();
+    const rows = d.rows.filter(r => !text || String(r.studentName).toLowerCase().includes(text));
+
+    return `
+      <h1>행발 추천 문구</h1>
+      <p class="lead">학생마다 특성을 고르고 관찰한 내용을 적으면, AI가 행동특성 및 종합의견 문구를 추천해요.<br>
+        학생을 누르면 입력 칸이 열려요.</p>
+      ${busyNote()}
+      <div class="card row between">
+        <div>만들 준비가 된 학생 <b>${ready}</b>명 · 추천 완료 <b>${done}</b>명</div>
+        ${toolStartButton('behavior', `추천 문구 만들기 (${ready}명)`, !ready)}
+      </div>
+      ${statusPanel('behavior', '명')}
+
+      <div class="toolbar">
+        <input type="search" id="search" class="grow" placeholder="학생 이름으로 찾기" value="${esc(S.filters.search)}">
+        <button class="btn" data-action="add-behavior-students">학생 추가</button>
+        <button class="btn" data-action="reload-behavior">새로고침</button>
+      </div>
+      ${d.rows.length === 0 ? `<div class="card empty">아직 학생이 없어요.<br>[학생 추가]를 눌러 이름을 넣어 주세요.</div>` : `
+      <div class="list">${rows.map(r => {
+        if (S.bDraft && S.bDraft.row === r.row) return behaviorEditor(r);
+        const st = behaviorState(r);
+        const traits = splitTraits(r.selectedTraits).concat(splitTraits(r.customTraits));
+        return `
+          <div class="item clickable" data-action="open-behavior" data-id="${r.row}">
+            <b style="min-width:90px">${esc(r.studentName || '(이름 없음)')}</b>
+            <span class="grow muted small ellipsis">${traits.length ? esc(traits.join(', ')) : '특성 없음'}${r.recommendedRecord ? ` · ${esc(String(r.recommendedRecord).slice(0, 60))}…` : ''}</span>
+            <span class="pill ${st.cls}">${esc(st.label)}</span>
+          </div>`;
+      }).join('')}</div>`}`;
+  }
+
+  // ---- 수동추가 --------------------------------------------------------------
+  function manualSetupCard(d, open) {
+    const columns = d.headers.slice();
+    // 출력 열은 아직 비어 있는 오른쪽 열도 고를 수 있게 한다.
+    for (let i = 0; i < 2; i++) {
+      const col = columns.length + 1;
+      columns.push({ col, letter: columnLetter(col), name: '' });
+    }
+    const label = c => `${c.letter}${c.name ? ` · ${c.name}` : ' (빈 열)'}`;
+
+    return `
+      <details class="card" ${open ? 'open' : ''}>
+        <summary><b>열 설정</b> <span class="muted small">${d.configured
+          ? `AI에 보낼 열 ${d.inputCols.map(columnLetter).join(', ')} → 생기부 열 ${columnLetter(d.outputCol)} (오른쪽 열에 바이트)`
+          : '아직 설정하지 않았어요'}</span></summary>
+        <p class="muted small">'수동추가' 시트의 어느 열을 AI에게 보내고, 결과를 어느 열에 적을지 골라요.
+          이름·학번·이메일처럼 개인정보가 담긴 열은 고르지 마세요.</p>
+        <div class="field"><span>AI에게 보낼 열 (여러 개 가능)</span>
+          <div class="chips">${d.headers.filter(c => c.name && (!d.outputCol || (c.col !== d.outputCol && c.col !== d.outputCol + 1))).map(c => `
+            <label class="chip ${d.inputCols.includes(c.col) ? 'on' : ''}"><input type="checkbox" class="manual-input-col" value="${c.col}" ${d.inputCols.includes(c.col) ? 'checked' : ''}> ${esc(label(c))}</label>`).join('')}</div></div>
+        <div class="row">
+          <label class="field"><span>생기부를 적을 열</span>
+            <select id="manual-output-col"><option value="">고르세요</option>
+              ${columns.map(c => `<option value="${c.col}" ${d.outputCol === c.col ? 'selected' : ''}>${esc(label(c))}</option>`).join('')}</select></label>
+          <label class="field" style="width:120px"><span>데이터 시작 행</span>
+            <input type="number" id="manual-start-row" min="2" value="${esc(d.startRow || 2)}"></label>
+          <button class="btn primary" data-action="save-manual-setup" style="margin-top:10px">열 설정 저장</button>
+        </div>
+        ${d.configError && !d.configured ? `<div class="help">${esc(d.configError)}</div>` : ''}
+      </details>`;
+  }
+
+  function columnLetter(col) {
+    let letter = '';
+    while (col > 0) {
+      const t = (col - 1) % 26;
+      letter = String.fromCharCode(65 + t) + letter;
+      col = Math.floor((col - t - 1) / 26);
+    }
+    return letter;
+  }
+
+  function manualAddCard(d) {
+    const cols = d.headers.filter(c => c.name && c.col !== d.outputCol && c.col !== d.outputCol + 1);
+    return `
+      <details class="card">
+        <summary><b>한 줄 직접 추가</b> <span class="muted small">여러 명은 시트에 붙여넣는 게 더 빨라요.</span></summary>
+        ${cols.map(c => `
+          <label class="field"><span>${esc(c.name)}</span>
+            ${d.inputCols.includes(c.col)
+              ? `<textarea class="manual-new" data-col="${c.col}" rows="3"></textarea>`
+              : `<input type="text" class="manual-new" data-col="${c.col}">`}</label>`).join('')}
+        <div class="row" style="justify-content:flex-end"><button class="btn primary" data-action="add-manual-row">추가</button></div>
+      </details>`;
+  }
+
+  function manualStatusPill(status) {
+    const cls = { '완료': 'ok', '대기': '', '오류': 'err', '근거부족': 'warn', '내용 부족': 'warn' }[status] || '';
+    return `<span class="pill ${cls}">${esc(status)}</span>`;
+  }
+
+  function viewManual() {
+    const d = S.manual;
+    if (!d) return '<div class="loading">불러오는 중…</div>';
+
+    if (!d.exists) {
+      return `
+        <h1>수동추가</h1>
+        <p class="lead">Classroom에 없는 활동(동아리, 대회, 프로젝트 등)의 내용을 직접 넣어 생기부를 만들어요.</p>
+        ${busyNote()}
+        <div class="card hero">
+          <h2>'수동추가' 시트를 만들까요?</h2>
+          <p class="lead">번호 · 이름 · 활동 내용 · 생기부 · 바이트 열이 있는 시트를 만들어요.<br>
+            활동 내용(C열)을 AI에게 보내고, 결과는 생기부(D열)에 적어요. 열 구성은 나중에 바꿀 수 있어요.</p>
+          <button class="btn primary lg" data-action="create-manual-sheet" ${S.busy ? 'disabled' : ''}>수동추가 시트 만들기</button>
+        </div>`;
+    }
+
+    const pending = d.rows.filter(r => r.status === '대기').length;
+    const text = S.filters.search.trim().toLowerCase();
+    const rows = d.rows.filter(r => !text || `${r.label} ${r.input}`.toLowerCase().includes(text));
+
+    return `
+      <h1>수동추가</h1>
+      <p class="lead">'수동추가' 시트의 각 행 내용을 AI에게 보내 생기부를 만들어요. 시트에 여러 줄을 한 번에 붙여넣어도 돼요.</p>
+      ${busyNote()}
+      ${manualSetupCard(d, !d.configured)}
+      ${d.configured ? `
+        ${manualAddCard(d)}
+        <div class="card row between">
+          <div>만들 행 <b>${pending}</b>개 <span class="muted small">(내용이 20자 이상이고 생기부 열이 빈 행)</span></div>
+          ${toolStartButton('manual', `생기부 만들기 (${pending}행)`, !pending)}
+        </div>
+        ${statusPanel('manual', '행')}
+        <div class="toolbar">
+          <input type="search" id="search" class="grow" placeholder="이름이나 내용으로 찾기" value="${esc(S.filters.search)}">
+          <button class="btn" data-action="reload-manual">새로고침</button>
+        </div>
+        ${d.truncated ? '<div class="help">행이 많아 앞쪽 500행만 보여줘요.</div>' : ''}
+        ${rows.length === 0 ? '<div class="card empty">아직 데이터가 없어요. 시트에 붙여넣거나 [한 줄 직접 추가]를 써 주세요.</div>' : rows.map(r => `
+          <div class="record">
+            <div class="row between">
+              <div><b>${esc(r.label || `${r.row}행`)}</b> <span class="muted small">${r.row}행</span></div>
+              <div class="row">${manualStatusPill(r.status)}
+                ${r.output || r.status === '오류' || r.status === '근거부족' ? `<button class="link small" data-action="reset-manual" data-id="${r.row}">지우고 다시 만들기</button>` : ''}</div>
+            </div>
+            <details class="small"><summary class="muted">AI에게 보내는 내용 보기</summary><div class="pre">${esc(r.input) || '<span class="muted">(비어 있음)</span>'}</div></details>
+            ${r.output ? resultEditor('manual', r.row, 5) : ''}
+            ${r.note && r.status !== '완료' ? `<div class="caution">${esc(r.note)}</div>` : ''}
+          </div>`).join('')}` : ''}`;
+  }
+
+  const TOOL_VIEWS = { common: viewCommon, behavior: viewBehavior, manual: viewManual };
+
+  // ---- 동작 ---------------------------------------------------------------
+  function afterToolStart(result, fallback) {
+    S.boot.status = result.status;
+    showMessages(result, fallback);
+    updatePolling();
+  }
+
+  function findBehavior(row) {
+    return (S.behavior.rows || []).find(r => r.row === Number(row));
+  }
+
+  function replaceBehavior(updated) {
+    const i = S.behavior.rows.findIndex(r => r.row === updated.row);
+    if (i >= 0) S.behavior.rows[i] = updated;
+  }
+
+  const TOOL_ACTIONS = {
+    async 'start-common'() {
+      const input = {
+        sourceText: $('#cp-source').value,
+        prompt: $('#cp-prompt').value,
+        count: Number($('#cp-count').value),
+      };
+      if (!input.sourceText.trim() || !input.prompt.trim()) return banner('바탕 문구와 지시사항을 모두 입력하세요.', 'err');
+      if (!await confirmModal('공통문구 만들기', `문구 ${input.count}개를 AI로 만들까요?\n이전에 만든 문구는 지워져요.`, '만들기')) return;
+      await withBusy('문구를 만드는 중… 첫 묶음은 1~2분 걸릴 수 있어요. 창을 닫아도 계속 진행돼요.', async () => {
+        const result = await call('uiStartCommonPhrases', input);
+        S.common = result.data;
+        afterToolStart(result, '문구 만들기를 시작했어요. 남은 것은 자동으로 이어서 만들어요.');
+      });
+    },
+    async 'reload-common'() {
+      await withBusy('불러오는 중…', async () => { S.common = await call('uiGetCommonPhrases'); });
+    },
+    'copy-all-common'() {
+      copyText(S.common.phrases.filter(p => p.text).map(p => S.edits[`common:${p.row}`] !== undefined ? S.edits[`common:${p.row}`] : p.text).join('\n'));
+    },
+
+    'open-behavior'(el) {
+      const r = findBehavior(el.dataset.id);
+      if (!r) return;
+      if (S.bDraft && S.bDraft.dirty) return banner('열려 있는 학생의 입력 내용을 먼저 저장하거나 닫아 주세요.', 'err');
+      const fields = {};
+      ['studentName', 'selectedTraits', 'customTraits'].concat(BEHAVIOR_FIELDS.map(f => f.key)).forEach(k => { fields[k] = String(r[k] || ''); });
+      S.bDraft = { row: r.row, name: String(r.studentName || ''), fields, dirty: false };
+      render();
+    },
+    async 'close-behavior'() {
+      if (S.bDraft.dirty && !await confirmModal('저장하지 않은 내용', '입력 내용을 저장하지 않고 닫을까요?', '닫기')) return;
+      S.bDraft = null;
+      render();
+    },
+    'toggle-trait'(el) {
+      const list = splitTraits(S.bDraft.fields.selectedTraits);
+      const t = el.dataset.trait;
+      const next = list.includes(t) ? list.filter(x => x !== t) : list.concat(t);
+      S.bDraft.fields.selectedTraits = next.join(', ');
+      S.bDraft.dirty = true;
+      render();
+    },
+    async 'save-behavior'() {
+      const draft = S.bDraft;
+      await withBusy('저장하는 중…', async () => {
+        const updated = await call('uiSaveBehaviorRow', draft.row, draft.name, draft.fields);
+        replaceBehavior(updated);
+        S.bDraft = null;
+        banner('저장했어요.', 'ok');
+      });
+    },
+    async 'reset-behavior'(el) {
+      if (!await confirmModal('다시 만들기', '추천 문구를 지울까요?\n지운 뒤 [추천 문구 만들기]를 누르면 새로 만들어요.', '지우기')) return;
+      await withBusy('지우는 중…', async () => {
+        const updated = await call('uiResetBehaviorResult', Number(el.dataset.id), S.bDraft ? S.bDraft.name : findBehavior(el.dataset.id).studentName);
+        replaceBehavior(updated);
+        delete S.edits[`behavior:${updated.row}`];
+      });
+    },
+    async 'delete-behavior'(el) {
+      const r = findBehavior(el.dataset.id);
+      if (!await confirmModal('학생 삭제', `${r.studentName || '이 학생'}의 행을 시트에서 지울까요?`, '삭제')) return;
+      await withBusy('지우는 중…', async () => {
+        S.behavior = await call('uiDeleteBehaviorRow', r.row, r.studentName);
+        S.bDraft = null;
+      });
+    },
+    'add-behavior-students'() {
+      // 모달 본문은 줄바꿈을 그대로 보여주므로 태그 사이 공백을 없앤다.
+      openModal('학생 추가', `
+        <p class="muted" style="margin-top:0">한 줄에 한 명씩 이름을 넣어 주세요. 엑셀이나 나이스에서 이름 열을 복사해 붙여넣어도 돼요.</p>
+        <textarea id="behavior-names" rows="10" placeholder="김하늘&#10;이바다"></textarea>
+        <div class="row" style="justify-content:flex-end;margin-top:12px">
+          <button class="btn primary" id="behavior-names-ok">추가</button>
+        </div>`.replace(/>\s+</g, '><'));
+      $('#behavior-names').focus();
+      $('#behavior-names-ok').onclick = async () => {
+        const names = $('#behavior-names').value.split('\n').map(n => n.trim()).filter(Boolean);
+        if (!names.length) return;
+        closeModal();
+        await withBusy('학생을 추가하는 중…', async () => {
+          S.behavior = await call('uiAddBehaviorStudents', names);
+          banner(`${names.length}명을 추가했어요. 학생을 눌러 내용을 적어 주세요.`, 'ok');
+        });
+      };
+    },
+    async 'start-behavior'() {
+      const ready = S.behavior.rows.filter(r => behaviorState(r).label === '만들 준비 됨').length;
+      if (!await confirmModal('추천 문구 만들기', `학생 ${ready}명의 행발 추천 문구를 AI로 만들까요?\n이미 추천 문구가 있는 학생은 건너뛰어요.`, '만들기')) return;
+      await withBusy('추천 문구를 만드는 중… 창을 닫아도 계속 진행돼요.', async () => {
+        const result = await call('uiStartBehavior');
+        S.behavior = result.data;
+        afterToolStart(result, '추천 문구 만들기를 시작했어요.');
+      });
+    },
+    async 'reload-behavior'() {
+      if (S.bDraft && S.bDraft.dirty) return banner('열려 있는 학생의 입력 내용을 먼저 저장하거나 닫아 주세요.', 'err');
+      await withBusy('불러오는 중…', async () => { S.behavior = await call('uiListBehaviorRows'); S.bDraft = null; });
+    },
+
+    async 'create-manual-sheet'() {
+      await withBusy('시트를 만드는 중…', async () => {
+        S.manual = await call('uiCreateManualSheet');
+        banner("'수동추가' 시트를 만들었어요. 시트에 내용을 붙여넣거나 아래에서 한 줄씩 추가하세요.", 'ok');
+      });
+    },
+    async 'save-manual-setup'() {
+      const setup = {
+        inputCols: Array.from(document.querySelectorAll('.manual-input-col:checked')).map(el => Number(el.value)),
+        outputCol: Number($('#manual-output-col').value),
+        startRow: Number($('#manual-start-row').value),
+      };
+      await withBusy('열 설정을 저장하는 중…', async () => {
+        S.manual = await call('uiSaveManualSetup', setup);
+        banner('열 설정을 저장했어요.', 'ok');
+      });
+    },
+    async 'add-manual-row'() {
+      const values = {};
+      document.querySelectorAll('.manual-new').forEach(el => { values[el.dataset.col] = el.value; });
+      await withBusy('추가하는 중…', async () => {
+        S.manual = await call('uiAddManualRow', values);
+        banner('한 줄을 추가했어요.', 'ok');
+      });
+    },
+    async 'start-manual'() {
+      const pending = S.manual.rows.filter(r => r.status === '대기').length;
+      if (!await confirmModal('생기부 만들기', `${pending}개 행의 생기부를 AI로 만들까요?\n생기부 열이 이미 채워진 행은 건너뛰어요.`, '만들기')) return;
+      await withBusy('생기부를 만드는 중… 창을 닫아도 계속 진행돼요.', async () => {
+        const result = await call('uiStartManual');
+        S.manual = result.data;
+        afterToolStart(result, '생기부 만들기를 시작했어요.');
+      });
+    },
+    async 'reset-manual'(el) {
+      const r = S.manual.rows.find(x => x.row === Number(el.dataset.id));
+      if (!await confirmModal('다시 만들기', '이 행의 생기부와 메모를 지울까요?\n지운 뒤 [생기부 만들기]를 누르면 새로 만들어요.', '지우기')) return;
+      await withBusy('지우는 중…', async () => {
+        await call('uiResetManualOutput', r.row, r.input);
+        r.output = '';
+        r.note = '';
+        r.status = r.input.length >= 20 ? '대기' : '내용 부족';
+        delete S.edits[`manual:${r.row}`];
+      });
+    },
+    async 'reload-manual'() {
+      await withBusy('불러오는 중…', async () => { S.manual = await call('uiGetManual'); });
+    },
+
+    'copy-tool'(el) {
+      const { kind, id } = el.dataset;
+      const edited = S.edits[`${kind}:${id}`];
+      copyText(edited !== undefined ? edited : toolOriginal(kind, id));
+    },
+    async 'save-tool'(el) {
+      const { kind, id } = el.dataset;
+      const row = Number(id);
+      const text = S.edits[`${kind}:${id}`];
+      el.disabled = true;
+      try {
+        if (kind === 'common') {
+          const p = S.common.phrases.find(x => x.row === row);
+          const updated = await call('uiUpdateCommonPhrase', row, p.text, text);
+          p.text = updated.text;
+        } else if (kind === 'behavior') {
+          const r = findBehavior(row);
+          replaceBehavior(await call('uiUpdateBehaviorRecord', row, r.studentName, text));
+        } else if (kind === 'manual') {
+          const r = S.manual.rows.find(x => x.row === row);
+          const updated = await call('uiUpdateManualOutput', row, r.input, text);
+          r.output = updated.output;
+        }
+        delete S.edits[`${kind}:${id}`];
+        banner('저장했어요.', 'ok');
+      } catch (err) {
+        showError(err);
+      }
+      render();
+    },
+  };
+
+  // 입력 중에는 다시 그리지 않고 글자수·저장 버튼만 바꾼다.
+  function handleToolInput(el) {
+    if (el.dataset.bfield && S.bDraft) {
+      S.bDraft.fields[el.dataset.bfield] = el.value;
+      S.bDraft.dirty = true;
+      const btn = document.querySelector('[data-action="save-behavior"]');
+      if (btn) btn.disabled = false;
+      return true;
+    }
+    if (el.dataset.action === 'edit-tool') {
+      const { kind, id } = el.dataset;
+      const editKey = `${kind}:${id}`;
+      S.edits[editKey] = el.value;
+      if (el.value === toolOriginal(kind, id)) delete S.edits[editKey];
+      const counter = document.querySelector(`[data-count="${CSS.escape(editKey)}"]`);
+      if (counter) counter.textContent = countLine(el.value);
+      const btn = el.parentElement.querySelector('[data-action="save-tool"]');
+      if (btn) btn.disabled = el.value === toolOriginal(kind, id);
+      return true;
+    }
+    return false;
+  }
+
+  function handleToolChange(el) {
+    if (el.classList.contains('manual-input-col')) {
+      el.closest('.chip').classList.toggle('on', el.checked);
+    }
+  }
+
+  startApp();
+</script>

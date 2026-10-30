@@ -211,6 +211,27 @@
   .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); font-weight: 600; }
   .modal-body { padding: 16px 18px; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; }
 
+  /* 도구 화면 */
+  .nav-label { font-size: 11px; color: var(--muted); padding: 16px 10px 6px; letter-spacing: .05em; }
+  .dot.tool { border-style: dashed; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 12px; cursor: pointer; font-size: 13px; color: var(--text); display: inline-flex; align-items: center; gap: 4px; }
+  .chip.on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+  .chip input { margin: 0; }
+  .record.dup { border-color: var(--warn); }
+  .record.open { border-color: var(--primary); margin: 8px; }
+  .record.open textarea { min-height: 0; margin: 0; }
+  .record textarea[data-action="edit-tool"] { min-height: 70px; }
+  .item.clickable { cursor: pointer; }
+  .item.clickable:hover { background: var(--bg); }
+  .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .divider { border-top: 1px solid var(--line); margin: 14px 0 10px; }
+  .pre { white-space: pre-wrap; background: var(--bg); border-radius: 6px; padding: 8px 10px; margin-top: 6px; line-height: 1.6; max-height: 220px; overflow-y: auto; }
+  details > summary { cursor: pointer; }
+  details.card > summary { margin: -4px 0; }
+  details.card[open] > summary { margin-bottom: 12px; }
+  details.small { margin-top: 8px; }
+
   .empty { text-align: center; color: var(--muted); padding: 36px 0; }
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 </style>

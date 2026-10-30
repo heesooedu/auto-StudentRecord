@@ -187,10 +187,6 @@ function onOpen() {
   ui.createMenu('생기부 자동화')
     .addItem('▶ 생기부 도우미 열기', 'openAssistant')
     .addSeparator()
-    .addItem('공통문구 생성', 'generateCommonPhrases')
-    .addItem('행발 추천 문구 생성', 'generateBehaviorRecommendationsForSelectedRows')
-    .addItem('수동추가 데이터 생기부 생성', 'generateManualAddedRecords')
-    .addSeparator()
     .addSubMenu(advancedMenu)
     .addToUi();
 
@@ -1078,17 +1074,22 @@ function styleBehaviorRecommendationSheet_() {
 }
 
 function generateBehaviorRecommendationsForSelectedRows() {
-  const ui = getUi_();
-  const lock = LockService.getScriptLock();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sh = ss.getActiveSheet();
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
 
   if (!sh || sh.getName() !== SHEET_NAMES.behaviorRecommendations) {
-    ui.alert('행발문구추천 시트에서 처리할 행을 선택한 뒤 실행하세요.');
+    getUi_().alert('행발문구추천 시트에서 처리할 행을 선택한 뒤 실행하세요.');
     return;
   }
 
-  ensureBehaviorRecommendationSheet_();
+  generateBehaviorRecommendationsCore_();
+}
+
+// 행발문구추천 시트의 전체 데이터 행을 처리한다. (도우미 화면에서도 호출)
+function generateBehaviorRecommendationsCore_() {
+  const ui = getUi_();
+  const lock = LockService.getScriptLock();
+  const sh = ensureBehaviorRecommendationSheet_();
+
   styleBehaviorRecommendationSheet_();
 
   try {

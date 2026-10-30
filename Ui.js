@@ -21,7 +21,8 @@ const ASSISTANT_SETTING_GROUPS = {
     'NEIS_WARNING_BYTES',
   ],
   ai: ['AI_PROVIDER', 'CLAUDE_MODEL', 'GPT_MODEL', 'GEMINI_MODEL', 'REASONING'],
-  prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE'],
+  prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE', 'BEHAVIOR_RECORD_PROMPT', 'MANUAL_PROMPT'],
+  tools: ['BEHAVIOR_RECORD_MIN_CHARS', 'BEHAVIOR_RECORD_MAX_CHARS', 'COMMON_PHRASE_PREVIOUS_LIMIT'],
   advanced: ['MAX_RECORD_CHARS', 'MAX_INPUT_CHARS', 'BATCH_SIZE', 'MAX_RUN_SECONDS', 'AUTO_NEXT_DELAY_MS'],
 };
 
@@ -38,6 +39,11 @@ const ASSISTANT_SETTING_LABELS = {
   PROMPT_1: '과제별 초안 지시사항',
   PROMPT_2: '학생별 최종 생기부 지시사항',
   SYSTEM_GUIDE: '공통 작성 지침',
+  BEHAVIOR_RECORD_PROMPT: '행발 추천 문구 작성 지침',
+  MANUAL_PROMPT: '수동추가 생기부 작성 지침',
+  BEHAVIOR_RECORD_MIN_CHARS: '행발 최소 글자수',
+  BEHAVIOR_RECORD_MAX_CHARS: '행발 최대 글자수',
+  COMMON_PHRASE_PREVIOUS_LIMIT: '공통문구 중복 방지용 참고 문구 수',
   MAX_RECORD_CHARS: '초안 최대 글자수(구버전 설정)',
   MAX_INPUT_CHARS: 'AI에 보낼 과제 원문 최대 글자수',
   BATCH_SIZE: '자동 생성 1회당 처리 수',
@@ -357,6 +363,18 @@ function uiSaveSettings(patch) {
     }
   });
 
+  const values = {};
+  entries.forEach(key => {
+    values[key] = patch[key];
+  });
+  writeConfigValues_(values);
+
+  log_('uiSaveSettings', 'OK', `도우미 화면에서 설정 저장: ${entries.join(', ')}`);
+  return uiGetSettings();
+}
+
+// 설정 시트에 key → value를 쓴다. 없는 키는 맨 아래에 추가한다.
+function writeConfigValues_(patch) {
   const lock = LockService.getDocumentLock();
   lock.waitLock(10000);
 
@@ -370,7 +388,7 @@ function uiSaveSettings(patch) {
       if (key) rowByKey[key] = i + 1;
     }
 
-    entries.forEach(key => {
+    Object.keys(patch || {}).forEach(key => {
       const value = String(patch[key] === undefined || patch[key] === null ? '' : patch[key]);
 
       if (rowByKey[key]) {
@@ -382,15 +400,14 @@ function uiSaveSettings(patch) {
   } finally {
     lock.releaseLock();
   }
-
-  log_('uiSaveSettings', 'OK', `도우미 화면에서 설정 저장: ${entries.join(', ')}`);
-  return uiGetSettings();
 }
 
 function uiGetDefaultPrompt(key) {
   if (key === 'PROMPT_1') return defaultRecordDraftPrompt_();
   if (key === 'PROMPT_2') return defaultStudentFinalRecordPrompt_();
   if (key === 'SYSTEM_GUIDE') return defaultSystemGuide_();
+  if (key === 'BEHAVIOR_RECORD_PROMPT') return defaultBehaviorRecordPrompt_();
+  if (key === 'MANUAL_PROMPT') return defaultManualRecordPrompt_();
 
   throw new Error(`기본값이 없는 설정입니다: ${key}`);
 }
@@ -580,6 +597,24 @@ function uiGetStatus() {
       triggers: triggerCount('autoProcessPendingStudentFinalRecords'),
       remaining: countPendingStudentFinalRecords_(),
       last: getAutoStudentFinalLastResult_(),
+    },
+    common: {
+      state: props.getProperty('AUTO_COMMON_PHRASE_TRIGGER') || 'OFF',
+      triggers: triggerCount('autoProcessPendingCommonPhrases'),
+      remaining: countPendingCommonPhrases_(),
+      last: getAutoCommonPhraseLastResult_(),
+    },
+    behavior: {
+      state: props.getProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY) || 'OFF',
+      triggers: triggerCount('autoProcessPendingBehaviorRecommendations'),
+      remaining: countPendingBehaviorRecommendationRows_(),
+      last: null,
+    },
+    manual: {
+      state: props.getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF',
+      triggers: triggerCount('autoProcessPendingManualAddedRecords'),
+      remaining: countPendingManualAddedRows_(),
+      last: null,
     },
   };
 }

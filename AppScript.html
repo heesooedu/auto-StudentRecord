@@ -9,6 +9,11 @@
     submissions: null,
     drafts: null,
     finals: null,
+    common: null,
+    behavior: null,
+    manual: null,
+    bDraft: null,
+    openId: null,
     selected: new Set(),
     edits: {},
     filters: { collectAssignment: 'included', draftAssignment: 'included', reviewAssignment: '', search: '', uncheckedOnly: false },
@@ -26,6 +31,14 @@
     { id: 'review', label: '초안 확인', num: 5 },
     { id: 'final', label: '최종 생기부', num: 6 },
   ];
+
+  // 기본 흐름과 따로 필요할 때 쓰는 도구 (화면은 AppTools.html)
+  const TOOLS = [
+    { id: 'common', label: '공통문구', icon: '✎', desc: '바탕 문구 하나로 표현이 다른 문구를 여러 개 만들어요.' },
+    { id: 'behavior', label: '행발 추천', icon: '☺', desc: '학생별 관찰 내용으로 행동특성 및 종합의견 문구를 추천받아요.' },
+    { id: 'manual', label: '수동추가', icon: '＋', desc: 'Classroom 밖의 활동 내용을 직접 넣어 생기부를 만들어요.' },
+  ];
+  const JOBS = ['collect', 'drafts', 'final', 'common', 'behavior', 'manual'];
 
   const NEXT_GUIDE = {
     start: { title: 'AI 연결부터 시작해요', desc: '사용할 AI(Claude·GPT·Gemini)를 고르고 API 키를 저장하면 준비가 끝나요.', button: '시작하기' },
@@ -185,6 +198,7 @@
   }
 
   function renderNav() {
+    const b = S.boot;
     const next = nextStep();
     $('#steps').innerHTML = STEPS.map(step => {
       const state = stepState(step.id);
@@ -195,9 +209,12 @@
       if (!state && step.id === next) dotClass = 'next';
       return `<button class="step ${S.view === step.id ? 'active' : ''}" data-go="${step.id}">
         <span class="dot ${dotClass}">${dotText}</span>${esc(step.label)}</button>`;
+    }).join('') + '<div class="nav-label">도구</div>' + TOOLS.map(tool => {
+      const running = b && b.status && b.status[tool.id] && b.status[tool.id].state === 'ON';
+      return `<button class="step ${S.view === tool.id ? 'active' : ''}" data-go="${tool.id}">
+        <span class="dot ${running ? 'running' : 'tool'}">${running ? '●' : tool.icon}</span>${esc(tool.label)}</button>`;
     }).join('');
 
-    const b = S.boot;
     $('#ai-badge').textContent = b ? `AI: ${b.provider} · ${b.model}` : '';
   }
 
@@ -223,14 +240,20 @@
       review: async () => { if (!S.drafts) S.drafts = await call('uiListDrafts'); },
       final: async () => { if (!S.finals) S.finals = await call('uiListFinalRecords'); },
       settings: async () => { if (!S.settings) S.settings = await call('uiGetSettings'); },
+      common: async () => { if (!S.common) S.common = await call('uiGetCommonPhrases'); },
+      behavior: async () => { if (!S.behavior) S.behavior = await call('uiListBehaviorRows'); },
+      manual: async () => { if (!S.manual) S.manual = await call('uiGetManual'); },
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
     await loaders[view]();
   }
 
   async function go(view) {
+    if (S.bDraft && S.bDraft.dirty && !await confirmModal('저장하지 않은 내용', '행발 입력 내용을 저장하지 않았어요. 그래도 이동할까요?', '이동')) return;
     S.view = view;
     S.selected = new Set();
+    S.bDraft = null;
+    S.openId = null;
     banner('');
     render();
     try {
@@ -245,7 +268,7 @@
   // 진행 중인 자동 작업이 있으면 5초마다 상태를 새로 읽는다.
   function updatePolling() {
     const st = (S.boot && S.boot.status) || {};
-    const running = ['collect', 'drafts', 'final'].some(job => st[job] && st[job].state === 'ON');
+    const running = JOBS.some(job => st[job] && st[job].state === 'ON');
 
     if (running && !S.pollTimer) {
       S.pollTimer = setInterval(pollStatus, 5000);
@@ -261,16 +284,22 @@
       const status = await call('uiGetStatus');
       S.boot.status = status;
 
-      const finished = ['collect', 'drafts', 'final'].filter(job => before[job].state === 'ON' && status[job].state !== 'ON');
+      const finished = JOBS.filter(job => before[job] && before[job].state === 'ON' && status[job].state !== 'ON');
       if (finished.length) {
         if (finished.includes('collect')) { S.submissions = null; S.assignments = null; }
         if (finished.includes('drafts')) { S.submissions = null; S.drafts = null; }
         if (finished.includes('final')) S.finals = null;
+        if (finished.includes('common')) S.common = null;
+        if (finished.includes('behavior') && !S.bDraft) S.behavior = null;
+        if (finished.includes('manual')) S.manual = null;
         await refreshBoot();
         await ensureData(S.view);
       } else if (S.view === 'drafts' || S.view === 'collect') {
         // 진행 중에도 남은 개수와 행 상태를 갱신해서 보여준다.
         S.submissions = await call('uiListSubmissions');
+      } else if (status[S.view] && status[S.view].state === 'ON' && !isEditing()) {
+        // 도구 화면도 진행 중에는 결과를 바로바로 보여준다.
+        await refreshToolData(S.view);
       }
       updatePolling();
       if (!S.busy && !isEditing()) render();
@@ -288,7 +317,7 @@
   // ---- 화면 렌더링 -----------------------------------------------------------
   function render() {
     renderNav();
-    const views = { home: viewHome, start: viewStart, assignments: viewAssignments, collect: viewCollect, drafts: viewDrafts, review: viewReview, final: viewFinal, settings: viewSettings };
+    const views = Object.assign({ home: viewHome, start: viewStart, assignments: viewAssignments, collect: viewCollect, drafts: viewDrafts, review: viewReview, final: viewFinal, settings: viewSettings }, TOOL_VIEWS);
     const scroll = $('#view').scrollTop;
     if (!S.boot) {
       $('#view').innerHTML = '<div class="loading">불러오는 중…</div>';
@@ -332,11 +361,12 @@
         <div class="stat"><span class="muted small">최종 생기부</span><b>${c.finalRecords || 0}</b></div>
       </div>` : ''}
 
-      <div class="card" style="margin-top:16px">
-        <h2>다른 기능</h2>
-        <p class="muted" style="margin:0">공통문구 생성, 행발 추천 문구, 수동추가 데이터 생기부는 시트 메뉴
-          <b>[생기부 자동화]</b>에서 사용할 수 있어요. 기존 메뉴 전체는 <b>[고급 (기존 메뉴)]</b>에 그대로 있어요.</p>
-      </div>`;
+      <h2 style="margin-top:22px">필요할 때 쓰는 도구</h2>
+      <div class="choices">${TOOLS.map(tool => `
+        <button class="choice" data-go="${tool.id}">
+          <b>${tool.icon} ${esc(tool.label)}</b>
+          <div class="muted small">${esc(tool.desc)}</div>
+        </button>`).join('')}</div>`;
   }
 
   function viewStart() {
@@ -689,6 +719,7 @@
     const tabs = [
       { id: 'basic', label: '기본' },
       { id: 'prompts', label: '프롬프트' },
+      { id: 'tools', label: '도구' },
       { id: 'advanced', label: '고급' },
     ];
     const items = S.settingsTab === 'basic'
@@ -712,7 +743,7 @@
 
     return `
       <h1>설정</h1>
-      <p class="lead">자주 바꾸는 설정만 모았어요. 행발·공통문구·수동추가 설정은 아직 '설정' 시트에서 바꿔 주세요.</p>
+      <p class="lead">자주 바꾸는 설정만 모았어요. 수동추가의 열 설정은 [수동추가] 화면에서 바꿀 수 있어요.</p>
       ${busyNote()}
       <div class="tabs">${tabs.map(t => `<button class="tab ${S.settingsTab === t.id ? 'active' : ''}" data-action="settings-tab" data-id="${t.id}">${t.label}</button>`).join('')}</div>
       <div class="card">${items.map(field).join('')}
@@ -977,22 +1008,25 @@
     const name = actionEl.dataset.action;
     // 체크박스/입력 동작은 change·input 이벤트에서 처리한다.
     if (actionEl.tagName === 'INPUT' || actionEl.tagName === 'TEXTAREA' || actionEl.tagName === 'SELECT') return;
-    if (actions[name]) {
+    const handler = actions[name] || TOOL_ACTIONS[name];
+    if (handler) {
       event.preventDefault();
-      actions[name](actionEl);
+      handler(actionEl);
     }
   });
 
   document.addEventListener('change', event => {
     const el = event.target;
-    if (el.dataset.action && el.type === 'checkbox' && actions[el.dataset.action]) {
-      actions[el.dataset.action](el);
+    const checkboxHandler = el.dataset.action && (actions[el.dataset.action] || TOOL_ACTIONS[el.dataset.action]);
+    if (el.type === 'checkbox' && checkboxHandler) {
+      checkboxHandler(el);
       return;
     }
     if (el.id === 'collect-assignment') { S.filters.collectAssignment = el.value; render(); }
     if (el.id === 'draft-assignment') { S.filters.draftAssignment = el.value; S.selected = new Set(); render(); }
     if (el.id === 'review-assignment') { S.filters.reviewAssignment = el.value; render(); }
     if (el.id === 'unchecked-only') { S.filters.uncheckedOnly = el.checked; render(); }
+    handleToolChange(el);
   });
 
   let searchTimer = null;
@@ -1010,6 +1044,8 @@
       }, 250);
       return;
     }
+
+    if (handleToolInput(el)) return;
 
     if (el.dataset.action === 'edit-record') {
       const editKey = `${el.dataset.kind}:${el.dataset.key}`;
@@ -1032,13 +1068,15 @@
   $('#modal').addEventListener('click', event => { if (event.target.id === 'modal') closeModal(); });
 
   window.addEventListener('beforeunload', event => {
-    if (Object.keys(S.edits).length) {
+    if (Object.keys(S.edits).length || (S.bDraft && S.bDraft.dirty)) {
       event.preventDefault();
       event.returnValue = '';
     }
   });
 
-  refreshBoot()
+  // AppTools.html까지 읽은 뒤 시작한다.
+  function startApp() {
+    refreshBoot()
     .then(() => {
       if (!S.boot.isSetup || !S.boot.keys[S.boot.provider]) go('start');
     })
@@ -1047,4 +1085,5 @@
       render();
       showError(err);
     });
+  }
 </script>
