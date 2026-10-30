@@ -35,6 +35,7 @@ const BEHAVIOR_RECOMMENDATION_HEADERS = [
 ];
 // 행발문구추천 시트 selectedTraits 열의 드롭다운 값과 같아야 한다.
 const BEHAVIOR_TRAIT_KEYWORDS = [
+  '없음',
   '성실',
   '책임감',
   '자발성',

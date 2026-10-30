@@ -111,7 +111,7 @@ function behaviorTraitOptions_(sh, h) {
   if (!h.selectedTraits) return BEHAVIOR_TRAIT_KEYWORDS;
   const rule = sh.getRange(2, h.selectedTraits).getDataValidation();
   if (!rule || rule.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) return BEHAVIOR_TRAIT_KEYWORDS;
-  const options = (rule.getCriteriaValues()[0] || []).map(v => String(v || '').trim()).filter(v => v && v !== '없음');
+  const options = (rule.getCriteriaValues()[0] || []).map(v => String(v || '').trim()).filter(Boolean);
   return options.length ? options : BEHAVIOR_TRAIT_KEYWORDS;
 }
 

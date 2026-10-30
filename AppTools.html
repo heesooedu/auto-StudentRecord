@@ -359,7 +359,8 @@
     'toggle-trait'(el) {
       const list = splitTraits(S.bDraft.fields.selectedTraits);
       const t = el.dataset.trait;
-      const next = list.includes(t) ? list.filter(x => x !== t) : list.concat(t);
+      // '없음'은 다른 특성과 함께 고를 수 없다.
+      const next = list.includes(t) ? list.filter(x => x !== t) : t === '없음' ? [t] : list.filter(x => x !== '없음').concat(t);
       S.bDraft.fields.selectedTraits = next.join(', ');
       S.bDraft.dirty = true;
       render();
