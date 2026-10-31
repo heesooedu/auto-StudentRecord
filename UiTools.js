@@ -84,6 +84,12 @@ function uiDeleteCommonPhrase(row, expected) {
       throw new Error('시트 내용이 바뀌어 지우지 못했습니다. 새로고침한 뒤 다시 시도해 주세요.');
     }
     sh.getRange(row, 2, 1, 2).deleteCells(SpreadsheetApp.Dimension.ROWS);
+    // 지운 만큼 만들 개수도 줄여야 아래로 생긴 빈 칸을 남은 작업으로 세지 않는다.
+    const run = getCommonPhraseRun_();
+    if (run && Number(run.total || 0) >= row - 2) {
+      run.total = Number(run.total) - 1;
+      saveCommonPhraseRun_(run);
+    }
   });
 
   return uiGetCommonPhrases();
@@ -97,6 +103,11 @@ function uiClearCommonPhrases() {
       const range = sh.getRange(3, 2, rows, 2);
       range.clearContent();
       range.clearNote();
+    }
+    const run = getCommonPhraseRun_();
+    if (run) {
+      run.total = 0;
+      saveCommonPhraseRun_(run);
     }
   });
 

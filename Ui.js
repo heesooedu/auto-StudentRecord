@@ -632,7 +632,8 @@ function uiGetStatus() {
     common: {
       state: stateOf('AUTO_COMMON_PHRASE_TRIGGER', 'autoProcessPendingCommonPhrases'),
       triggers: triggerCount('autoProcessPendingCommonPhrases'),
-      remaining: countPendingCommonPhrases_(),
+      // 공통문구는 [문구 만들기]를 다시 누르면 처음부터 새로 만들어서, 멈춘 뒤 남은 빈 칸은 이어서 할 작업이 아니다.
+      remaining: props.getProperty('AUTO_COMMON_PHRASE_TRIGGER') === 'ON' ? countPendingCommonPhrases_() : 0,
       last: getAutoCommonPhraseLastResult_(),
     },
     behavior: {
