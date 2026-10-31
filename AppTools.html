@@ -136,7 +136,7 @@
         </div>
         <div class="muted small" style="margin:10px 0 6px">특성 고르기 <b>(필수, 하나 이상)</b> · 문장의 방향을 정하는 참고용이에요. 아래 관찰 내용은 모두 선택 입력이에요.</div>
         <div class="chips">${traits.map(t => `<button class="chip ${selected.includes(t) ? 'on' : ''}" data-action="toggle-trait" data-trait="${esc(t)}">${esc(t)}</button>`).join('')}</div>
-        <label class="field"><span>목록에 없는 특성 (쉼표로 구분)</span>
+        <label class="field"><span>목록에 없는 특성 (선택, 쉼표로 구분)</span>
           <input type="text" data-bfield="customTraits" value="${esc(draft.customTraits)}" placeholder="예: 회복탄력성, 질투, 예의없음"></label>
         ${BEHAVIOR_FIELDS.map(f => `
           <label class="field"><span>${esc(f.label)}</span>
