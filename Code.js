@@ -1364,7 +1364,8 @@ function buildBehaviorRecommendationData_(rowValues, h) {
     positiveObservation,
     improvementNeeded,
     growthEvidence,
-    hasSelectedTraits: isMeaningfulBehaviorInput_(selectedTraits),
+    // 목록에서 고른 특성이 없어도 '목록에 없는 특성'을 적었으면 만든다.
+    hasSelectedTraits: isMeaningfulBehaviorInput_(selectedTraits) || isMeaningfulBehaviorInput_(customTraits),
     hasAnyInput: inputFields.some(isMeaningfulBehaviorInput_),
   };
 }
@@ -1847,9 +1848,9 @@ function countPendingBehaviorRecommendationRows_() {
       const recommendedRecord = String(rowValueAt_(row, h.recommendedRecord) || '').trim();
       if (recommendedRecord) return;
 
-      const selectedTraits = String(rowValueAt_(row, h.selectedTraits) || '').trim();
-      // 관찰 내용은 모두 선택 입력이라 특성만 있으면 만든다.
-      if (isMeaningfulBehaviorInput_(selectedTraits)) count++;
+      // 관찰 내용은 모두 선택 입력이라 특성(목록 또는 직접 적은 것)만 있으면 만든다.
+      const traits = [rowValueAt_(row, h.selectedTraits), h.customTraits ? rowValueAt_(row, h.customTraits) : ''];
+      if (traits.some(isMeaningfulBehaviorInput_)) count++;
     });
 
     return count;

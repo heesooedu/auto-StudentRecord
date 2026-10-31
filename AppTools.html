@@ -109,10 +109,10 @@
   // ---- 행발 추천 -------------------------------------------------------------
   function behaviorState(r) {
     if (String(r.recommendedRecord || '').trim()) return { label: '추천 완료', cls: 'ok' };
-    const traits = String(r.selectedTraits || '').trim();
+    const traits = String(r.selectedTraits || '').trim() || String(r.customTraits || '').trim();
     if (r.status === '생성중' || r.status === '대기') return { label: r.status, cls: 'run' };
     if (r.status === '오류' || r.status === '재시도필요' || r.status === '응답형식오류') return { label: r.status, cls: 'err' };
-    if (!traits) return { label: '특성 고르기 필요', cls: 'warn' };
+    if (!traits) return { label: '특성 필요', cls: 'warn' };
     return { label: '만들 준비 됨', cls: '' };
   }
 
@@ -134,7 +134,7 @@
             <button class="btn" data-action="close-behavior">닫기</button>
           </div>
         </div>
-        <div class="muted small" style="margin:10px 0 6px">특성 고르기 <b>(필수, 하나 이상)</b> · 문장의 방향을 정하는 참고용이에요. 아래 관찰 내용은 모두 선택 입력이에요.</div>
+        <div class="muted small" style="margin:10px 0 6px">특성 고르기 <b>(필수, 하나 이상)</b> · 문장의 방향을 정하는 참고용이에요. 목록에 없으면 아래 칸에 적기만 해도 돼요. 관찰 내용은 모두 선택 입력이에요.</div>
         <div class="chips">${traits.map(t => `<button class="chip ${selected.includes(t) ? 'on' : ''}" data-action="toggle-trait" data-trait="${esc(t)}">${esc(t)}</button>`).join('')}</div>
         <label class="field"><span>목록에 없는 특성 (선택, 쉼표로 구분)</span>
           <input type="text" data-bfield="customTraits" value="${esc(draft.customTraits)}" placeholder="예: 회복탄력성, 질투, 예의없음"></label>

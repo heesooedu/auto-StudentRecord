@@ -101,7 +101,7 @@
       return;
     }
     el.className = `banner ${type || 'info'}`;
-    el.innerHTML = `<div class="grow">${esc(message)}</div><button class="icon" onclick="banner('')" aria-label="닫기">✕</button>`;
+    el.innerHTML = `<div class="grow">${esc(message)}</div><button class="btn banner-close" onclick="banner('')">닫기 ✕</button>`;
   }
 
   function showError(err) {
