@@ -75,6 +75,7 @@
       <div class="card">
         <label class="field"><span>바탕 문구</span>
           <textarea id="cp-source" rows="4" placeholder="예: 인공지능과 미래사회 단원에서 AI 윤리 쟁점을 조사하고 자신의 입장을 논리적으로 발표함">${esc(d.sourceText)}</textarea></label>
+        <div class="small bytes" id="cp-source-count" style="margin:-4px 0 8px">${countLine(d.sourceText)}</div>
         <label class="field"><span>어떻게 만들까요? (지시사항)</span>
           <textarea id="cp-prompt" rows="3" placeholder="예: 의미는 유지하되 문장 구조와 어휘를 바꿔 주세요. 200자 내외, ~함으로 끝내기">${esc(d.prompt)}</textarea></label>
         <div class="row">
@@ -896,6 +897,11 @@
       S.bDraft.dirty = true;
       const btn = document.querySelector('[data-action="save-behavior"]');
       if (btn) btn.disabled = false;
+      return true;
+    }
+    if (el.id === 'cp-source') {
+      const counter = document.getElementById('cp-source-count');
+      if (counter) counter.textContent = countLine(el.value);
       return true;
     }
     if (el.dataset.action === 'edit-tool') {
