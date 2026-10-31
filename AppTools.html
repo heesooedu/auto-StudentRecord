@@ -281,7 +281,7 @@
         <tr>${c.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr>
         ${preview.map(r => `<tr>${c.headers.map((_, i) => `<td class="small">${esc(cut(r[i]))}</td>`).join('')}</tr>`).join('')}
       </table></div>
-      ${d.exists ? `<div class="help" style="margin-bottom:10px">지금 있는 '수동추가' 시트는 지우지 않고 '수동추가_백업_날짜' 이름으로 남겨 둬요.</div>` : ''}
+      ${d.exists ? `<div class="help" style="margin-bottom:10px">이미 '수동추가' 시트가 있어요. 만들 때 덮어쓸지, 지금 시트를 백업으로 남길지 물어볼게요.</div>` : ''}
       <div class="row" style="justify-content:flex-end">
         <button class="btn" data-action="cancel-csv">다른 파일 고르기</button>
         <button class="btn primary" data-action="import-manual-csv" ${S.busy ? 'disabled' : ''}>이 내용으로 시트 만들기</button>
@@ -753,12 +753,22 @@
     async 'import-manual-csv'() {
       const c = S.csv;
       if (!c.inputCols.length) return banner('AI에게 보낼 열을 하나 이상 고르세요.', 'err');
-      if (S.manual.exists && !await confirmModal('시트 다시 만들기', `'수동추가' 시트를 ${c.fileName} 내용으로 새로 만들까요?\n지금 시트는 백업 이름으로 바뀌어 남아 있어요.`, '새로 만들기')) return;
+      let overwrite = false;
+      if (S.manual.exists) {
+        if (jobRunning('manual')) return banner('생기부를 만드는 중에는 시트를 바꿀 수 없어요. 끝난 뒤 다시 눌러 주세요.', 'err');
+        const choice = await choiceModal('이미 수동추가 시트가 있어요',
+          `'수동추가' 시트를 ${c.fileName} 내용으로 새로 만들어요. 지금 시트는 어떻게 할까요?\n\n` +
+          `· 덮어쓰기: 지금 시트를 지워요. 만들어 둔 생기부도 함께 사라져요.\n` +
+          `· 백업 남기기: 지금 시트를 '수동추가_백업_날짜' 이름으로 바꿔 남겨 둬요.`,
+          [{ value: 'backup', label: '백업 남기고 새로 만들기' }, { value: 'overwrite', label: '덮어쓰기', kind: 'danger' }]);
+        if (!choice) return;
+        overwrite = choice === 'overwrite';
+      }
       await withBusy('시트를 만드는 중…', async () => {
-        const result = await call('uiImportManualCsv', { headers: c.headers, rows: c.rows, inputCols: c.inputCols });
+        const result = await call('uiImportManualCsv', { headers: c.headers, rows: c.rows, inputCols: c.inputCols, overwrite });
         S.csv = null;
         S.manual = result;
-        banner(`${result.imported}행으로 '수동추가' 시트를 만들었어요.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} 아래에서 프롬프트를 확인한 뒤 [생기부 만들기]를 누르세요.`, 'ok');
+        banner(`${result.imported}행으로 '수동추가' 시트를 ${result.overwritten ? '덮어썼어요' : '만들었어요'}.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} 아래에서 프롬프트를 확인한 뒤 [생기부 만들기]를 누르세요.`, 'ok');
       });
     },
     async 'save-manual-setup'() {

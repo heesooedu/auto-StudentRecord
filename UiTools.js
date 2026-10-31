@@ -391,17 +391,26 @@ function uiImportManualCsv(data) {
   if (rows.length > MANUAL_IMPORT_ROW_LIMIT) throw new Error(`한 번에 ${MANUAL_IMPORT_ROW_LIMIT}행까지 올릴 수 있습니다.`);
   if (inputCols.length === 0) throw new Error('AI에게 보낼 열을 하나 이상 고르세요.');
 
+  const overwrite = !!(data && data.overwrite);
   const outputCol = headers.length + 1;
+  let overwritten = false;
   const backupName = withDocumentLock_(() => {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const old = ss.getSheetByName(MANUAL_SHEET_NAME);
+    const index = old ? old.getIndex() - 1 : ss.getNumSheets();
     let backup = '';
-    if (old) {
+    if (old && overwrite) {
+      if ((PropertiesService.getUserProperties().getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF') === 'ON') {
+        throw new Error('수동추가 생기부를 만드는 중이라 시트를 덮어쓸 수 없습니다. 끝난 뒤 다시 시도하세요.');
+      }
+      ss.deleteSheet(old);
+      overwritten = true;
+    } else if (old) {
       backup = `${MANUAL_SHEET_NAME}_백업_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMdd_HHmmss')}`;
       old.setName(backup);
     }
 
-    const sh = ss.insertSheet(MANUAL_SHEET_NAME, old ? old.getIndex() - 1 : ss.getNumSheets());
+    const sh = ss.insertSheet(MANUAL_SHEET_NAME, index);
     const width = headers.length + 2;
     if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
     if (sh.getMaxRows() < rows.length + 1) sh.insertRowsAfter(sh.getMaxRows(), rows.length + 1 - sh.getMaxRows());
@@ -427,8 +436,8 @@ function uiImportManualCsv(data) {
     MANUAL_OUTPUT_COL: colToA1_(outputCol),
   });
 
-  log_('uiImportManualCsv', 'OK', `CSV ${rows.length}행으로 수동추가 시트 생성 (입력 ${inputCols.map(colToA1_).join(',')}, 출력 ${colToA1_(outputCol)})${backupName ? `, 기존 시트는 ${backupName}` : ''}`);
-  return Object.assign(uiGetManual(), { imported: rows.length, backupName });
+  log_('uiImportManualCsv', 'OK', `CSV ${rows.length}행으로 수동추가 시트 생성 (입력 ${inputCols.map(colToA1_).join(',')}, 출력 ${colToA1_(outputCol)})${backupName ? `, 기존 시트는 ${backupName}` : ''}${overwritten ? ', 기존 시트 덮어씀' : ''}`);
+  return Object.assign(uiGetManual(), { imported: rows.length, backupName, overwritten });
 }
 
 function uiSaveManualSetup(setup) {

@@ -157,6 +157,21 @@
     });
   }
 
+  // 버튼 여러 개 중 하나를 고르게 한다. 고른 버튼의 value, 취소하면 null.
+  function choiceModal(title, message, choices) {
+    return new Promise(resolve => {
+      openModal(title, `
+        <div style="white-space:pre-line">${esc(message)}</div>
+        <div class="row" style="justify-content:flex-end;margin-top:18px">
+          <button class="btn" data-choice="">취소</button>
+          ${choices.map(c => `<button class="btn ${c.kind || ''}" data-choice="${esc(c.value)}">${esc(c.label)}</button>`).join('')}
+        </div>`);
+      document.querySelectorAll('[data-choice]').forEach(btn => {
+        btn.onclick = () => { closeModal(); resolve(btn.dataset.choice || null); };
+      });
+    });
+  }
+
   function copyText(text) {
     const done = () => banner('복사했어요.', 'ok');
     const fallback = () => {
