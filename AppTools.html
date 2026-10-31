@@ -3,9 +3,9 @@
   // AppScript.html의 S, call, esc, withBusy 등을 함께 쓴다.
 
   const BEHAVIOR_FIELDS = [
-    { key: 'positiveObservation', label: '잘한 점 · 긍정적 관찰', placeholder: '예: 모둠 활동에서 역할을 먼저 맡고 끝까지 책임짐' },
-    { key: 'improvementNeeded', label: '보완할 점', placeholder: '예: 친구의 말을 끝까지 듣지 않고 끼어드는 경우가 있음' },
-    { key: 'growthEvidence', label: '성장한 모습 (있을 때만)', placeholder: '예: 2학기에는 발표 순서를 기다리며 경청하려 노력함' },
+    { key: 'positiveObservation', label: '잘한 점 · 긍정적 관찰 (선택)', placeholder: '예: 모둠 활동에서 역할을 먼저 맡고 끝까지 책임짐' },
+    { key: 'improvementNeeded', label: '보완할 점 (선택)', placeholder: '예: 친구의 말을 끝까지 듣지 않고 끼어드는 경우가 있음' },
+    { key: 'growthEvidence', label: '성장한 모습 (선택)', placeholder: '예: 2학기에는 발표 순서를 기다리며 경청하려 노력함' },
   ];
 
   async function refreshToolData(view) {
@@ -110,11 +110,9 @@
   function behaviorState(r) {
     if (String(r.recommendedRecord || '').trim()) return { label: '추천 완료', cls: 'ok' };
     const traits = String(r.selectedTraits || '').trim();
-    const obs = BEHAVIOR_FIELDS.some(f => String(r[f.key] || '').trim());
     if (r.status === '생성중' || r.status === '대기') return { label: r.status, cls: 'run' };
     if (r.status === '오류' || r.status === '재시도필요' || r.status === '응답형식오류') return { label: r.status, cls: 'err' };
     if (!traits) return { label: '특성 고르기 필요', cls: 'warn' };
-    if (!obs) return { label: '관찰 내용 필요', cls: 'warn' };
     return { label: '만들 준비 됨', cls: '' };
   }
 
@@ -136,14 +134,14 @@
             <button class="btn" data-action="close-behavior">닫기</button>
           </div>
         </div>
-        <div class="muted small" style="margin:10px 0 6px">특성 고르기 <b>(하나 이상)</b> · 문장의 방향을 정하는 참고용이에요.</div>
+        <div class="muted small" style="margin:10px 0 6px">특성 고르기 <b>(필수, 하나 이상)</b> · 문장의 방향을 정하는 참고용이에요. 아래 관찰 내용은 모두 선택 입력이에요.</div>
         <div class="chips">${traits.map(t => `<button class="chip ${selected.includes(t) ? 'on' : ''}" data-action="toggle-trait" data-trait="${esc(t)}">${esc(t)}</button>`).join('')}</div>
         <label class="field"><span>목록에 없는 특성 (쉼표로 구분)</span>
           <input type="text" data-bfield="customTraits" value="${esc(draft.customTraits)}" placeholder="예: 회복탄력성, 질투, 예의없음"></label>
         ${BEHAVIOR_FIELDS.map(f => `
           <label class="field"><span>${esc(f.label)}</span>
             <textarea data-bfield="${f.key}" rows="2" placeholder="${esc(f.placeholder)}">${esc(draft[f.key])}</textarea></label>`).join('')}
-        <div class="help">학생 이름은 AI에게 보내지 않아요. 관찰한 사실만 적어 주세요. 성장한 모습이 없으면 '개선되었다'고 쓰지 않아요.</div>
+        <div class="help">학생 이름은 AI에게 보내지 않아요. 관찰 내용은 비워 둬도 특성만으로 문구를 만들어요. 적을 때는 관찰한 사실만 적어 주세요. 성장한 모습이 없으면 '개선되었다'고 쓰지 않아요.</div>
         <div class="row" style="justify-content:flex-end;margin-top:8px">
           <button class="btn primary" data-action="save-behavior" ${S.bDraft.dirty ? '' : 'disabled'}>입력 내용 저장</button>
         </div>
@@ -166,7 +164,7 @@
 
     return `
       <h1>행발 추천 문구</h1>
-      <p class="lead">학생마다 특성을 고르고 관찰한 내용을 적으면, AI가 행동특성 및 종합의견 문구를 추천해요.<br>
+      <p class="lead">학생마다 특성을 고르고 (필요하면) 관찰한 내용을 적으면, AI가 행동특성 및 종합의견 문구를 추천해요.<br>
         학생을 누르면 입력 칸이 열려요.</p>
       ${busyNote()}
       <div class="card row between">

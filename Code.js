@@ -1211,7 +1211,6 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       skipped: 0,
       skippedAlreadyGenerated: 0,
       skippedNoTraits: 0,
-      skippedNoObservation: 0,
       skippedBlank: 0,
       failed: 0,
       remaining: countPendingBehaviorRecommendationRows_(),
@@ -1231,7 +1230,6 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
   let skipped = 0;
   let skippedAlreadyGenerated = 0;
   let skippedNoTraits = 0;
-  let skippedNoObservation = 0;
   let skippedBlank = 0;
   let failed = 0;
   let attempted = 0;
@@ -1268,19 +1266,6 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       skipped++;
       skippedAlreadyGenerated++;
       addBehaviorSkippedDetail_(skippedDetails, row, '이미 생성됨');
-      return;
-    }
-
-    if (!data.hasObservation) {
-      if (data.hasAnyInput) {
-        statusUpdates.push({ row, status: '관찰근거부족' });
-        skippedNoObservation++;
-        addBehaviorSkippedDetail_(skippedDetails, row, '관찰근거부족');
-      } else {
-        skippedBlank++;
-        addBehaviorSkippedDetail_(skippedDetails, row, '빈 행');
-      }
-      skipped++;
       return;
     }
 
@@ -1351,7 +1336,6 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
     skipped,
     skippedAlreadyGenerated,
     skippedNoTraits,
-    skippedNoObservation,
     skippedBlank,
     candidateRows,
     skippedDetails,
@@ -1372,8 +1356,7 @@ function buildBehaviorRecommendationData_(rowValues, h) {
   const improvementNeeded = sanitizePromptText_(rowValueAt_(rowValues, h.improvementNeeded), sanitizeOptions).trim();
   const growthEvidence = sanitizePromptText_(rowValueAt_(rowValues, h.growthEvidence), sanitizeOptions).trim();
 
-  const observationFields = [positiveObservation, improvementNeeded, growthEvidence];
-  const inputFields = [selectedTraits, customTraits].concat(observationFields);
+  const inputFields = [selectedTraits, customTraits, positiveObservation, improvementNeeded, growthEvidence];
 
   return {
     selectedTraits,
@@ -1382,7 +1365,6 @@ function buildBehaviorRecommendationData_(rowValues, h) {
     improvementNeeded,
     growthEvidence,
     hasSelectedTraits: isMeaningfulBehaviorInput_(selectedTraits),
-    hasObservation: observationFields.some(isMeaningfulBehaviorInput_),
     hasAnyInput: inputFields.some(isMeaningfulBehaviorInput_),
   };
 }
@@ -1744,7 +1726,6 @@ function buildBehaviorRecommendationResultMessage_(result) {
       '',
       `스킵 사유 - 이미 생성됨: ${result.skippedAlreadyGenerated || 0}행`,
       `스킵 사유 - 특성없음: ${result.skippedNoTraits || 0}행`,
-      `스킵 사유 - 관찰근거부족: ${result.skippedNoObservation || 0}행`,
       `스킵 사유 - 빈 행: ${result.skippedBlank || 0}행`
     );
   }
@@ -1770,7 +1751,7 @@ function logBehaviorRecommendationResult_(action, result) {
     action,
     result.blocked ? 'BLOCKED' : 'OK',
     `범위 ${result.scopeLabel || '대기 행'}, 처리 ${result.processed}행, 실패 ${result.failed}행, 스킵 ${result.skipped}행` +
-      ` (이미생성 ${result.skippedAlreadyGenerated || 0}, 특성없음 ${result.skippedNoTraits || 0}, 관찰근거부족 ${result.skippedNoObservation || 0}, 빈행 ${result.skippedBlank || 0}), ` +
+      ` (이미생성 ${result.skippedAlreadyGenerated || 0}, 특성없음 ${result.skippedNoTraits || 0}, 빈행 ${result.skippedBlank || 0}), ` +
       `후보 ${(result.candidateRows || []).join(',') || '없음'}, 스킵상세 ${(result.skippedDetails || []).join(', ') || '없음'}, 남은 대기 ${result.remaining}행`
   );
 }
@@ -1867,15 +1848,8 @@ function countPendingBehaviorRecommendationRows_() {
       if (recommendedRecord) return;
 
       const selectedTraits = String(rowValueAt_(row, h.selectedTraits) || '').trim();
-      if (!isMeaningfulBehaviorInput_(selectedTraits)) return;
-
-      const hasObservation = [
-        rowValueAt_(row, h.positiveObservation),
-        rowValueAt_(row, h.improvementNeeded),
-        rowValueAt_(row, h.growthEvidence),
-      ].some(isMeaningfulBehaviorInput_);
-
-      if (hasObservation) count++;
+      // 관찰 내용은 모두 선택 입력이라 특성만 있으면 만든다.
+      if (isMeaningfulBehaviorInput_(selectedTraits)) count++;
     });
 
     return count;
