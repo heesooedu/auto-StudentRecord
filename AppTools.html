@@ -447,15 +447,17 @@
   }
 
   // ---- 프롬프트 확인 카드 (초안 · 초안 합치기 · 수동추가 공용) ------------------------
-  // 프롬프트 맨 위 [교사 안내]/[자료 안내]의 '- 항목: 값' 줄을 읽는다. '(선택)'이 붙은 줄은 비워도 된다.
+  // 프롬프트 맨 위 [교사 안내]/[자료 안내]의 '- 항목: 값' 줄을 읽는다.
+  // '(선택)'이 붙은 줄은 비워도 되고, 안내 제목 줄에 '(선택)'이 있으면 모든 줄을 비워도 된다.
   function promptInfo(text) {
     const lines = String(text || '').split('\n');
     const head = lines.findIndex(l => /^\[(교사|자료) 안내\]/.test(l.trim()));
     if (head < 0) return [];
+    const allOptional = lines[head].includes('(선택)');
     const items = [];
     for (let i = head + 1; i < lines.length && lines[i].trim(); i++) {
       const m = lines[i].match(/^- ([^:]+):(.*)$/);
-      if (m) items.push({ label: m[1].trim(), value: m[2].trim(), optional: m[1].includes('(선택)') });
+      if (m) items.push({ label: m[1].trim(), value: m[2].trim(), optional: allOptional || m[1].includes('(선택)') });
       // '- 항목:' 다음 줄에 이어 쓴 번호 목록 등도 그 항목의 값으로 본다.
       else if (items.length) { const last = items[items.length - 1]; last.value = `${last.value} ${lines[i].trim()}`.trim(); }
     }
@@ -483,10 +485,10 @@
   // 프롬프트 카드에 따로 보여 주는 예시. [이 예시로 채우기]를 누르면 그대로 옮겨 온다.
   const PROMPT_EXAMPLES = {
     PROMPT_1: [
-      '[교사 안내] 초안을 만들기 전에 채워 주세요.',
+      '[교사 안내] (선택)',
       '- 과목/작성 영역: 인공지능 기초',
-      '- 강조할 점(선택): 학생의 사고, 자료를 근거로 자신의 주장을 펼치는 능력',
-      '- 작성 순서/형식(선택):',
+      '- 강조할 점: 학생의 사고, 자료를 근거로 자신의 주장을 펼치는 능력',
+      '- 작성 순서/형식:',
       '1. 첫 문장은 "인공지능과 미래사회에 대한 글쓰기 수행평가에서"로 시작',
       '2. 학생의 관점, 주장 1문장 압축 → 자료를 기반으로 학생의 주장을 요약 → 예상한 미래 모습과 필요하다고 주장하는 역량 순서로 요약',
       '',
