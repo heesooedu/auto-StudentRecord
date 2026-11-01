@@ -360,6 +360,33 @@
     document.querySelectorAll('#view .record textarea').forEach(autoGrow);
     $('#view').scrollTop = scroll;
     document.querySelectorAll('#view .table-wrap').forEach((el, i) => { if (innerScrolls[i]) el.scrollTop = innerScrolls[i]; });
+    keepAnchor();
+  }
+
+  // 체크박스를 누른 뒤 다시 그릴 때, 위쪽 내용 높이가 바뀌어도 누른 체크박스가 화면의 같은 자리에 있도록 맞춘다.
+  let scrollAnchor = null;
+
+  function rememberAnchor(el) {
+    if (!el.dataset.action) return;
+    const selector = `[data-action="${el.dataset.action}"]${el.dataset.key ? `[data-key="${CSS.escape(el.dataset.key)}"]` : ''}`;
+    const wrap = el.closest('.table-wrap');
+    scrollAnchor = {
+      selector,
+      top: el.getBoundingClientRect().top,
+      wrapTop: wrap ? wrap.getBoundingClientRect().top : null,
+    };
+  }
+
+  function keepAnchor() {
+    const anchor = scrollAnchor;
+    scrollAnchor = null;
+    const el = anchor && $('#view').querySelector(anchor.selector);
+    if (!el) return;
+    const wrap = el.closest('.table-wrap');
+    // 바깥 화면을 먼저 맞추고, 표 안 스크롤은 그다음에 맞춘다.
+    if (wrap && anchor.wrapTop !== null) $('#view').scrollTop += wrap.getBoundingClientRect().top - anchor.wrapTop;
+    const diff = el.getBoundingClientRect().top - anchor.top;
+    if (wrap) wrap.scrollTop += diff; else $('#view').scrollTop += diff;
   }
 
   // 생기부 글 상자는 스크롤 없이 글 전체가 보이도록 내용 높이에 맞춘다.
@@ -1114,7 +1141,10 @@
     const el = event.target;
     const checkboxHandler = el.dataset.action && (actions[el.dataset.action] || TOOL_ACTIONS[el.dataset.action]);
     if (el.type === 'checkbox' && checkboxHandler) {
+      rememberAnchor(el);
       checkboxHandler(el);
+      // 다시 그리지 않는 체크박스라면 남은 기준점이 다음 그리기에 쓰이지 않게 지운다.
+      setTimeout(() => { scrollAnchor = null; }, 0);
       return;
     }
     if (el.id === 'collect-assignment') { S.filters.collectAssignment = el.value; render(); }
