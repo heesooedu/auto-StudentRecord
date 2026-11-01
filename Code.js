@@ -1588,14 +1588,7 @@ function formatBehaviorCharRange_(charRange) {
 }
 
 function generateBehaviorRecommendationWithCharRetry_(options) {
-  const maxAttempts = options.charRange && options.charRange.enabled ? 2 : 1;
-  let fallback = null;
-  let retryErrorMessage = '';
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const retryContext = fallback && attempt > 1
-      ? { charCount: fallback.charCount }
-      : null;
+  const call = retryContext => {
     const userPrompt = buildBehaviorRecommendationPrompt_(
       options.data,
       options.maxInputChars,
@@ -1603,66 +1596,63 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
       options.charRange,
       retryContext
     );
+    const result = callAi_(
+      options.ai.provider,
+      options.ai.model,
+      options.systemGuide,
+      userPrompt,
+      options.ai.reasoning,
+      BEHAVIOR_RESPONSE_SCHEMA
+    );
+    return readBehaviorGenerated_(result.text);
+  };
 
-    try {
-      const result = callAi_(
-        options.ai.provider,
-        options.ai.model,
-        options.systemGuide,
-        userPrompt,
-        options.ai.reasoning,
-        BEHAVIOR_RESPONSE_SCHEMA
-      );
-      const parsed = parseBehaviorRecommendationJson_(result.text);
-      const recommendedRecord = normalizeAiText_(parsed.recommended_record);
-      const charCount = neisByteCount_(recommendedRecord);
-      const caution = String(parsed.caution || '').trim();
-      const generated = {
-        recommendedRecord,
-        caution,
-        charCount,
-        reframes: parsed.reframes,
-      };
+  const first = call(null);
+  if (!needsBehaviorCharRetry_(first, options.charRange)) return first;
 
-      if (!recommendedRecord) {
-        throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
-      }
+  Utilities.sleep(800);
+  try {
+    return settleBehaviorCharRetry_(first, call({ charCount: first.charCount }), '', options.charRange);
+  } catch (err) {
+    return settleBehaviorCharRetry_(first, null, String(err.message || err), options.charRange);
+  }
+}
 
-      if (!isBehaviorCharOutOfRange_(charCount, options.charRange)) {
-        if (attempt > 1 && fallback) {
-          generated.caution = appendBehaviorCaution_(
-            caution,
-            `분량 범위 재요청 후 ${charCount}바이트로 생성됨.`
-          );
-        }
-        return generated;
-      }
+function readBehaviorGenerated_(text) {
+  const parsed = parseBehaviorRecommendationJson_(text);
+  const recommendedRecord = normalizeAiText_(parsed.recommended_record);
 
-      fallback = generated;
-      if (attempt < maxAttempts) {
-        Utilities.sleep(800);
-        continue;
-      }
-    } catch (err) {
-      if (fallback) {
-        retryErrorMessage = String(err.message || err);
-        break;
-      }
-
-      throw err;
-    }
+  if (!recommendedRecord) {
+    throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
   }
 
-  if (fallback) {
-    const rangeMessage = `설정 분량 범위(${formatBehaviorCharRange_(options.charRange)})를 벗어남: ${fallback.charCount}바이트.`;
-    const retryMessage = retryErrorMessage
-      ? `재요청 응답 처리 실패: ${retryErrorMessage}`
-      : '재요청 후에도 범위에 들어오지 않음.';
-    fallback.caution = appendBehaviorCaution_(fallback.caution, `${rangeMessage} ${retryMessage}`);
-    return fallback;
+  return {
+    recommendedRecord,
+    caution: String(parsed.caution || '').trim(),
+    charCount: neisByteCount_(recommendedRecord),
+    reframes: parsed.reframes,
+  };
+}
+
+function needsBehaviorCharRetry_(generated, charRange) {
+  return !!(charRange && charRange.enabled && isBehaviorCharOutOfRange_(generated.charCount, charRange));
+}
+
+// 분량 재요청 결과를 정리한다. 범위를 벗어나도 결과는 버리지 않고, 벗어났다는 말을 caution에 붙인다.
+// retried가 없으면(재요청 실패) 첫 답을 남긴다.
+function settleBehaviorCharRetry_(first, retried, retryErrorMessage, charRange) {
+  if (retried && !isBehaviorCharOutOfRange_(retried.charCount, charRange)) {
+    retried.caution = appendBehaviorCaution_(retried.caution, `분량 범위 재요청 후 ${retried.charCount}바이트로 생성됨.`);
+    return retried;
   }
 
-  throw makeBehaviorResponseFormatError_('recommended_record 값을 생성하지 못했습니다.');
+  const fallback = retried || first;
+  const rangeMessage = `설정 분량 범위(${formatBehaviorCharRange_(charRange)})를 벗어남: ${fallback.charCount}바이트.`;
+  const retryMessage = retryErrorMessage
+    ? `재요청 응답 처리 실패: ${retryErrorMessage}`
+    : '재요청 후에도 범위에 들어오지 않음.';
+  fallback.caution = appendBehaviorCaution_(fallback.caution, `${rangeMessage} ${retryMessage}`);
+  return fallback;
 }
 
 function isBehaviorCharOutOfRange_(charCount, charRange) {
@@ -2348,13 +2338,7 @@ function extractSubmissionText_(sub) {
   };
 }
 
-function callClaude_(model, systemGuide, userPrompt, reasoning) {
-  const apiKey = PropertiesService.getUserProperties().getProperty('CLAUDE_API_KEY');
-
-  if (!apiKey) {
-    throw new Error('Claude API 키가 없습니다. 메뉴에서 본인 Claude API 키를 먼저 저장하세요.');
-  }
-
+function buildClaudePayload_(model, systemGuide, userPrompt, reasoning) {
   // temperature는 보내지 않는다. Claude Haiku 5.5·Sonnet 5.5는 기본값이 아닌 temperature를 400으로 거절한다.
   const payload = {
     model,
@@ -2369,6 +2353,17 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
   };
 
   applyClaudeReasoning_(payload, model, reasoning);
+  return payload;
+}
+
+function callClaude_(model, systemGuide, userPrompt, reasoning) {
+  const apiKey = PropertiesService.getUserProperties().getProperty('CLAUDE_API_KEY');
+
+  if (!apiKey) {
+    throw new Error('Claude API 키가 없습니다. 메뉴에서 본인 Claude API 키를 먼저 저장하세요.');
+  }
+
+  const payload = buildClaudePayload_(model, systemGuide, userPrompt, reasoning);
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
@@ -2378,16 +2373,7 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
     let res;
 
     try {
-      res = fetchAiWithinBudget_('https://api.anthropic.com/v1/messages', {
-        method: 'post',
-        muteHttpExceptions: true,
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        payload: JSON.stringify(payload),
-      });
+      res = fetchAiWithinBudget_(AI_API_ENDPOINTS.claude.url, buildAiFetchOptions_('claude', apiKey, payload));
     } catch (err) {
       // 응답 없이 끊긴 경우(시간 초과, 연결 오류)도 잠시 뒤 다시 시도한다.
       if (isAiTimeBudgetError_(err) || attempt === maxAttempts) throw err;
@@ -2474,6 +2460,113 @@ function sleepWithinAiBudget_(ms) {
 function fetchAiWithinBudget_(url, options) {
   ensureAiTimeBudget_(0);
   return UrlFetchApp.fetch(url, options);
+}
+
+const AI_API_ENDPOINTS = {
+  claude: { url: 'https://api.anthropic.com/v1/messages', keyProperty: 'CLAUDE_API_KEY' },
+  gpt: { url: 'https://api.openai.com/v1/responses', keyProperty: 'OPENAI_API_KEY' },
+  gemini: { url: 'https://generativelanguage.googleapis.com/v1beta/interactions', keyProperty: 'GEMINI_API_KEY' },
+};
+
+function buildAiFetchOptions_(provider, apiKey, payload) {
+  const headers = {
+    claude: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    gpt: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    gemini: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+  }[provider];
+
+  return {
+    method: 'post',
+    muteHttpExceptions: true,
+    headers,
+    payload: JSON.stringify(payload),
+  };
+}
+
+function buildAiPayload_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
+  if (provider === 'gpt') return buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
+  if (provider === 'gemini') return buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
+  return buildClaudePayload_(model, systemGuide, userPrompt, reasoning);
+}
+
+// 성공 응답에서 글을 꺼낸다. 출력 한도로 잘린 답이면 null을 돌려준다(그 요청은 하나씩 보내는 경로로 다시 받는다).
+function readAiSuccessResponse_(provider, json) {
+  if (provider === 'gpt') {
+    if (isOpenAiMaxOutputTokenIncomplete_(json)) return null;
+    return { text: extractOpenAiOutputText_(json), usage: json.usage || {} };
+  }
+
+  if (provider === 'gemini') {
+    if (isGeminiOutputTruncated_(json)) return null;
+    return { text: extractGeminiOutputText_(json), usage: json.usage || json.usage_metadata || json.usageMetadata || {} };
+  }
+
+  if (json.stop_reason === 'max_tokens') return null;
+  return { text: extractClaudeOutputText_(json), usage: json.usage || {} };
+}
+
+// 여러 AI 요청을 UrlFetchApp.fetchAll로 한꺼번에 보낸다. requests: [{provider, model, systemGuide, userPrompt, reasoning, responseSchema}]
+// 첫 요청이 오류(429 등)이거나 잘렸거나 네트워크가 끊긴 요청만 callAi_로 하나씩 다시 보내 기존 재시도 규칙을 그대로 따른다.
+// 결과는 요청과 같은 순서로 {result} 또는 {error}다.
+function callAiParallel_(requests) {
+  const props = PropertiesService.getUserProperties();
+  const outcomes = requests.map(() => null);
+  const sendable = [];
+
+  requests.forEach((req, index) => {
+    const provider = normalizeAiProvider_(req.provider);
+    const endpoint = AI_API_ENDPOINTS[provider];
+    const apiKey = endpoint ? props.getProperty(endpoint.keyProperty) : '';
+
+    if (!apiKey) {
+      outcomes[index] = { error: new Error(`${provider} API 키가 저장되어 있지 않습니다.`) };
+      return;
+    }
+
+    const payload = buildAiPayload_(provider, req.model, req.systemGuide, req.userPrompt, normalizeReasoning_(req.reasoning), req.responseSchema);
+    sendable.push({ index, provider, fetch: Object.assign({ url: endpoint.url }, buildAiFetchOptions_(provider, apiKey, payload)) });
+  });
+
+  let responses = [];
+  if (sendable.length) {
+    try {
+      ensureAiTimeBudget_(0);
+      responses = UrlFetchApp.fetchAll(sendable.map(item => item.fetch));
+    } catch (err) {
+      if (isAiTimeBudgetError_(err)) throw err;
+      // 한 요청이라도 연결이 끊기면 fetchAll 전체가 실패하므로, 모두 하나씩 다시 보낸다.
+      log_('callAiParallel_', 'RETRY', `동시 요청 실패, 하나씩 다시 보냅니다: ${String(err.message || err)}`);
+      responses = [];
+    }
+  }
+
+  sendable.forEach((item, i) => {
+    const res = responses[i];
+    if (!res) return;
+
+    const code = res.getResponseCode();
+    if (code < 200 || code >= 300) return;
+
+    try {
+      const read = readAiSuccessResponse_(item.provider, JSON.parse(res.getContentText()));
+      if (read) outcomes[item.index] = { result: read };
+    } catch (err) {
+      outcomes[item.index] = { error: err };
+    }
+  });
+
+  sendable.forEach(item => {
+    if (outcomes[item.index]) return;
+
+    const req = requests[item.index];
+    try {
+      outcomes[item.index] = { result: callAi_(req.provider, req.model, req.systemGuide, req.userPrompt, req.reasoning, req.responseSchema) };
+    } catch (err) {
+      outcomes[item.index] = { error: err };
+    }
+  });
+
+  return outcomes;
 }
 
 // responseSchema를 주지 않으면 GPT·Gemini는 생기부 초안 형식(evidence_summary, record_draft, caution)으로 답하게 한다.
@@ -2625,17 +2718,11 @@ function stripAdditionalProperties_(schema) {
   return result;
 }
 
-function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) {
-  const apiKey = PropertiesService.getUserProperties().getProperty('OPENAI_API_KEY');
-
-  if (!apiKey) {
-    throw new Error('OpenAI API 키가 없습니다. 메뉴에서 본인 OpenAI API 키를 먼저 저장하세요.');
-  }
-
+function buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema) {
   reasoning = normalizeReasoning_(reasoning);
   const baseMaxOutputTokens = getOpenAiMaxOutputTokens_(reasoning);
 
-  const payload = {
+  return {
     model: model || 'gpt-6-luna',
     // 응답을 OpenAI 서버에 대화 기록으로 남기지 않는다(기본값은 30일 보관).
     store: false,
@@ -2664,6 +2751,18 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) 
       },
     },
   };
+}
+
+function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) {
+  const apiKey = PropertiesService.getUserProperties().getProperty('OPENAI_API_KEY');
+
+  if (!apiKey) {
+    throw new Error('OpenAI API 키가 없습니다. 메뉴에서 본인 OpenAI API 키를 먼저 저장하세요.');
+  }
+
+  reasoning = normalizeReasoning_(reasoning);
+  const baseMaxOutputTokens = getOpenAiMaxOutputTokens_(reasoning);
+  const payload = buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
@@ -2673,15 +2772,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) 
     let res;
 
     try {
-      res = fetchAiWithinBudget_('https://api.openai.com/v1/responses', {
-        method: 'post',
-        muteHttpExceptions: true,
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        payload: JSON.stringify(payload),
-      });
+      res = fetchAiWithinBudget_(AI_API_ENDPOINTS.gpt.url, buildAiFetchOptions_('gpt', apiKey, payload));
     } catch (err) {
       // 응답 없이 끊긴 경우(시간 초과, 연결 오류)도 잠시 뒤 다시 시도한다.
       if (isAiTimeBudgetError_(err) || attempt === maxAttempts) throw err;
@@ -2770,16 +2861,10 @@ function formatUsageNumber_(snakeValue, camelValue) {
   return '';
 }
 
-function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) {
-  const apiKey = PropertiesService.getUserProperties().getProperty('GEMINI_API_KEY');
-
-  if (!apiKey) {
-    throw new Error('Gemini API 키가 없습니다. 메뉴에서 본인 Gemini API 키를 먼저 저장하세요.');
-  }
-
+function buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema) {
   reasoning = normalizeReasoning_(reasoning);
 
-  const payload = {
+  return {
     model: model || 'gemini-3.8-flash',
     // 요청을 Gemini 서버에 대화 기록으로 남기지 않는다(기본값은 보관).
     store: false,
@@ -2797,6 +2882,17 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) 
       schema: stripAdditionalProperties_(responseSchema || RECORD_DRAFT_RESPONSE_SCHEMA),
     },
   };
+}
+
+function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) {
+  const apiKey = PropertiesService.getUserProperties().getProperty('GEMINI_API_KEY');
+
+  if (!apiKey) {
+    throw new Error('Gemini API 키가 없습니다. 메뉴에서 본인 Gemini API 키를 먼저 저장하세요.');
+  }
+
+  reasoning = normalizeReasoning_(reasoning);
+  const payload = buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
@@ -2806,15 +2902,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) 
     let res;
 
     try {
-      res = fetchAiWithinBudget_('https://generativelanguage.googleapis.com/v1beta/interactions', {
-        method: 'post',
-        muteHttpExceptions: true,
-        headers: {
-          'x-goog-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        payload: JSON.stringify(payload),
-      });
+      res = fetchAiWithinBudget_(AI_API_ENDPOINTS.gemini.url, buildAiFetchOptions_('gemini', apiKey, payload));
     } catch (err) {
       // 응답 없이 끊긴 경우(시간 초과, 연결 오류)도 잠시 뒤 다시 시도한다.
       if (isAiTimeBudgetError_(err) || attempt === maxAttempts) throw err;
@@ -6967,7 +7055,6 @@ function getAiProviderAndModel_(config) {
 // 실제 생성과 같은 callAi_ → parseClaudeJson_ 경로를 쓰므로, 여기서 통과하면 같은 설정으로 생성할 때도 요청 형식 오류가 나지 않는다.
 function checkAllAiCombinations() {
   const props = PropertiesService.getUserProperties();
-  const keyProperty = { claude: 'CLAUDE_API_KEY', gpt: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY' };
   const modelOptions = {
     claude: CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL,
     gpt: CONFIG_VALIDATION_OPTIONS.GPT_MODEL,
@@ -6992,7 +7079,7 @@ function checkAllAiCombinations() {
   }
 
   Object.keys(modelOptions).forEach(provider => {
-    const hasKey = !!props.getProperty(keyProperty[provider]);
+    const hasKey = !!props.getProperty(AI_API_ENDPOINTS[provider].keyProperty);
 
     modelOptions[provider].forEach(model => {
       CONFIG_VALIDATION_OPTIONS.REASONING.forEach(reasoning => {
@@ -7095,7 +7182,6 @@ function compareBehaviorAcrossModels() {
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
   const systemGuide = behaviorRecommendationSystemGuide_();
   const props = PropertiesService.getUserProperties();
-  const keyProperty = { claude: 'CLAUDE_API_KEY', gpt: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY' };
   const modelOptions = {
     claude: CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL,
     gpt: CONFIG_VALIDATION_OPTIONS.GPT_MODEL,
@@ -7104,7 +7190,7 @@ function compareBehaviorAcrossModels() {
   const headers = ['회사', '모델', '추론', '결과', '걸린 시간(초)', '바이트', '추천 문구', '돌려 쓴 표현 후보', '확인할 점 / 오류'];
   const sh = ss.getSheetByName('행발비교') || ss.insertSheet('행발비교');
 
-  // 모델 × 추론 수준 조합이 많아 한 번(6분)에 다 못 끝낸다. 같은 입력·프롬프트로 다시 실행하면 이미 '정상'인 조합은 그대로 두고 나머지만 만든다.
+  // 거절된 요청을 하나씩 다시 보내다 6분 제한에 걸리면 일부가 남는다. 같은 입력·프롬프트로 다시 실행하면 이미 '정상'인 조합은 그대로 두고 나머지만 만든다.
   const runKey = Utilities.base64Encode(Utilities.computeDigest(
     Utilities.DigestAlgorithm.MD5,
     JSON.stringify([sourceRow, data, behaviorPrompt, charRange.min, charRange.max]),
@@ -7117,11 +7203,11 @@ function compareBehaviorAcrossModels() {
     });
   }
 
-  const startedAt = Date.now();
   const rows = [];
+  const todo = [];
 
   Object.keys(modelOptions).forEach(provider => {
-    const hasKey = !!props.getProperty(keyProperty[provider]);
+    const hasKey = !!props.getProperty(AI_API_ENDPOINTS[provider].keyProperty);
 
     modelOptions[provider].forEach(model => CONFIG_VALIDATION_OPTIONS.REASONING.forEach(reasoning => {
       const previous = passed[`${provider}|${model}|${reasoning}`];
@@ -7139,36 +7225,76 @@ function compareBehaviorAcrossModels() {
         return;
       }
 
-      // 재요청까지 하면 모델 하나에 두 번 부를 수 있으므로 여유를 두고 멈춘다.
-      if ((Date.now() - startedAt) / 1000 > 240) {
-        row[3] = '건너뜀';
-        row[8] = '실행 시간 제한에 가까워 이번에는 만들지 않음. 같은 행을 선택하고 메뉴를 한 번 더 실행하면 이어서 만듭니다.';
-        return;
-      }
-
-      const callStartedAt = Date.now();
-
-      try {
-        const generated = generateBehaviorRecommendationWithCharRetry_({
-          ai: { provider, model, reasoning },
-          systemGuide,
-          data,
-          maxInputChars,
-          behaviorPrompt,
-          charRange,
-        });
-        row[3] = '정상';
-        row[5] = generated.charCount;
-        row[6] = generated.recommendedRecord;
-        row[7] = formatBehaviorReframes_(generated.reframes);
-        row[8] = generated.caution;
-      } catch (err) {
-        row[3] = isAiTimeBudgetError_(err) ? '건너뜀' : '오류';
-        row[8] = String(err.message || err).slice(0, 1000);
-      }
-
-      row[4] = Math.round((Date.now() - callStartedAt) / 100) / 10;
+      todo.push({ row, ai: { provider, model, reasoning } });
     }));
+  });
+
+  // 모든 조합의 첫 요청을 한꺼번에 보내고, 분량 범위를 벗어난 것만 모아 재요청도 한꺼번에 보낸다.
+  // 한 번에 보내다 거절(429 등)된 요청은 callAiParallel_이 하나씩 다시 보낸다.
+  const sendAll = (items, retryContextOf) => {
+    const startedAt = Date.now();
+    const outcomes = callAiParallel_(items.map(item => ({
+      provider: item.ai.provider,
+      model: item.ai.model,
+      reasoning: item.ai.reasoning,
+      systemGuide,
+      userPrompt: buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt, charRange, retryContextOf(item)),
+      responseSchema: BEHAVIOR_RESPONSE_SCHEMA,
+    })));
+    const seconds = Math.round((Date.now() - startedAt) / 100) / 10;
+
+    return outcomes.map(outcome => {
+      if (outcome.error) return { error: outcome.error, seconds };
+      try {
+        return { generated: readBehaviorGenerated_(outcome.result.text), seconds };
+      } catch (err) {
+        return { error: err, seconds };
+      }
+    });
+  };
+
+  sendAll(todo, () => null).forEach((outcome, i) => {
+    todo[i].first = outcome;
+    todo[i].seconds = outcome.seconds;
+  });
+
+  const retries = todo.filter(item => item.first.generated && needsBehaviorCharRetry_(item.first.generated, charRange));
+  if (retries.length) {
+    try {
+      sendAll(retries, item => ({ charCount: item.first.generated.charCount })).forEach((outcome, i) => {
+        retries[i].retry = outcome;
+        retries[i].seconds = Math.round((retries[i].seconds + outcome.seconds) * 10) / 10;
+      });
+    } catch (err) {
+      // 시간 제한에 걸리면 재요청 없이 첫 답을 남긴다.
+      retries.forEach(item => { item.retry = { error: err }; });
+    }
+  }
+
+  todo.forEach(item => {
+    const row = item.row;
+    row[4] = item.seconds;
+
+    if (item.first.error) {
+      row[3] = isAiTimeBudgetError_(item.first.error) ? '건너뜀' : '오류';
+      row[8] = String(item.first.error.message || item.first.error).slice(0, 1000);
+      return;
+    }
+
+    const generated = item.retry
+      ? settleBehaviorCharRetry_(
+        item.first.generated,
+        item.retry.generated || null,
+        item.retry.error ? String(item.retry.error.message || item.retry.error) : '',
+        charRange
+      )
+      : item.first.generated;
+
+    row[3] = '정상';
+    row[5] = generated.charCount;
+    row[6] = generated.recommendedRecord;
+    row[7] = formatBehaviorReframes_(generated.reframes);
+    row[8] = generated.caution;
   });
 
   sh.clear();
