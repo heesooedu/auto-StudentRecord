@@ -2391,20 +2391,28 @@ function applyClaudeReasoning_(payload, model, reasoning) {
   payload.max_tokens = getClaudeMaxTokens_(reasoning);
   delete payload.temperature;
 
-  if (String(model || '').indexOf('sonnet-4-6') !== -1 || String(model || '').indexOf('sonnet-5-5') !== -1) {
+  if (usesLegacyClaudeThinking_(model)) {
     payload.thinking = {
-      type: 'adaptive',
-    };
-    payload.output_config = {
-      effort: reasoning,
+      type: 'enabled',
+      budget_tokens: reasoning === 'medium' ? 2048 : 1024,
     };
     return;
   }
 
   payload.thinking = {
-    type: 'enabled',
-    budget_tokens: reasoning === 'medium' ? 2048 : 1024,
+    type: 'adaptive',
   };
+  payload.output_config = {
+    effort: reasoning,
+  };
+}
+
+// Claude 3·4.0·4.1·4.5 모델만 budget_tokens 방식을 쓴다. 그 뒤 모델(4.6, 5.x 등)은 adaptive만 받는다.
+function usesLegacyClaudeThinking_(model) {
+  const value = String(model || '').toLowerCase();
+  return /claude-3/.test(value) ||
+    /claude-(opus|sonnet|haiku)-4-[015](\b|$)/.test(value) ||
+    /claude-(opus|sonnet|haiku)-4-\d{8}/.test(value);
 }
 
 function extractClaudeOutputText_(json) {
