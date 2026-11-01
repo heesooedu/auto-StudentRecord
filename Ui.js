@@ -15,20 +15,35 @@ const API_KEY_PROPERTY_BY_PROVIDER = {
 // 도우미 설정 화면에서 다루는 설정 키. 이 목록에 없는 키는 저장하지 않는다.
 const ASSISTANT_SETTING_GROUPS = {
   basic: [
-    'RECORD_DRAFT_MIN_CHARS',
-    'RECORD_DRAFT_MAX_CHARS',
     'NEIS_MAX_BYTES',
     'NEIS_WARNING_BYTES',
   ],
   ai: ['AI_PROVIDER', 'CLAUDE_MODEL', 'GPT_MODEL', 'GEMINI_MODEL', 'REASONING'],
   prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE', 'BEHAVIOR_RECORD_PROMPT', 'MANUAL_PROMPT'],
-  tools: ['BEHAVIOR_RECORD_MIN_CHARS', 'BEHAVIOR_RECORD_MAX_CHARS', 'COMMON_PHRASE_PREVIOUS_LIMIT'],
+  tools: ['COMMON_PHRASE_PREVIOUS_LIMIT'],
+  // 분량 기준은 설정 화면이 아니라 각 화면의 프롬프트 카드 아래에서 바꾼다.
+  lengths: [
+    'RECORD_DRAFT_MIN_BYTES',
+    'RECORD_DRAFT_MAX_BYTES',
+    'FINAL_RECORD_MIN_BYTES',
+    'FINAL_RECORD_MAX_BYTES',
+    'MANUAL_RECORD_MIN_BYTES',
+    'MANUAL_RECORD_MAX_BYTES',
+    'BEHAVIOR_RECORD_MIN_BYTES',
+    'BEHAVIOR_RECORD_MAX_BYTES',
+  ],
   advanced: ['MAX_RECORD_CHARS', 'MAX_INPUT_CHARS', 'BATCH_SIZE', 'MAX_RUN_SECONDS', 'AUTO_NEXT_DELAY_MS'],
 };
 
 const ASSISTANT_SETTING_LABELS = {
-  RECORD_DRAFT_MIN_CHARS: '초안 최소 글자수',
-  RECORD_DRAFT_MAX_CHARS: '초안 최대 글자수',
+  RECORD_DRAFT_MIN_BYTES: '초안 최소 바이트',
+  RECORD_DRAFT_MAX_BYTES: '초안 최대 바이트',
+  FINAL_RECORD_MIN_BYTES: '초안 합치기 최소 바이트',
+  FINAL_RECORD_MAX_BYTES: '초안 합치기 최대 바이트',
+  MANUAL_RECORD_MIN_BYTES: '수동추가 최소 바이트',
+  MANUAL_RECORD_MAX_BYTES: '수동추가 최대 바이트',
+  BEHAVIOR_RECORD_MIN_BYTES: '행발 최소 바이트',
+  BEHAVIOR_RECORD_MAX_BYTES: '행발 최대 바이트',
   NEIS_MAX_BYTES: '나이스 최대 바이트',
   NEIS_WARNING_BYTES: '나이스 경고 바이트',
   AI_PROVIDER: 'AI 서비스',
@@ -41,8 +56,6 @@ const ASSISTANT_SETTING_LABELS = {
   SYSTEM_GUIDE: '공통 작성 지침',
   BEHAVIOR_RECORD_PROMPT: '행발 추천 문구 작성 지침',
   MANUAL_PROMPT: '수동추가 생기부 작성 지침',
-  BEHAVIOR_RECORD_MIN_CHARS: '행발 최소 글자수',
-  BEHAVIOR_RECORD_MAX_CHARS: '행발 최대 글자수',
   COMMON_PHRASE_PREVIOUS_LIMIT: '공통문구 중복 방지용 참고 문구 수',
   MAX_RECORD_CHARS: '초안 최대 글자수(구버전 설정)',
   MAX_INPUT_CHARS: 'AI에 보낼 과제 원문 최대 글자수',
@@ -370,6 +383,10 @@ function uiSaveSettings(patch) {
 
     if (options && !options.includes(value)) {
       throw new Error(`${ASSISTANT_SETTING_LABELS[key] || key}에 쓸 수 없는 값입니다: ${value}`);
+    }
+
+    if (ASSISTANT_SETTING_GROUPS.lengths.includes(key) && !/^[1-9][0-9]{0,4}$/.test(value.trim())) {
+      throw new Error(`${ASSISTANT_SETTING_LABELS[key] || key}는 1 이상의 숫자로 적어 주세요: ${value}`);
     }
   });
 

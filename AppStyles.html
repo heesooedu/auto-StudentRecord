@@ -251,6 +251,10 @@
   .prompt-card-toggle { flex: none; font-size: 13px; font-weight: 600; color: var(--primary); border: 1px solid var(--primary); border-radius: 999px; padding: 4px 12px; background: var(--panel); white-space: nowrap; }
   .prompt-card-toggle::after { content: '열어서 확인 ▾'; }
   details.prompt-card[open] .prompt-card-toggle::after { content: '접기 ▴'; }
+  .length-card { border-left: 4px solid var(--primary); }
+  .length-card-head { display: flex; align-items: center; gap: 12px; }
+  .length-card-inputs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-left: 34px; }
+  .length-card-inputs .length-input { width: 96px; text-align: right; }
 
   .empty { text-align: center; color: var(--muted); padding: 36px 0; }
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }

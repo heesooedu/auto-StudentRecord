@@ -14,6 +14,7 @@
     manual: null,
     bDraft: null,
     promptEdits: {},
+    lengthEdits: {},
     promptOpen: {},
     promptExampleOpen: {},
     openId: null,
@@ -432,8 +433,6 @@
         <div class="stat"><span class="muted small">초안 (확인함)</span><b>${c.drafts || 0}<span class="muted small"> (${c.draftsChecked || 0})</span></b></div>
         <div class="stat"><span class="muted small">합친 생기부</span><b>${c.finalRecords || 0}</b></div>
       </div>` : ''}
-
-      <div class="help" style="margin-top:14px">생기부 글자수(최소·최대)와 나이스 바이트 기준은 <button class="link" data-go="settings">⚙ 설정</button>에서 바꿀 수 있어요.</div>
 
       <h2 style="margin-top:22px">필요할 때 쓰는 도구</h2>
       <div class="choices">${TOOLS.map(tool => `

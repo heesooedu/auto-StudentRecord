@@ -17,10 +17,16 @@ const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
 const AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY = 'AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER';
 const AUTO_BUSY_RETRY_DELAY_MS = 60000;
+
+// 생기부 분량 기준(나이스 바이트). [최소 키, 최대 키, 기본 최소, 기본 최대]
+const RECORD_BYTE_RANGE_SETTINGS = {
+  draft: ['RECORD_DRAFT_MIN_BYTES', 'RECORD_DRAFT_MAX_BYTES', 900, 1200],
+  final: ['FINAL_RECORD_MIN_BYTES', 'FINAL_RECORD_MAX_BYTES', 900, 1200],
+  manual: ['MANUAL_RECORD_MIN_BYTES', 'MANUAL_RECORD_MAX_BYTES', 900, 1200],
+  behavior: ['BEHAVIOR_RECORD_MIN_BYTES', 'BEHAVIOR_RECORD_MAX_BYTES', 750, 1200],
+};
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
-const RECORD_DRAFT_MIN_CHARS_DESCRIPTION = '생기부 작성을 위한 최소 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
-const RECORD_DRAFT_MAX_CHARS_DESCRIPTION = '생기부 작성을 위한 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
 const BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION = '행발 최소 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
 const BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION = '행발 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
 const BEHAVIOR_RECOMMENDATION_HEADERS = [
@@ -1465,26 +1471,7 @@ function getBehaviorRecordPrompt_(config) {
 }
 
 function getBehaviorRecordCharRange_(config) {
-  let min = parsePositiveInteger_(
-    (config && config.BEHAVIOR_RECORD_MIN_CHARS) ||
-      (config && config.BEHAVIOR_RECORD_BYTE_MIN)
-  );
-  let max = parsePositiveInteger_(
-    (config && config.BEHAVIOR_RECORD_MAX_CHARS) ||
-      (config && config.BEHAVIOR_RECORD_BYTE_MAX)
-  );
-
-  if (min && max && min > max) {
-    const tmp = min;
-    min = max;
-    max = tmp;
-  }
-
-  return {
-    min,
-    max,
-    enabled: Boolean(min || max),
-  };
+  return getRecordByteRange_(config, 'behavior');
 }
 
 function parsePositiveInteger_(value) {
@@ -1506,8 +1493,8 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
   const retryInstruction = retryContext
     ? [
       '[재작성 요청]',
-      `이전 응답의 글자 수는 ${retryContext.charCount}자였고, 설정 범위(${formatBehaviorCharRange_(charRange)})를 벗어났다.`,
-      '위 입력 사실은 유지하되, recommended_record를 설정 글자수 범위 안에 들어오도록 다시 작성한다.',
+      `이전 응답은 나이스 바이트 기준 ${retryContext.charCount}바이트였고, 설정 범위(${formatBehaviorCharRange_(charRange)})를 벗어났다.`,
+      '위 입력 사실은 유지하되, recommended_record를 설정 분량 범위 안에 들어오도록 다시 작성한다.',
     ].join('\n')
     : '';
 
@@ -1540,19 +1527,12 @@ function buildBehaviorTraitInstruction_() {
 
 function buildBehaviorCharInstruction_(charRange) {
   if (!charRange || !charRange.enabled) return '';
-
-  return [
-    '[분량 조건]',
-    `recommended_record는 일반 글자수 기준 ${formatBehaviorCharRange_(charRange)} 안에 들어오도록 작성한다.`,
-    '정확히 맞추기 어렵더라도 지정된 글자수 범위에 최대한 가깝게 작성한다.',
-  ].join('\n');
+  return buildByteRangeInstruction_('recommended_record', charRange);
 }
 
 function formatBehaviorCharRange_(charRange) {
   if (!charRange || !charRange.enabled) return '제한 없음';
-  if (charRange.min && charRange.max) return `${charRange.min}-${charRange.max}자`;
-  if (charRange.min) return `${charRange.min}자 이상`;
-  return `${charRange.max}자 이하`;
+  return formatByteRange_(charRange);
 }
 
 function generateBehaviorRecommendationWithCharRetry_(options) {
@@ -1582,7 +1562,7 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
       );
       const parsed = parseBehaviorRecommendationJson_(result.text);
       const recommendedRecord = normalizeAiText_(parsed.recommended_record);
-      const charCount = recommendedRecord ? recommendedRecord.length : 0;
+      const charCount = neisByteCount_(recommendedRecord);
       const caution = String(parsed.caution || '').trim();
       const generated = {
         recommendedRecord,
@@ -1598,7 +1578,7 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
         if (attempt > 1 && fallback) {
           generated.caution = appendBehaviorCaution_(
             caution,
-            `글자수 범위 재요청 후 ${charCount}자로 생성됨.`
+            `분량 범위 재요청 후 ${charCount}바이트로 생성됨.`
           );
         }
         return generated;
@@ -1620,7 +1600,7 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
   }
 
   if (fallback) {
-    const rangeMessage = `설정 글자수 범위(${formatBehaviorCharRange_(options.charRange)})를 벗어남: ${fallback.charCount}자.`;
+    const rangeMessage = `설정 분량 범위(${formatBehaviorCharRange_(options.charRange)})를 벗어남: ${fallback.charCount}바이트.`;
     const retryMessage = retryErrorMessage
       ? `재요청 응답 처리 실패: ${retryErrorMessage}`
       : '재요청 후에도 범위에 들어오지 않음.';
@@ -1942,8 +1922,12 @@ function setupSheets() {
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
     ['MAX_RECORD_CHARS', '500', '생기부 초안 최대 글자수'],
     ['MAX_INPUT_CHARS', '30000', 'Claude에 보낼 과제 원문 최대 글자수'],
-    ['RECORD_DRAFT_MIN_CHARS', '350', RECORD_DRAFT_MIN_CHARS_DESCRIPTION],
-    ['RECORD_DRAFT_MAX_CHARS', '500', RECORD_DRAFT_MAX_CHARS_DESCRIPTION],
+    ['RECORD_DRAFT_MIN_BYTES', '900', '초안 만들기 최소 바이트(나이스 기준)\n도우미의 [초안 만들기] 화면에서 바꿀 수 있습니다.'],
+    ['RECORD_DRAFT_MAX_BYTES', '1200', '초안 만들기 최대 바이트(나이스 기준)'],
+    ['FINAL_RECORD_MIN_BYTES', '900', '초안 합치기 최소 바이트(나이스 기준)\n도우미의 [초안 합치기] 화면에서 바꿀 수 있습니다.'],
+    ['FINAL_RECORD_MAX_BYTES', '1200', '초안 합치기 최대 바이트(나이스 기준)'],
+    ['MANUAL_RECORD_MIN_BYTES', '900', '수동추가 최소 바이트(나이스 기준)\n도우미의 [수동추가] 화면에서 바꿀 수 있습니다.'],
+    ['MANUAL_RECORD_MAX_BYTES', '1200', '수동추가 최대 바이트(나이스 기준)'],
     ['NEIS_MAX_BYTES', '1500', ''],
     ['NEIS_WARNING_BYTES', '1400', ''],
     ['BATCH_SIZE', '5', '자동 생성 트리거 1회 실행당 처리할 학생 수'],
@@ -1956,8 +1940,8 @@ function setupSheets() {
     ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능\n이름과 같은 개인정보를 포함하지 않게 주의해주세요'],
     ['MANUAL_OUTPUT_COL', '', '수동추가를 위한 설정\n인공지능에게 받아올 생기부를 적을 열(ex. C)'],
     ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침\n\n\n인공지능에게 채점도 시켜보고 싶으시면 채점하라고 지시하시면 됩니다.\n그리고 "evidence_summary에 점수를 입력하여 보낸다" 라는 프롬프트를 \n작업에 넣어주시면 메모로 받아보실 수 있습니다.'],
-    ['BEHAVIOR_RECORD_MIN_CHARS', '', BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION],
-    ['BEHAVIOR_RECORD_MAX_CHARS', '', BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION],
+    ['BEHAVIOR_RECORD_MIN_BYTES', '750', '행발 최소 바이트(나이스 기준)\n도우미의 [행발 추천] 화면에서 바꿀 수 있습니다.'],
+    ['BEHAVIOR_RECORD_MAX_BYTES', '1200', '행발 최대 바이트(나이스 기준)'],
     ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '작성하시는 스타일에 맞게 수정하시면 됩니다.'],
     ['SYSTEM_GUIDE', defaultSystemGuide_(), '공통 작성 지침\n초안, 초안 합치기, 수동추가에 모두 적용되는 원칙입니다.\n과목에 상관없는 원칙(근거, 문체)만 두는 것을 권장합니다.\n\n과제마다 달라지는 내용(예: 첫 문장을 "인공지능과 미래사회에 대한 글쓰기 수행평가에서"로 시작)은\n여기가 아니라 각 프롬프트 맨 위의 "작성 순서/형식(선택)" 줄에 적어 주세요.']
   ];
@@ -3960,7 +3944,7 @@ function defaultManualRecordPrompt_() {
     "7. 활동을 나열하지 말고 '무엇을 했는지 → 어떻게 했는지 → 그 과정에서 드러난 역량' 흐름으로 엮는다.",
     "8. 데이터의 표현을 그대로 옮기지 말고 생활기록부 문어체로 다듬는다. '이 학생은', 학생 이름, 개인정보는 쓰지 않는다.",
     "9. 문장 끝은 '~함', '~임', '~보임' 같은 명사형 어미로 쓰되 같은 어미를 연달아 쓰지 않는다.",
-    '10. record_draft는 공백 포함 {{recordDraftMinChars}}자 이상 {{recordDraftMaxChars}}자 이하로 쓴다.',
+    '10. record_draft는 나이스 바이트 기준 {{recordDraftMinBytes}}바이트 이상 {{recordDraftMaxBytes}}바이트 이하(공백 포함 약 {{recordDraftMinChars}}~{{recordDraftMaxChars}}자)로 쓴다.',
     '11. evidence_summary에는 근거로 쓴 데이터 내용을 짧게 정리하고, caution에는 교사가 확인할 점이 있을 때만 쓴다.',
   ].join('\n');
 }
@@ -3968,14 +3952,14 @@ function defaultManualRecordPrompt_() {
 function buildRecordDraftNoEvidenceRule_() {
   return [
     '[자동 적용 최우선 제외 규칙]',
-    '이 규칙은 설정 시트의 PROMPT_1 내용 및 record_draft 글자수 조건보다 우선한다.',
+    '이 규칙은 설정 시트의 PROMPT_1 내용 및 record_draft 분량 조건보다 우선한다.',
     '학생 제출물 원문에 학생이 직접 작성한 답변, 활동 결과, 사고 과정, 탐구 내용이 확인되지 않으면 생활기록부를 작성하지 않는다.',
     '파일을 열 수 없음 또는 텍스트 자동 추출 미지원 문구가 있는 첨부파일은 해당 첨부파일만 근거에서 제외한다.',
     '같은 제출물 안의 다른 단답형 응답, 선택형 응답, Google Docs 본문, 텍스트 파일 등에서 학생이 직접 작성한 답변이 확인되면 그 확인 가능한 답변만 근거로 record_draft를 작성한다.',
     '제출하지 않은 과제, 빈 제출물, 모든 첨부파일을 열 수 없음, 모든 첨부파일이 텍스트 자동 추출 미지원, 교사 문항만 있고 학생 답변이 없는 경우는 근거 부족으로 본다.',
     '근거 부족 상황에서는 반드시 아래 JSON 구조처럼 답한다.',
     '{"evidence_summary":"", "record_draft":"", "caution":"학생 제출물 원문에서 생활기록부 작성에 사용할 수 있는 학생 수행 근거가 확인되지 않음"}',
-    '근거 부족 상황에서는 record_draft 최소 글자수 조건을 무시하고 record_draft를 반드시 빈 문자열로 둔다.',
+    '근거 부족 상황에서는 record_draft 최소 분량 조건을 무시하고 record_draft를 반드시 빈 문자열로 둔다.',
     'record_draft에 "작성하지 않음", "근거 부족", "제출물 없음" 같은 설명 문장을 쓰지 않는다.',
   ].join('\n');
 }
@@ -3983,14 +3967,14 @@ function buildRecordDraftNoEvidenceRule_() {
 function buildStudentFinalNoEvidenceRule_() {
   return [
     '[자동 적용 최우선 제외 규칙]',
-    '이 규칙은 설정 시트의 PROMPT_2 내용 및 record_draft 글자수 조건보다 우선한다.',
+    '이 규칙은 설정 시트의 PROMPT_2 내용 및 record_draft 분량 조건보다 우선한다.',
     '과제별 근거 묶음에서 근거 부족, 제출물 없음, 미제출, 학생 답변 없음이 표시된 과제는 생활기록부 근거에서 제외한다.',
     '파일을 열 수 없음 또는 텍스트 자동 추출 미지원 표시는 해당 첨부파일만 제외하라는 뜻이며, 같은 과제의 다른 확인 가능한 근거 요약이 있으면 그 과제 전체를 제외하지 않는다.',
     '근거 요약이 비어 있거나 학생의 직접 수행이 확인되지 않는 과제도 제외한다.',
     '제외 후 사용할 수 있는 학생 수행 근거가 하나도 없으면 생활기록부를 작성하지 않는다.',
     '이 경우 반드시 아래 JSON 구조처럼 답한다.',
     '{"evidence_summary":"", "record_draft":"", "caution":"생활기록부 작성에 사용할 수 있는 학생 수행 근거가 확인되지 않음"}',
-    '근거 부족 상황에서는 record_draft 최소 글자수 조건을 무시하고 record_draft를 반드시 빈 문자열로 둔다.',
+    '근거 부족 상황에서는 record_draft 최소 분량 조건을 무시하고 record_draft를 반드시 빈 문자열로 둔다.',
     'record_draft에 "작성하지 않음", "근거 부족", "제출물 없음" 같은 설명 문장을 쓰지 않는다.',
   ].join('\n');
 }
@@ -4222,14 +4206,14 @@ function isMyTeacherCourse_(courseId) {
 }
 
 
-function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, minChars, maxChars, reasoning) {
+function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, minBytes, maxBytes, reasoning) {
   let result = callAi_(provider, model, systemGuide, userPrompt, reasoning);
   let parsed = normalizeNoEvidenceRecordResponse_(parseClaudeJson_(result.text));
 
   let draft = parsed.record_draft || '';
-  let len = draft.length;
+  let len = neisByteCount_(draft);
 
-  if (shouldKeepEmptyRecordDraft_(parsed) || (len >= minChars && len <= maxChars)) {
+  if (shouldKeepEmptyRecordDraft_(parsed) || (len >= minBytes && len <= maxBytes)) {
     return {
       parsed,
       usage: result.usage || {},
@@ -4241,9 +4225,9 @@ function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, 
     userPrompt,
     '',
     '[재작성 요청]',
-    `방금 생성한 record_draft의 글자수는 ${len}자이다.`,
-    `record_draft 값만 공백 포함 ${minChars}자 이상 ${maxChars}자 이하가 되도록 다시 작성하라.`,
-    '단, 근거 부족 또는 제출물 없음으로 record_draft를 빈 문자열로 둔 경우에는 글자수 조건을 무시하고 빈 문자열을 유지하라.',
+    `방금 생성한 record_draft는 나이스 바이트 기준 ${len}바이트(공백 포함 ${draft.length}자)이다.`,
+    `record_draft 값만 ${formatByteRange_({ min: minBytes, max: maxBytes })}(공백 포함 약 ${approxCharsFromBytes_(minBytes)}~${approxCharsFromBytes_(maxBytes)}자)가 되도록 ${len < minBytes ? '근거 안에서 내용을 보태어 늘려' : '덜 중요한 내용을 덜어 줄여'} 다시 작성하라.`,
+    '단, 근거 부족 또는 제출물 없음으로 record_draft를 빈 문자열로 둔 경우에는 분량 조건을 무시하고 빈 문자열을 유지하라.',
     'evidence_summary와 caution은 간단히 유지해도 된다.',
     '반드시 JSON 형식으로만 답하라.',
     '',
@@ -4260,9 +4244,9 @@ function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, 
   try {
     const retryResult = callAi_(provider, model, systemGuide, retryPrompt, reasoning);
     const retryParsed = normalizeNoEvidenceRecordResponse_(parseClaudeJson_(retryResult.text));
-    const retryLen = String(retryParsed.record_draft || '').length;
+    const retryLen = neisByteCount_(retryParsed.record_draft || '');
 
-    if (retryLen > 0 && charRangeDistance_(retryLen, minChars, maxChars) <= charRangeDistance_(len, minChars, maxChars)) {
+    if (retryLen > 0 && charRangeDistance_(retryLen, minBytes, maxBytes) <= charRangeDistance_(len, minBytes, maxBytes)) {
       chosen = { parsed: retryParsed, usage: retryResult.usage || {}, len: retryLen };
     }
   } catch (err) {
@@ -4270,8 +4254,8 @@ function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, 
     log_('createRecordDraftWithLength_', 'RETRY_ERROR', retryNote);
   }
 
-  if (charRangeDistance_(chosen.len, minChars, maxChars) > 0) {
-    const note = `설정 글자수 범위(${minChars}-${maxChars}자)를 벗어남: ${chosen.len}자. ${retryNote}`;
+  if (charRangeDistance_(chosen.len, minBytes, maxBytes) > 0) {
+    const note = `설정 분량 범위(${formatByteRange_({ min: minBytes, max: maxBytes })})를 벗어남: ${chosen.len}바이트. ${retryNote}`;
     const caution = String(chosen.parsed.caution || '').trim();
     chosen.parsed.caution = caution ? `${caution}\n${note}` : note;
   }
@@ -4283,7 +4267,40 @@ function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, 
   };
 }
 
-// 글자수가 [min, max] 범위에서 얼마나 벗어났는지. 범위 안이면 0.
+// 길이가 [min, max] 범위에서 얼마나 벗어났는지. 범위 안이면 0.
+// 설정 시트의 분량 기준(나이스 바이트). 비어 있거나 잘못된 값이면 기본값을 쓴다.
+function getRecordByteRange_(config, kind) {
+  const setting = RECORD_BYTE_RANGE_SETTINGS[kind];
+  let min = parsePositiveInteger_(config && config[setting[0]]) || setting[2];
+  let max = parsePositiveInteger_(config && config[setting[1]]) || setting[3];
+
+  if (min > max) {
+    const tmp = min;
+    min = max;
+    max = tmp;
+  }
+
+  return { min, max, enabled: true };
+}
+
+// 한글 생기부는 공백을 섞어 1자에 약 2.7바이트다. AI에 대략의 글자수를 함께 알려 줄 때 쓴다.
+function approxCharsFromBytes_(bytes) {
+  return Math.round(Number(bytes || 0) / 2.7);
+}
+
+function formatByteRange_(range) {
+  return `${range.min}바이트 이상 ${range.max}바이트 이하`;
+}
+
+function buildByteRangeInstruction_(field, range) {
+  return [
+    '[분량 조건]',
+    `${field}는 나이스 바이트 기준 ${formatByteRange_(range)}로 작성한다. 공백 포함 약 ${approxCharsFromBytes_(range.min)}~${approxCharsFromBytes_(range.max)}자에 해당한다.`,
+    '나이스 바이트는 한글·한자·특수문자 1자를 3바이트, 영문·숫자·공백·일반 문장부호 1자를 1바이트로 센다.',
+    '이 분량 조건이 위에 적힌 다른 글자수 안내보다 우선한다.',
+  ].join('\n');
+}
+
 function charRangeDistance_(len, minChars, maxChars) {
   if (len < minChars) return minChars - len;
   if (len > maxChars) return len - maxChars;
@@ -5862,10 +5879,9 @@ function processPendingRecordDraftsCore_(showUi) {
   const reasoning = ai.reasoning;
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
 
-  const recordDraftMinChars = Number(config.RECORD_DRAFT_MIN_CHARS || 350);
-  const recordDraftMaxChars = Number(
-    config.RECORD_DRAFT_MAX_CHARS || config.MAX_RECORD_CHARS || 500
-  );
+  const byteRange = getRecordByteRange_(config, 'draft');
+  const recordDraftMinChars = approxCharsFromBytes_(byteRange.min);
+  const recordDraftMaxChars = approxCharsFromBytes_(byteRange.max);
 
   const systemGuide = getSystemGuide_(config);
   const recordPromptTemplate = getConfigPromptTemplate_(config, 'PROMPT_1', defaultRecordDraftPrompt_());
@@ -5957,6 +5973,8 @@ function processPendingRecordDraftsCore_(showUi) {
       ),
       recordDraftMinChars,
       recordDraftMaxChars,
+      recordDraftMinBytes: byteRange.min,
+      recordDraftMaxBytes: byteRange.max,
       extractedText: truncate_(sanitizePromptText_(extractedText, promptSanitizeOptions), maxInputChars),
     });
 
@@ -5967,8 +5985,8 @@ function processPendingRecordDraftsCore_(showUi) {
         model,
         systemGuide,
         userPrompt,
-        recordDraftMinChars,
-        recordDraftMaxChars,
+        byteRange.min,
+        byteRange.max,
         reasoning
       );
 
@@ -6454,10 +6472,9 @@ function processManualAddedRecordsCore_() {
   const model = ai.model;
   const reasoning = ai.reasoning;
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
-  const recordDraftMinChars = Number(config.RECORD_DRAFT_MIN_CHARS || 350);
-  const recordDraftMaxChars = Number(
-    config.RECORD_DRAFT_MAX_CHARS || config.MAX_RECORD_CHARS || 500
-  );
+  const byteRange = getRecordByteRange_(config, 'manual');
+  const recordDraftMinChars = approxCharsFromBytes_(byteRange.min);
+  const recordDraftMaxChars = approxCharsFromBytes_(byteRange.max);
   const systemGuide = getSystemGuide_(config);
   const lastRow = sh.getLastRow();
   const lastCol = Math.max(sh.getLastColumn(), manualConfig.byteCol);
@@ -6526,6 +6543,8 @@ function processManualAddedRecordsCore_() {
       inputColumns: manualConfig.inputCols.map(colToA1_).join(', '),
       recordDraftMinChars,
       recordDraftMaxChars,
+      recordDraftMinBytes: byteRange.min,
+      recordDraftMaxBytes: byteRange.max,
     });
 
     const outputCell = sh.getRange(row, manualConfig.outputCol);
@@ -6536,8 +6555,8 @@ function processManualAddedRecordsCore_() {
         model,
         systemGuide,
         userPrompt,
-        recordDraftMinChars,
-        recordDraftMaxChars,
+        byteRange.min,
+        byteRange.max,
         reasoning
       );
 
@@ -6743,17 +6762,15 @@ function buildManualRecordPrompt_(data) {
     parts.push(['[입력 정보]'].concat(missingInputLines).join('\n'));
   }
 
-  if (
-    !promptTemplateHasPlaceholder_(template, 'recordDraftMinChars') ||
-    !promptTemplateHasPlaceholder_(template, 'recordDraftMaxChars')
-  ) {
-    parts.push([
-      '[기본 출력 조건]',
-      `record_draft 값만 공백 포함 ${data.recordDraftMinChars}자 이상 ${data.recordDraftMaxChars}자 이하로 작성한다.`,
-      '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
-      '반드시 JSON 형식으로만 답한다.',
-    ].join('\n'));
-  }
+  parts.push(buildByteRangeInstruction_('record_draft', {
+    min: data.recordDraftMinBytes,
+    max: data.recordDraftMaxBytes,
+  }));
+  parts.push([
+    '[기본 출력 조건]',
+    '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
+    '반드시 JSON 형식으로만 답한다.',
+  ].join('\n'));
 
   if (!promptTemplateHasPlaceholder_(template, 'manualInput')) {
     parts.push([
@@ -7757,10 +7774,9 @@ function processPendingStudentFinalRecordsCore_(showUi) {
   const provider = ai.provider;
   const model = ai.model;
   const reasoning = ai.reasoning;
-  const recordDraftMinChars = Number(config.RECORD_DRAFT_MIN_CHARS || 350);
-  const recordDraftMaxChars = Number(
-    config.RECORD_DRAFT_MAX_CHARS || config.MAX_RECORD_CHARS || 500
-  );
+  const byteRange = getRecordByteRange_(config, 'final');
+  const recordDraftMinChars = approxCharsFromBytes_(byteRange.min);
+  const recordDraftMaxChars = approxCharsFromBytes_(byteRange.max);
   const systemGuide = getSystemGuide_(config);
   const studentFinalPromptTemplate = getConfigPromptTemplate_(config, 'PROMPT_2', defaultStudentFinalRecordPrompt_());
   const lastRow = sh.getLastRow();
@@ -7826,6 +7842,8 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       evidencePack: sanitizePromptText_(evidencePack, promptSanitizeOptions),
       recordDraftMinChars,
       recordDraftMaxChars,
+      recordDraftMinBytes: byteRange.min,
+      recordDraftMaxBytes: byteRange.max,
     });
 
     try {
@@ -7837,8 +7855,8 @@ function processPendingStudentFinalRecordsCore_(showUi) {
         model,
         systemGuide,
         userPrompt,
-        recordDraftMinChars,
-        recordDraftMaxChars,
+        byteRange.min,
+        byteRange.max,
         reasoning
       );
 
@@ -7943,17 +7961,15 @@ function buildRecordDraftPrompt_(data) {
     ].join('\n'));
   }
 
-  if (
-    !promptTemplateHasPlaceholder_(template, 'recordDraftMinChars') ||
-    !promptTemplateHasPlaceholder_(template, 'recordDraftMaxChars')
-  ) {
-    parts.push([
-      '[기본 출력 조건]',
-      `record_draft 값만 공백 포함 ${data.recordDraftMinChars}자 이상 ${data.recordDraftMaxChars}자 이하로 작성한다.`,
-      '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
-      '반드시 JSON 형식으로만 답한다.',
-    ].join('\n'));
-  }
+  parts.push(buildByteRangeInstruction_('record_draft', {
+    min: data.recordDraftMinBytes,
+    max: data.recordDraftMaxBytes,
+  }));
+  parts.push([
+    '[기본 출력 조건]',
+    '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
+    '반드시 JSON 형식으로만 답한다.',
+  ].join('\n'));
 
   if (!promptTemplateHasPlaceholder_(template, 'extractedText')) {
     parts.push([
@@ -7981,17 +7997,15 @@ function buildStudentFinalRecordPrompt_(data) {
     parts.push(['[입력 정보]'].concat(missingInputLines).join('\n'));
   }
 
-  if (
-    !promptTemplateHasPlaceholder_(template, 'recordDraftMinChars') ||
-    !promptTemplateHasPlaceholder_(template, 'recordDraftMaxChars')
-  ) {
-    parts.push([
-      '[기본 출력 조건]',
-      `record_draft 값만 공백 포함 ${data.recordDraftMinChars}자 이상 ${data.recordDraftMaxChars}자 이하로 작성한다.`,
-      '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
-      '반드시 JSON 형식으로만 답한다.',
-    ].join('\n'));
-  }
+  parts.push(buildByteRangeInstruction_('record_draft', {
+    min: data.recordDraftMinBytes,
+    max: data.recordDraftMaxBytes,
+  }));
+  parts.push([
+    '[기본 출력 조건]',
+    '생활기록부에 실제로 옮겨 적을 문장은 record_draft에만 작성한다.',
+    '반드시 JSON 형식으로만 답한다.',
+  ].join('\n'));
 
   if (!promptTemplateHasPlaceholder_(template, 'evidencePack')) {
     parts.push([

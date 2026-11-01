@@ -575,7 +575,100 @@
           <button class="btn" data-action="reset-prompt" data-key="${key}">기본 프롬프트로 바꾸기</button>
           <button class="btn primary" data-action="save-prompt" data-key="${key}" ${dirty ? '' : 'disabled'}>프롬프트 저장</button>
         </div>
-      </details>`;
+      </details>
+      ${lengthCard(key)}`;
+  }
+
+  // 프롬프트별 분량 기준(나이스 바이트): [최소 키, 최대 키, 기본 최소, 기본 최대, 카드 제목 앞부분]
+  const LENGTH_SETTINGS = {
+    PROMPT_1: ['RECORD_DRAFT_MIN_BYTES', 'RECORD_DRAFT_MAX_BYTES', 900, 1200, '초안을'],
+    PROMPT_2: ['FINAL_RECORD_MIN_BYTES', 'FINAL_RECORD_MAX_BYTES', 900, 1200, '합친 생기부를'],
+    MANUAL_PROMPT: ['MANUAL_RECORD_MIN_BYTES', 'MANUAL_RECORD_MAX_BYTES', 900, 1200, '생기부를'],
+    BEHAVIOR_RECORD_PROMPT: ['BEHAVIOR_RECORD_MIN_BYTES', 'BEHAVIOR_RECORD_MAX_BYTES', 750, 1200, '행발 문구를'],
+  };
+
+  function savedLength(key, fallback) {
+    const item = S.settings && S.settings.groups.lengths.find(x => x.key === key);
+    const value = item ? String(item.value || '').trim() : '';
+    return value || String(fallback);
+  }
+
+  function currentLength(key, fallback) {
+    return S.lengthEdits[key] !== undefined ? S.lengthEdits[key] : savedLength(key, fallback);
+  }
+
+  function lengthDirty(promptKey) {
+    const l = LENGTH_SETTINGS[promptKey];
+    return !!l && [[l[0], l[2]], [l[1], l[3]]].some(([key, fallback]) =>
+      S.lengthEdits[key] !== undefined && String(S.lengthEdits[key]).trim() !== savedLength(key, fallback));
+  }
+
+  // 한글 생기부는 공백을 섞어 1자에 약 2.7바이트다 (Code.js의 approxCharsFromBytes_와 같은 계산).
+  function lengthHint(promptKey) {
+    const l = LENGTH_SETTINGS[promptKey];
+    const min = Number(currentLength(l[0], l[2]));
+    const max = Number(currentLength(l[1], l[3]));
+    if (!(min > 0 && max > 0)) return '숫자를 적어 주세요';
+    if (min > max) return '앞의 숫자가 더 커요';
+    return `공백 포함 약 ${Math.round(min / 2.7)}~${Math.round(max / 2.7)}자`;
+  }
+
+  function lengthError(promptKey) {
+    const l = LENGTH_SETTINGS[promptKey];
+    const min = String(currentLength(l[0], l[2])).trim();
+    const max = String(currentLength(l[1], l[3])).trim();
+    if (!/^[1-9][0-9]{0,4}$/.test(min) || !/^[1-9][0-9]{0,4}$/.test(max)) return '분량은 1 이상의 숫자로 적어 주세요.';
+    if (Number(min) > Number(max)) return '분량의 최소 바이트가 최대 바이트보다 커요.';
+    return '';
+  }
+
+  function lengthCard(promptKey) {
+    const l = LENGTH_SETTINGS[promptKey];
+    if (!l || !S.settings) return '';
+    const dirty = lengthDirty(promptKey);
+    const input = (key, fallback) =>
+      `<input type="number" class="length-input" min="1" step="50" data-length-key="${key}" data-length-prompt="${promptKey}" value="${esc(currentLength(key, fallback))}">`;
+    return `
+      <div class="card length-card">
+        <div class="length-card-head">
+          <span class="prompt-card-icon" aria-hidden="true">📏</span>
+          <div>
+            <div class="prompt-card-title">${esc(l[4])} 몇 바이트로 받아볼까요?</div>
+            <div class="muted small">나이스 바이트 기준이에요. 한글 1자는 3바이트, 공백·영문·숫자는 1바이트로 세요. 벗어나면 AI에 한 번 다시 요청해요.</div>
+          </div>
+        </div>
+        <div class="length-card-inputs">
+          ${input(l[0], l[2])} <span>바이트 이상</span>
+          ${input(l[1], l[3])} <span>바이트 이하</span>
+          <span class="muted small" data-length-hint="${promptKey}">${esc(lengthHint(promptKey))}</span>
+          <span class="grow"></span>
+          <button class="btn" data-action="save-length" data-key="${promptKey}" ${dirty ? '' : 'disabled'}>분량 저장</button>
+        </div>
+      </div>`;
+  }
+
+  async function saveLength(promptKey) {
+    const l = LENGTH_SETTINGS[promptKey];
+    const error = lengthError(promptKey);
+    if (error) throw new Error(error);
+    S.settings = await call('uiSaveSettings', {
+      [l[0]]: String(currentLength(l[0], l[2])).trim(),
+      [l[1]]: String(currentLength(l[1], l[3])).trim(),
+    });
+    delete S.lengthEdits[l[0]];
+    delete S.lengthEdits[l[1]];
+  }
+
+  function handleLengthInput(el) {
+    const key = el.dataset.lengthKey;
+    if (!key) return false;
+    const promptKey = el.dataset.lengthPrompt;
+    S.lengthEdits[key] = el.value;
+    const hint = document.querySelector(`[data-length-hint="${promptKey}"]`);
+    if (hint) hint.textContent = lengthHint(promptKey);
+    const btn = document.querySelector(`[data-action="save-length"][data-key="${promptKey}"]`);
+    if (btn) btn.disabled = !lengthDirty(promptKey);
+    return true;
   }
 
   async function savePrompt(key) {
@@ -586,9 +679,14 @@
   // 만들기 전에: 안내가 비어 있으면 한 번 묻고, 저장하지 않은 프롬프트는 저장한다.
   async function preparePrompt(key) {
     if (!S.settings) S.settings = await call('uiGetSettings');
+    if (lengthDirty(key) && lengthError(key)) {
+      banner(lengthError(key), 'err');
+      return false;
+    }
     if (promptMissingInfo(currentPrompt(key)) &&
       !await confirmModal('프롬프트 안내가 비어 있어요', "프롬프트 맨 위의 과목·작성 영역을 채우면 결과가 훨씬 좋아져요.\nAI가 어떤 글을 써야 할지 모르면 어색한 결과가 나올 수 있어요.\n그대로 만들까요?", '그대로 만들기')) return false;
     if (promptDirty(key)) await savePrompt(key);
+    if (lengthDirty(key)) await saveLength(key);
     return true;
   }
 
@@ -888,6 +986,14 @@
         banner('프롬프트를 저장했어요.', 'ok');
       });
     },
+    async 'save-length'(el) {
+      const error = lengthError(el.dataset.key);
+      if (error) return banner(error, 'err');
+      await withBusy('분량을 저장하는 중…', async () => {
+        await saveLength(el.dataset.key);
+        banner('분량을 저장했어요.', 'ok');
+      });
+    },
     async 'use-prompt-example'(el) {
       const key = el.dataset.key;
       if (promptDirty(key) || currentPrompt(key).trim() !== String(S.settings.defaults[key] || '').trim()) {
@@ -1004,6 +1110,7 @@
   // 입력 중에는 다시 그리지 않고 글자수·저장 버튼만 바꾼다.
   function handleToolInput(el) {
     if (handlePromptInput(el)) return true;
+    if (handleLengthInput(el)) return true;
     if (el.dataset.bfield && S.bDraft) {
       S.bDraft.fields[el.dataset.bfield] = el.value;
       S.bDraft.dirty = true;
