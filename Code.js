@@ -16,6 +16,7 @@ const MANUAL_RESET_ROWS = 1000;
 const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
 const AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY = 'AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER';
+const AUTO_BUSY_RETRY_DELAY_MS = 60000;
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
 const RECORD_DRAFT_MIN_CHARS_DESCRIPTION = '생기부 작성을 위한 최소 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
@@ -820,7 +821,7 @@ function autoProcessPendingCommonPhrases() {
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
-    log_('autoProcessPendingCommonPhrases', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    rescheduleAutoJobWhenBusy_('autoProcessPendingCommonPhrases', 'AUTO_COMMON_PHRASE_TRIGGER', scheduleNextAutoCommonPhraseTrigger_);
     return;
   }
 
@@ -1779,7 +1780,7 @@ function autoProcessPendingBehaviorRecommendations() {
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
-    log_('autoProcessPendingBehaviorRecommendations', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    rescheduleAutoJobWhenBusy_('autoProcessPendingBehaviorRecommendations', AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, scheduleNextAutoBehaviorRecommendationTrigger_);
     return;
   }
 
@@ -2275,7 +2276,7 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
 
   const payload = {
     model,
-    max_tokens: 1200,
+    max_tokens: getClaudeMaxTokens_(reasoning),
     temperature: 0.2,
     system: systemGuide,
     messages: [
@@ -2289,6 +2290,7 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
   applyClaudeReasoning_(payload, model, reasoning);
 
   const maxAttempts = 5;
+  let outputTokenRetryUsed = false;
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2308,6 +2310,20 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
 
     if (code >= 200 && code < 300) {
       const json = JSON.parse(body);
+
+      // 출력 한도에 걸려 잘린 답은 JSON이 끊겨 있으므로, 한도를 늘려 한 번 더 받는다.
+      if (json.stop_reason === 'max_tokens' && !outputTokenRetryUsed) {
+        outputTokenRetryUsed = true;
+        payload.max_tokens = Math.min(Number(payload.max_tokens) * 2, 16000);
+        log_('callClaude_', 'RETRY', `Claude 응답이 max_tokens로 잘려 ${payload.max_tokens} 토큰으로 1회 재시도합니다.`);
+        Utilities.sleep(1200);
+        continue;
+      }
+
+      if (json.stop_reason === 'max_tokens') {
+        throw new Error(`Claude 응답이 출력 한도(max_tokens ${payload.max_tokens})에서 잘렸습니다. 다시 만들어 보세요.`);
+      }
+
       const text = extractClaudeOutputText_(json);
 
       return {
@@ -2377,10 +2393,11 @@ function normalizeReasoning_(reasoning) {
 function getClaudeMaxTokens_(reasoning) {
   reasoning = normalizeReasoning_(reasoning);
 
-  if (reasoning === 'medium') return 4000;
-  if (reasoning === 'low') return 2500;
+  // 한국어 500자 초안과 근거 요약이 들어갈 만큼 넉넉하게 둔다. 실제로 쓴 토큰만 과금된다.
+  if (reasoning === 'medium') return 8000;
+  if (reasoning === 'low') return 4000;
 
-  return 1200;
+  return 2000;
 }
 
 function applyClaudeReasoning_(payload, model, reasoning) {
@@ -2388,7 +2405,6 @@ function applyClaudeReasoning_(payload, model, reasoning) {
 
   if (reasoning === 'none') return;
 
-  payload.max_tokens = getClaudeMaxTokens_(reasoning);
   delete payload.temperature;
 
   if (usesLegacyClaudeThinking_(model)) {
@@ -2594,7 +2610,8 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
     input: userPrompt,
     generation_config: {
       temperature: 0.2,
-      max_output_tokens: 1200,
+      // 생각에 쓴 토큰도 이 한도에 들어가므로 추론 수준에 맞춰 늘린다.
+      max_output_tokens: getClaudeMaxTokens_(reasoning),
       thinking_level: getGeminiThinkingLevel_(reasoning),
     },
     response_format: {
@@ -2613,6 +2630,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
   };
 
   const maxAttempts = 5;
+  let outputTokenRetryUsed = false;
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2631,6 +2649,19 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
 
     if (code >= 200 && code < 300) {
       const json = JSON.parse(body);
+
+      if (isGeminiOutputTruncated_(json) && !outputTokenRetryUsed) {
+        outputTokenRetryUsed = true;
+        payload.generation_config.max_output_tokens = Math.min(Number(payload.generation_config.max_output_tokens) * 2, 16000);
+        log_('callGemini_', 'RETRY', `Gemini 응답이 출력 한도로 잘려 ${payload.generation_config.max_output_tokens} 토큰으로 1회 재시도합니다.`);
+        Utilities.sleep(1200);
+        continue;
+      }
+
+      if (isGeminiOutputTruncated_(json)) {
+        throw new Error(`Gemini 응답이 출력 한도(max_output_tokens ${payload.generation_config.max_output_tokens})에서 잘렸습니다. 다시 만들어 보세요.`);
+      }
+
       const text = extractGeminiOutputText_(json);
 
       return {
@@ -2651,6 +2682,14 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
   }
 
   throw new Error(`Gemini API 재시도 실패: ${lastErrorMessage}`);
+}
+
+// interactions 응답의 status, 또는 어느 단계/후보든 finish reason이 MAX_TOKENS면 잘린 답이다.
+function isGeminiOutputTruncated_(json) {
+  if (!json) return false;
+  if (String(json.status || '').toLowerCase() === 'incomplete') return true;
+
+  return /"finish_?reason"\s*:\s*"max_tokens"/i.test(JSON.stringify(json));
 }
 
 function extractOpenAiOutputText_(json) {
@@ -2752,6 +2791,10 @@ function parseClaudeJson_(text) {
   } catch (err) {
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) {
+      // JSON을 쓰다 끊긴 답이면 조각이 초안 본문으로 들어가지 않게 오류로 넘긴다.
+      if (/^\s*(```(json)?\s*)?\{/i.test(text)) {
+        throw new Error('AI 응답 JSON이 중간에 끊겨 읽을 수 없습니다. 다시 만들어 보세요.');
+      }
       return {
         evidence_summary: '',
         record_draft: text.trim(),
@@ -5458,113 +5501,82 @@ function markSubmissionRowsPending_(sh, h, rows) {
   return rows.length;
 }
 
-function classifyRecordDraftError_(message) {
-  const raw = String(message || '');
-  const lower = raw.toLowerCase();
-
-  if (
-    lower.includes('401') ||
-    lower.includes('unauthorized') ||
-    lower.includes('invalid api key') ||
-    lower.includes('authentication') ||
-    lower.includes('api 키')
-  ) {
-    return {
-      status: '오류',
-      shouldStop: true,
-      reason: 'API 키 인증 오류',
-      userMessage: 'API 키 인증에 실패했습니다. 저장된 API 키가 올바른지 확인하세요.',
-    };
-  }
-
-  if (
-    lower.includes('403') ||
-    lower.includes('forbidden') ||
-    lower.includes('permission_denied') ||
-    lower.includes('permission denied')
-  ) {
-    return {
-      status: '오류',
-      shouldStop: true,
-      reason: 'API 권한 오류',
-      userMessage: 'API 권한 문제로 생성을 계속할 수 없습니다. API 키 권한 또는 프로젝트 설정을 확인하세요.',
-    };
-  }
-
-  if (
-    lower.includes('402') ||
-    lower.includes('insufficient_quota') ||
-    lower.includes('billing') ||
-    lower.includes('credit') ||
-    lower.includes('payment')
-  ) {
-    return {
-      status: '오류',
-      shouldStop: true,
-      reason: 'API 결제/사용량 한도',
-      userMessage: 'API 결제 또는 사용량 한도 문제로 생성을 계속할 수 없습니다. 결제 상태와 사용량 한도를 확인하세요.',
-    };
-  }
-
-  if (
-    lower.includes('429') ||
-    lower.includes('rate_limit') ||
-    lower.includes('too many requests') ||
-    lower.includes('resource_exhausted') ||
-    lower.includes('quota') ||
-    lower.includes('usage limit') ||
-    lower.includes('할당량') ||
-    lower.includes('사용량')
-  ) {
-    return {
-      status: '재시도필요',
-      shouldStop: true,
-      reason: 'API 호출 한도 또는 속도 제한',
-      userMessage: 'API 호출 한도 또는 속도 제한에 걸린 것으로 보입니다. 잠시 후 또는 할당량 갱신 후 다시 시작하세요.',
-    };
-  }
-
-  if (
-    lower.includes('400') ||
-    lower.includes('invalid_request') ||
-    lower.includes('model_not_found') ||
-    lower.includes('invalid model') ||
-    lower.includes('unsupported') ||
-    lower.includes('not found')
-  ) {
-    return {
-      status: '오류',
-      shouldStop: true,
-      reason: '모델명 또는 요청 형식 오류',
-      userMessage: '모델명 또는 API 요청 형식 문제로 생성을 계속할 수 없습니다. 설정 시트의 모델명과 reasoning 값을 확인하세요.',
-    };
-  }
-
-  if (
-    lower.includes('529') ||
-    lower.includes('overloaded') ||
-    lower.includes('500') ||
-    lower.includes('502') ||
-    lower.includes('503') ||
-    lower.includes('504') ||
-    lower.includes('timeout') ||
-    lower.includes('timed out') ||
-    lower.includes('재시도 실패')
-  ) {
-    return {
-      status: '재시도필요',
-      shouldStop: true,
-      reason: 'API 일시 오류 또는 서버 과부하',
-      userMessage: 'API 서버 과부하 또는 일시 오류로 보입니다. 잠시 후 다시 시작하세요.',
-    };
-  }
-
-  return {
+const RECORD_DRAFT_ERROR_KINDS = {
+  auth: {
+    status: '오류',
+    shouldStop: true,
+    reason: 'API 키 인증 오류',
+    userMessage: 'API 키 인증에 실패했습니다. 저장된 API 키가 올바른지 확인하세요.',
+  },
+  permission: {
+    status: '오류',
+    shouldStop: true,
+    reason: 'API 권한 오류',
+    userMessage: 'API 권한 문제로 생성을 계속할 수 없습니다. API 키 권한 또는 프로젝트 설정을 확인하세요.',
+  },
+  billing: {
+    status: '오류',
+    shouldStop: true,
+    reason: 'API 결제/사용량 한도',
+    userMessage: 'API 결제 또는 사용량 한도 문제로 생성을 계속할 수 없습니다. 결제 상태와 사용량 한도를 확인하세요.',
+  },
+  rateLimit: {
+    status: '재시도필요',
+    shouldStop: true,
+    reason: 'API 호출 한도 또는 속도 제한',
+    userMessage: 'API 호출 한도 또는 속도 제한에 걸린 것으로 보입니다. 잠시 후 또는 할당량 갱신 후 다시 시작하세요.',
+  },
+  request: {
+    status: '오류',
+    shouldStop: true,
+    reason: '모델명 또는 요청 형식 오류',
+    userMessage: '모델명 또는 API 요청 형식 문제로 생성을 계속할 수 없습니다. 설정 시트의 모델명과 reasoning 값을 확인하세요.',
+  },
+  temporary: {
+    status: '재시도필요',
+    shouldStop: true,
+    reason: 'API 일시 오류 또는 서버 과부하',
+    userMessage: 'API 서버 과부하 또는 일시 오류로 보입니다. 잠시 후 다시 시작하세요.',
+  },
+  other: {
     status: '오류',
     shouldStop: false,
     reason: '기타 오류',
     userMessage: '개별 제출물 처리 중 오류가 발생했습니다. 로그 시트의 오류 메시지를 확인하세요.',
-  };
+  },
+};
+
+// 오류 종류는 callClaude_/callOpenAi_/callGemini_가 붙이는 'API 오류 ###'의 HTTP 상태 코드로 판정한다.
+// 메시지 전체에서 숫자를 찾으면 'JSON ... at position 1401'이나 요청 ID 속 숫자를 401 등으로 잘못 읽는다.
+function classifyRecordDraftError_(message) {
+  const raw = String(message || '');
+  const lower = raw.toLowerCase();
+  const codeMatch = raw.match(/API 오류 (\d{3})\b/);
+  const code = codeMatch ? Number(codeMatch[1]) : 0;
+  const pick = kind => Object.assign({}, RECORD_DRAFT_ERROR_KINDS[kind]);
+  const isBilling = () => /insufficient_quota|billing|credit balance|payment|결제/.test(lower);
+
+  if (code) {
+    if (code === 401) return pick('auth');
+    if (code === 402) return pick('billing');
+    if (code === 403) return pick('permission');
+    if (code === 429) return pick(isBilling() ? 'billing' : 'rateLimit');
+    if (code === 400) {
+      if (/api key not valid|api_key_invalid|invalid api key|invalid x-api-key/.test(lower)) return pick('auth');
+      if (isBilling()) return pick('billing');
+      return pick('request');
+    }
+    if (code === 408 || code === 409 || code >= 500) return pick('temporary');
+    if (code >= 400) return pick('request');
+    return pick('other');
+  }
+
+  // HTTP 응답 없이 난 오류: API 키 없음, Apps Script 호출 한도, 네트워크 시간 초과 등.
+  if (lower.includes('api 키')) return pick('auth');
+  if (/too many times|quota|할당량/.test(lower)) return pick('rateLimit');
+  if (/timeout|timed out|address unavailable|dns error/.test(lower)) return pick('temporary');
+
+  return pick('other');
 }
 
 function buildRecordDraftResultMessage_(title, result, unit) {
@@ -5632,11 +5644,25 @@ function processPendingRecordDrafts() {
   getUi_().alert(buildRecordDraftResultMessage_('이번 실행 결과', result));
 }
 
+// 자동 작업들은 스크립트 잠금 하나를 같이 쓴다. 다른 작업이 돌고 있어 잠금을 못 잡으면
+// 그냥 끝내지 말고 잠시 뒤로 다시 예약한다. 그러지 않으면 이 작업은 ON인 채로 멈춘다.
+function rescheduleAutoJobWhenBusy_(handlerName, statusProperty, scheduleNext) {
+  const status = PropertiesService.getUserProperties().getProperty(statusProperty) || 'OFF';
+
+  if (status !== 'ON') {
+    log_(handlerName, 'SKIP', '다른 자동 작업이 실행 중이고, 이 작업은 이미 꺼져 있어 다시 예약하지 않음');
+    return;
+  }
+
+  scheduleNext(AUTO_BUSY_RETRY_DELAY_MS);
+  log_(handlerName, 'WAIT', `다른 자동 작업이 실행 중이라 ${Math.round(AUTO_BUSY_RETRY_DELAY_MS / 1000)}초 뒤 다시 시도`);
+}
+
 function autoProcessPendingRecordDrafts() {
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
-    log_('autoProcessPendingRecordDrafts', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    rescheduleAutoJobWhenBusy_('autoProcessPendingRecordDrafts', 'AUTO_RECORD_DRAFT_TRIGGER', scheduleNextAutoRecordDraftTrigger_);
     return;
   }
 
@@ -6244,7 +6270,7 @@ function autoProcessPendingManualAddedRecords() {
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
-    log_('autoProcessPendingManualAddedRecords', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    rescheduleAutoJobWhenBusy_('autoProcessPendingManualAddedRecords', AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, scheduleNextAutoManualRecordTrigger_);
     return;
   }
 
@@ -6874,7 +6900,7 @@ function autoProcessPendingSubmissionCollections() {
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
-    log_('autoProcessPendingSubmissionCollections', 'SKIP', '이미 다른 자동 작업이 실행 중입니다.');
+    rescheduleAutoJobWhenBusy_('autoProcessPendingSubmissionCollections', AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, scheduleNextAutoSubmissionCollectionTrigger_);
     return;
   }
 
@@ -7872,7 +7898,7 @@ function autoProcessPendingStudentFinalRecords() {
   const lock = LockService.getScriptLock();
 
   if (!lock.tryLock(1000)) {
-    log_('autoProcessPendingStudentFinalRecords', 'SKIP', '이미 다른 자동 생성 작업이 실행 중입니다.');
+    rescheduleAutoJobWhenBusy_('autoProcessPendingStudentFinalRecords', 'AUTO_STUDENT_FINAL_TRIGGER', scheduleNextAutoStudentFinalRecordTrigger_);
     return;
   }
 
