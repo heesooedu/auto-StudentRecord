@@ -264,7 +264,7 @@
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
     // 프롬프트 확인 칸에 설정 값이 필요하다.
-    if (['drafts', 'final', 'manual'].includes(view) && !S.settings) S.settings = await call('uiGetSettings');
+    if (['drafts', 'final', 'manual', 'behavior'].includes(view) && !S.settings) S.settings = await call('uiGetSettings');
     await loaders[view]();
   }
 

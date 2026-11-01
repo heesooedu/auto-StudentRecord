@@ -167,6 +167,7 @@
       <p class="lead">학생마다 특성을 고르고 (필요하면) 관찰한 내용을 적으면, AI가 행동특성 및 종합의견 문구를 추천해요.<br>
         학생을 누르면 입력 칸이 열려요.</p>
       ${busyNote()}
+      ${promptCard('BEHAVIOR_RECORD_PROMPT', '프롬프트 확인')}
       <div class="card row between">
         <div>만들 준비가 된 학생 <b>${ready}</b>명 · 추천 완료 <b>${done}</b>명</div>
         ${toolStartButton('behavior', `추천 문구 만들기 (${ready}명)`, !ready)}
@@ -525,19 +526,28 @@
       </details>`;
   }
 
+  // 안내 줄이 없는 프롬프트(행발)는 summary·설명 문구를 따로 쓴다.
+  const PROMPT_CARD_TEXT = {
+    BEHAVIOR_RECORD_PROMPT: {
+      summary: '작성 스타일에 맞게 고쳐 쓸 수 있어요.',
+      help: 'AI가 행발 문구를 쓸 때 따르는 지침이에요. 학생별 특성·관찰 내용과 글자수는 여기에 없어도 자동으로 함께 보내져요.',
+    },
+  };
+
   function promptCard(key, title) {
     if (!S.settings) return '';
     const text = currentPrompt(key);
     const dirty = promptDirty(key);
     const missing = promptMissingInfo(text);
     const filled = promptInfo(text).filter(item => item.value).map(item => item.value);
+    const custom = PROMPT_CARD_TEXT[key];
     const pill = missing ? '<span class="pill warn">안내를 채워 주세요</span>'
       : dirty ? '<span class="pill warn">저장 안 함</span>' : '<span class="pill ok">저장됨</span>';
     return `
       <details class="card ${missing ? 'hero' : ''}" data-prompt-card="${key}" ${missing || dirty || S.promptOpen[key] ? 'open' : ''}>
         <summary><b>${esc(title)}</b> ${pill}
-          <span class="muted small">${filled.length ? esc(filled.join(' · ')) : '과목이나 작성 영역을 적어 주면 결과가 좋아져요.'}</span></summary>
-        <p class="muted small" style="margin:10px 0">맨 위 안내 줄에 과목·작성 영역을 적어 주세요. 과제 정보, 학생 제출물, 글자수, 점수 규칙은 여기에 없어도 자동으로 함께 보내져요.
+          <span class="muted small">${filled.length ? esc(filled.join(' · ')) : custom ? custom.summary : '과목이나 작성 영역을 적어 주면 결과가 좋아져요.'}</span></summary>
+        <p class="muted small" style="margin:10px 0">${custom ? custom.help : '맨 위 안내 줄에 과목·작성 영역을 적어 주세요. 과제 정보, 학생 제출물, 글자수, 점수 규칙은 여기에 없어도 자동으로 함께 보내져요.'}
           설정 화면의 프롬프트와 같은 값이에요.</p>
         <div class="tip">처음부터 완벽하게 쓰지 않아도 돼요. <b>몇 개만 먼저 만들어 보고, 결과를 보며 프롬프트를 고쳐 다시 만들면</b> 점점 원하는 문장에 가까워져요.</div>
         ${promptExample(key)}
@@ -781,6 +791,7 @@
     },
     async 'start-behavior'() {
       const ready = S.behavior.rows.filter(r => behaviorState(r).label === '만들 준비 됨').length;
+      if (!await preparePrompt('BEHAVIOR_RECORD_PROMPT')) return;
       if (!await confirmModal('추천 문구 만들기', `학생 ${ready}명의 행발 추천 문구를 AI로 만들까요?\n이미 추천 문구가 있는 학생은 건너뛰어요.`, '만들기')) return;
       await withBusy('추천 문구를 만드는 중… 창을 닫아도 계속 진행돼요.', async () => {
         const result = await call('uiStartBehavior');
