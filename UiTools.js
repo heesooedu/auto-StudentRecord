@@ -124,7 +124,9 @@ function uiListBehaviorRows() {
   if (!sh) return result;
 
   const h = headerMap_(sh);
-  result.traits = behaviorTraitOptions_(sh, h);
+  // 시트 드롭다운에 아직 없는 기본 특성도 고를 수 있게 뒤에 붙인다(저장할 때 '목록에 없는 특성' 칸으로 간다).
+  const sheetTraits = behaviorTraitOptions_(sh, h);
+  result.traits = sheetTraits.concat(BEHAVIOR_TRAIT_KEYWORDS.filter(t => !sheetTraits.includes(t)));
   if (sh.getLastRow() < 2) return result;
 
   const lastRow = sh.getLastRow();
