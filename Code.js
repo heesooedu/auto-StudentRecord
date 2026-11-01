@@ -229,10 +229,10 @@ function onOpen() {
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
     //.addItem('현황판 새로고침', 'refreshDashboard')
     .addSeparator()
-    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
-    .addSeparator()
-    .addItem('AI 모델·추론 조합 점검', 'checkAllAiCombinations')
-    .addItem('행발 추천 모든 모델·추론으로 비교 (선택한 행)', 'compareBehaviorAcrossModels');
+    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn');
+    //.addSeparator()
+    //.addItem('AI 모델·추론 조합 점검', 'checkAllAiCombinations')
+    //.addItem('행발 추천 모든 모델·추론으로 비교 (선택한 행)', 'compareBehaviorAcrossModels');
 
   ui.createMenu('⭐ 생기부 자동화')
     .addItem('▶ 생기부 도우미 열기', 'openAssistant')
