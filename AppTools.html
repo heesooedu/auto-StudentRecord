@@ -84,6 +84,8 @@
         <div class="small bytes" id="cp-source-count" style="margin:-4px 0 8px">${countLine(d.sourceText)}</div>
         <label class="field"><span>어떻게 만들까요? (지시사항)</span>
           <textarea id="cp-prompt" rows="3" placeholder="예: 의미는 유지하되 문장 구조와 어휘를 바꿔 주세요. 200자 내외, ~함으로 끝내기">${esc(d.prompt)}</textarea></label>
+        <div class="tip">공통문구에는 <b>따로 정한 글자수 기준이 없어요.</b> 설정 화면의 초안 글자수도 적용되지 않아요.
+          원하는 길이가 있으면 지시사항에 <b>"200자 내외"</b>처럼 적어 주세요. 만든 문구마다 글자수와 바이트가 아래에 표시돼요.</div>
         <div class="row">
           <label class="field" style="width:140px"><span>만들 개수</span>
             <input type="number" id="cp-count" min="1" max="200" value="${esc(d.count)}"></label>
@@ -555,9 +557,15 @@
     const pill = missing ? '<span class="pill warn">안내를 채워 주세요</span>'
       : dirty ? '<span class="pill warn">저장 안 함</span>' : '<span class="pill ok">저장됨</span>';
     return `
-      <details class="card ${missing ? 'hero' : ''}" data-prompt-card="${key}" ${missing || dirty || S.promptOpen[key] ? 'open' : ''}>
-        <summary><b>${esc(title)}</b> ${pill}
-          <span class="muted small">${filled.length ? esc(filled.join(' · ')) : custom ? custom.summary : '과목이나 작성 영역을 적어 주면 결과가 좋아져요.'}</span></summary>
+      <details class="card prompt-card ${missing ? 'hero' : ''}" data-prompt-card="${key}" ${missing || dirty || S.promptOpen[key] ? 'open' : ''}>
+        <summary>
+          <span class="prompt-card-icon" aria-hidden="true">📝</span>
+          <span class="prompt-card-head">
+            <span class="prompt-card-title">${esc(title)} ${pill}</span>
+            <span class="muted small">${filled.length ? esc(filled.join(' · ')) : custom ? custom.summary : '과목이나 작성 영역을 적어 주면 결과가 좋아져요.'}</span>
+          </span>
+          <span class="prompt-card-toggle"></span>
+        </summary>
         <p class="muted small" style="margin:10px 0">${custom ? custom.help : '맨 위 안내 줄에 과목·작성 영역을 적어 주세요. 과제 정보, 학생 제출물, 글자수, 점수 규칙은 여기에 없어도 자동으로 함께 보내져요.'}
           설정 화면의 프롬프트와 같은 값이에요.</p>
         <div class="tip">처음부터 완벽하게 쓰지 않아도 돼요. <b>몇 개만 먼저 만들어 보고, 결과를 보며 프롬프트를 고쳐 다시 만들면</b> 점점 원하는 문장에 가까워져요.</div>

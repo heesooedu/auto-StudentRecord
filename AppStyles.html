@@ -240,6 +240,17 @@
   details.card > summary { margin: -4px 0; }
   details.card[open] > summary { margin-bottom: 12px; }
   details.small { margin-top: 8px; }
+  /* 프롬프트 확인 카드: 접혀 있어도 눈에 띄게 왼쪽 띠와 연한 배경, 열기 안내를 둔다. */
+  details.prompt-card { border-left: 4px solid var(--primary); background: linear-gradient(90deg, var(--primary-soft), var(--panel) 60%); }
+  details.prompt-card[open] { background: var(--panel); }
+  details.prompt-card > summary { display: flex; align-items: center; gap: 12px; list-style: none; padding: 4px 0; }
+  details.prompt-card > summary::-webkit-details-marker { display: none; }
+  .prompt-card-icon { font-size: 22px; line-height: 1; }
+  .prompt-card-head { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+  .prompt-card-title { font-size: 15px; font-weight: 700; color: var(--primary); }
+  .prompt-card-toggle { flex: none; font-size: 13px; font-weight: 600; color: var(--primary); border: 1px solid var(--primary); border-radius: 999px; padding: 4px 12px; background: var(--panel); white-space: nowrap; }
+  .prompt-card-toggle::after { content: '열어서 확인 ▾'; }
+  details.prompt-card[open] .prompt-card-toggle::after { content: '접기 ▴'; }
 
   .empty { text-align: center; color: var(--muted); padding: 36px 0; }
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
