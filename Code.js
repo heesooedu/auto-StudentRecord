@@ -232,7 +232,7 @@ function onOpen() {
     .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
     .addSeparator()
     .addItem('AI 모델·추론 조합 점검', 'checkAllAiCombinations')
-    .addItem('행발 추천 모든 모델로 비교 (선택한 행)', 'compareBehaviorAcrossModels');
+    .addItem('행발 추천 모든 모델·추론으로 비교 (선택한 행)', 'compareBehaviorAcrossModels');
 
   ui.createMenu('⭐ 생기부 자동화')
     .addItem('▶ 생기부 도우미 열기', 'openAssistant')
@@ -7062,7 +7062,7 @@ function checkAllAiCombinations() {
   getUi_().alert(lines.join('\n'));
 }
 
-// 행발문구추천 시트에서 선택한 학생 한 명의 입력으로, 키가 저장된 모든 모델에 행발 추천을 만들어 '행발비교' 시트에 나란히 적는다.
+// 행발문구추천 시트에서 선택한 학생 한 명의 입력으로, 키가 저장된 모든 모델 × 추론 수준(none·low·medium)으로 행발 추천을 만들어 '행발비교' 시트에 나란히 적는다.
 // 실제 생성과 같은 프롬프트·분량 범위·재요청 경로를 쓰고, 행발문구추천 시트에는 쓰지 않는다.
 function compareBehaviorAcrossModels() {
   const ui = getUi_();
@@ -7090,7 +7090,6 @@ function compareBehaviorAcrossModels() {
   }
 
   const config = getConfigMap_();
-  const reasoning = normalizeReasoning_(config.REASONING || config.reasoning);
   const behaviorPrompt = getBehaviorRecordPrompt_(config);
   const charRange = getBehaviorRecordCharRange_(config);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
@@ -7105,16 +7104,16 @@ function compareBehaviorAcrossModels() {
   const headers = ['회사', '모델', '추론', '결과', '걸린 시간(초)', '바이트', '추천 문구', '돌려 쓴 표현 후보', '확인할 점 / 오류'];
   const sh = ss.getSheetByName('행발비교') || ss.insertSheet('행발비교');
 
-  // 같은 입력·프롬프트로 다시 실행하면(6분 제한으로 끊긴 경우) 이미 '정상'인 모델은 그대로 두고 나머지만 만든다.
+  // 모델 × 추론 수준 조합이 많아 한 번(6분)에 다 못 끝낸다. 같은 입력·프롬프트로 다시 실행하면 이미 '정상'인 조합은 그대로 두고 나머지만 만든다.
   const runKey = Utilities.base64Encode(Utilities.computeDigest(
     Utilities.DigestAlgorithm.MD5,
-    JSON.stringify([sourceRow, data, reasoning, behaviorPrompt, charRange.min, charRange.max]),
+    JSON.stringify([sourceRow, data, behaviorPrompt, charRange.min, charRange.max]),
     Utilities.Charset.UTF_8
   ));
   const passed = {};
   if (sh.getRange(1, headers.length + 2).getValue() === runKey && sh.getLastRow() > 1) {
     sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues().forEach(r => {
-      if (r[3] === '정상') passed[`${r[0]}|${r[1]}`] = r;
+      if (r[3] === '정상') passed[`${r[0]}|${r[1]}|${r[2]}`] = r;
     });
   }
 
@@ -7124,9 +7123,10 @@ function compareBehaviorAcrossModels() {
   Object.keys(modelOptions).forEach(provider => {
     const hasKey = !!props.getProperty(keyProperty[provider]);
 
-    modelOptions[provider].forEach(model => {
-      if (passed[`${provider}|${model}`]) {
-        rows.push(passed[`${provider}|${model}`]);
+    modelOptions[provider].forEach(model => CONFIG_VALIDATION_OPTIONS.REASONING.forEach(reasoning => {
+      const previous = passed[`${provider}|${model}|${reasoning}`];
+      if (previous) {
+        rows.push(previous);
         return;
       }
 
@@ -7168,7 +7168,7 @@ function compareBehaviorAcrossModels() {
       }
 
       row[4] = Math.round((Date.now() - callStartedAt) / 100) / 10;
-    });
+    }));
   });
 
   sh.clear();
@@ -7187,7 +7187,7 @@ function compareBehaviorAcrossModels() {
 
   const count = status => rows.filter(r => r[3] === status).length;
   const lines = [
-    `행발 추천 모델 비교 ('행발비교' 시트, ${sourceRow}행 입력, 추론 ${reasoning})`,
+    `행발 추천 모델·추론 비교 ('행발비교' 시트, ${sourceRow}행 입력)`,
     '',
     `정상 ${count('정상')}개, 오류 ${count('오류')}개, 건너뜀 ${count('건너뜀')}개`,
   ];
