@@ -4096,15 +4096,43 @@ function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, 
     draft,
   ].join('\n');
 
-  
-  result = callAi_(provider, model, systemGuide, retryPrompt, reasoning);
-  parsed = normalizeNoEvidenceRecordResponse_(parseClaudeJson_(result.text));
+  // 재요청이 실패하거나 빈 답을 주거나 범위를 벗어나도 결과는 남긴다.
+  // 두 답 중 범위에 더 가까운 것을 쓰고, 범위를 벗어났으면 caution에 적는다.
+  const first = { parsed, usage: result.usage || {}, len };
+  let chosen = first;
+  let retryNote = '재요청 후에도 범위에 들어오지 않음.';
+
+  try {
+    const retryResult = callAi_(provider, model, systemGuide, retryPrompt, reasoning);
+    const retryParsed = normalizeNoEvidenceRecordResponse_(parseClaudeJson_(retryResult.text));
+    const retryLen = String(retryParsed.record_draft || '').length;
+
+    if (retryLen > 0 && charRangeDistance_(retryLen, minChars, maxChars) <= charRangeDistance_(len, minChars, maxChars)) {
+      chosen = { parsed: retryParsed, usage: retryResult.usage || {}, len: retryLen };
+    }
+  } catch (err) {
+    retryNote = `재요청 응답 처리 실패: ${String(err.message || err)}`;
+    log_('createRecordDraftWithLength_', 'RETRY_ERROR', retryNote);
+  }
+
+  if (charRangeDistance_(chosen.len, minChars, maxChars) > 0) {
+    const note = `설정 글자수 범위(${minChars}-${maxChars}자)를 벗어남: ${chosen.len}자. ${retryNote}`;
+    const caution = String(chosen.parsed.caution || '').trim();
+    chosen.parsed.caution = caution ? `${caution}\n${note}` : note;
+  }
 
   return {
-    parsed,
-    usage: result.usage || {},
+    parsed: chosen.parsed,
+    usage: chosen.usage,
     retry: true,
   };
+}
+
+// 글자수가 [min, max] 범위에서 얼마나 벗어났는지. 범위 안이면 0.
+function charRangeDistance_(len, minChars, maxChars) {
+  if (len < minChars) return minChars - len;
+  if (len > maxChars) return len - maxChars;
+  return 0;
 }
 
 function normalizeNoEvidenceRecordResponse_(parsed) {
