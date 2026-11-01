@@ -877,6 +877,8 @@ function autoProcessPendingCommonPhrases() {
       return;
     }
 
+    beginAutoRun_(scheduleNextAutoCommonPhraseTrigger_);
+
     const result = processPendingCommonPhrasesCore_();
 
     if (result.blocked) {
@@ -928,6 +930,7 @@ function autoProcessPendingCommonPhrases() {
     log_('autoProcessPendingCommonPhrases', 'ERROR', message);
 
   } finally {
+    endAutoRun_('AUTO_COMMON_PHRASE_TRIGGER', deleteAutoCommonPhraseTriggers_);
     lock.releaseLock();
   }
 }
@@ -1917,6 +1920,8 @@ function autoProcessPendingBehaviorRecommendations() {
       return;
     }
 
+    beginAutoRun_(scheduleNextAutoBehaviorRecommendationTrigger_, [SHEET_NAMES.behaviorRecommendations, 'status']);
+
     const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
     if (!sh) {
       PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
@@ -1963,6 +1968,7 @@ function autoProcessPendingBehaviorRecommendations() {
     toastAutoRecordDraft_(message, '행발 추천 문구 자동 처리 오류');
     log_('autoProcessPendingBehaviorRecommendations', 'ERROR', message);
   } finally {
+    endAutoRun_(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, deleteAutoBehaviorRecommendationTriggers_);
     lock.releaseLock();
   }
 }
@@ -6187,6 +6193,25 @@ function processPendingRecordDrafts() {
   getUi_().alert(buildRecordDraftResultMessage_('이번 실행 결과', result));
 }
 
+// 실행이 6분 제한으로 강제 종료되면 끝에서 만드는 다음 예약이 사라져 자동 작업이 그대로 멈춘다.
+// 그래서 시작할 때 6분보다 긴 시간 뒤의 예비 예약을 먼저 만들어 둔다. 정상으로 끝나면 이어서 할 때는 다음 예약으로 바뀌고,
+// 끝났거나 멈췄을 때는 endAutoRun_이 지운다. 강제 종료됐을 때만 이 예약이 남아 이어서 만든다.
+const AUTO_BACKUP_DELAY_MS = 7 * 60 * 1000;
+
+// 자동 작업은 모두 스크립트 잠금을 잡고 돈다. 잠금을 잡은 지금 '생성중'인 행은 앞 실행이 강제 종료되며 남긴 것이라 '대기'로 돌린다.
+function beginAutoRun_(scheduleNext, staleStatus) {
+  scheduleNext(AUTO_BACKUP_DELAY_MS);
+
+  if (staleStatus) {
+    const changed = resetStatusValues_(staleStatus[0], staleStatus[1], ['생성중'], '대기');
+    if (changed) log_('beginAutoRun_', 'RECOVER', `${staleStatus[0]}: 앞 실행이 끊기며 남긴 생성중 ${changed}행을 대기로 돌림`);
+  }
+}
+
+function endAutoRun_(statusProperty, deleteTriggers) {
+  if ((PropertiesService.getUserProperties().getProperty(statusProperty) || 'OFF') !== 'ON') deleteTriggers();
+}
+
 // 자동 작업들은 스크립트 잠금 하나를 같이 쓴다. 다른 작업이 돌고 있어 잠금을 못 잡으면
 // 그냥 끝내지 말고 잠시 뒤로 다시 예약한다. 그러지 않으면 이 작업은 ON인 채로 멈춘다.
 function rescheduleAutoJobWhenBusy_(handlerName, statusProperty, scheduleNext) {
@@ -6218,6 +6243,8 @@ function autoProcessPendingRecordDrafts() {
       log_('autoProcessPendingRecordDrafts', 'STOP', '자동 생성 상태가 OFF라 실행하지 않음');
       return;
     }
+
+    beginAutoRun_(scheduleNextAutoRecordDraftTrigger_, [SHEET_NAMES.submissions, 'aiStatus']);
 
     const result = processPendingRecordDraftsCore_(false);
 
@@ -6274,6 +6301,7 @@ function autoProcessPendingRecordDrafts() {
     log_('autoProcessPendingRecordDrafts', 'ERROR', message);
 
   } finally {
+    endAutoRun_('AUTO_RECORD_DRAFT_TRIGGER', deleteAutoRecordDraftTriggers_);
     lock.releaseLock();
   }
 }
@@ -6874,6 +6902,8 @@ function autoProcessPendingManualAddedRecords() {
       return;
     }
 
+    beginAutoRun_(scheduleNextAutoManualRecordTrigger_);
+
     const result = processManualAddedRecordsCore_();
 
     if (result.blocked) {
@@ -6908,6 +6938,7 @@ function autoProcessPendingManualAddedRecords() {
     toastAutoRecordDraft_(message, '수동추가 자동 처리 오류');
     log_('autoProcessPendingManualAddedRecords', 'ERROR', message);
   } finally {
+    endAutoRun_(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, deleteAutoManualRecordTriggers_);
     lock.releaseLock();
   }
 }
@@ -7808,6 +7839,8 @@ function autoProcessPendingSubmissionCollections() {
       return;
     }
 
+    beginAutoRun_(scheduleNextAutoSubmissionCollectionTrigger_);
+
     const result = processPendingSubmissionCollectionsCore_();
     saveAutoSubmissionCollectionLastResult_(result.blocked ? 'BLOCKED' : result.remaining === 0 ? 'DONE' : 'RUNNING', result);
 
@@ -7853,6 +7886,7 @@ function autoProcessPendingSubmissionCollections() {
     toastAutoRecordDraft_(message, '제출물 자동 수집 오류');
     log_('autoProcessPendingSubmissionCollections', 'ERROR', message);
   } finally {
+    endAutoRun_(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, deleteAutoSubmissionCollectionTriggers_);
     lock.releaseLock();
   }
 }
@@ -8840,6 +8874,8 @@ function autoProcessPendingStudentFinalRecords() {
       return;
     }
 
+    beginAutoRun_(scheduleNextAutoStudentFinalRecordTrigger_, [SHEET_NAMES.studentFinalRecords, 'finalStatus']);
+
     const result = processPendingStudentFinalRecordsCore_(false);
 
     if (result.blocked) {
@@ -8895,6 +8931,7 @@ function autoProcessPendingStudentFinalRecords() {
     log_('autoProcessPendingStudentFinalRecords', 'ERROR', message);
 
   } finally {
+    endAutoRun_('AUTO_STUDENT_FINAL_TRIGGER', deleteAutoStudentFinalRecordTriggers_);
     lock.releaseLock();
   }
 }
