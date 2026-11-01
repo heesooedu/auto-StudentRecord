@@ -138,7 +138,7 @@ function showAssistantHintOnOpen_() {
 
   try {
     SpreadsheetApp.getActiveSpreadsheet().toast(
-      '메뉴 [생기부 자동화] > [▶ 생기부 도우미 열기]에서 시작하세요.',
+      '메뉴 [📝 생기부 자동화] > [▶ 생기부 도우미 열기]에서 시작하세요.',
       '생기부 도우미',
       8
     );
