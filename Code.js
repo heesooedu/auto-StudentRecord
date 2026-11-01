@@ -76,10 +76,13 @@ const BEHAVIOR_TRAIT_KEYWORDS = [
   '정서적 지지',
   '따뜻함',
   '학업 열의',
-  '자존감',
   '회복탄력성',
   '공동체 의식',
   '도전 정신',
+];
+
+// 보완이 필요한 특성. 도우미 화면에서 다른 색으로 보여 준다.
+const BEHAVIOR_NEGATIVE_TRAIT_KEYWORDS = [
   '규칙 미준수',
   '지각 잦음',
   '수업 방해',
@@ -89,6 +92,8 @@ const BEHAVIOR_TRAIT_KEYWORDS = [
   '공격적',
   '자기중심적',
 ];
+
+BEHAVIOR_TRAIT_KEYWORDS.push(...BEHAVIOR_NEGATIVE_TRAIT_KEYWORDS);
 
 const DASHBOARD_SHEET_NAME = '현황판';
 

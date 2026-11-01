@@ -225,6 +225,8 @@
   .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 12px; cursor: pointer; font-size: 13px; color: var(--text); display: inline-flex; align-items: center; gap: 4px; }
   .chip.on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); font-weight: 600; }
   .chip input { margin: 0; }
+  .chip.neg { border-style: dashed; }
+  .chip.neg.on { border-color: var(--warn); border-style: solid; background: var(--warn-soft); color: var(--warn); }
   .record.dup { border-color: var(--warn); }
   .record.open { border-color: var(--primary); margin: 8px; }
   .record.open textarea { min-height: 0; margin: 0; }

@@ -120,7 +120,7 @@ const BEHAVIOR_INPUT_FIELDS = ['studentName', 'selectedTraits', 'customTraits', 
 
 function uiListBehaviorRows() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
-  const result = { traits: BEHAVIOR_TRAIT_KEYWORDS, rows: [] };
+  const result = { traits: BEHAVIOR_TRAIT_KEYWORDS, negativeTraits: BEHAVIOR_NEGATIVE_TRAIT_KEYWORDS, rows: [] };
   if (!sh) return result;
 
   const h = headerMap_(sh);
