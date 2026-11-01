@@ -639,6 +639,30 @@ function processPendingCommonPhrasesCore_() {
   const generatedTextSet = buildExactTextSet_(generatedTexts);
   let nextIndex = getNextCommonPhraseIndex_(total, outputValues);
 
+  // 빠른 생성: 다음 몇 개 문구를 같은 '이전 문구' 목록으로 한꺼번에 받는다.
+  // 그 문구의 첫 시도는 미리 보낸 프롬프트(fastPrompts)를 그대로 써야 받아 둔 답과 맞는다.
+  // 서로의 결과는 보지 못하므로, 똑같은 문구가 나오면 기존 중복 재시도가 최신 목록으로 다시 만든다.
+  const prefetcher = createAiPrefetcher_(config, 'processPendingCommonPhrasesCore_');
+  const fastPrompts = {};
+  const upcomingPhraseRequests = fromIndex => {
+    const requests = [];
+    const limit = Math.min(FAST_GENERATION_CONCURRENCY, batchSize - processed);
+    const previousTexts = getRecentCommonPhraseTexts_(generatedTexts, previousLimit);
+
+    for (let idx = fromIndex; idx > 0 && requests.length < limit; idx = getNextCommonPhraseIndex_(total, outputValues, idx + 1)) {
+      if (!fastPrompts[idx]) {
+        fastPrompts[idx] = buildCommonPhrasePrompt_(prompt, sourceText, idx, total, previousTexts, {
+          previousLimit,
+          duplicatePhrase: '',
+          duplicateAttempt: 0,
+        });
+      }
+      requests.push({ provider, model, systemGuide, userPrompt: fastPrompts[idx], reasoning });
+    }
+
+    return requests;
+  };
+
   while (processed < batchSize) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
@@ -658,10 +682,12 @@ function processPendingCommonPhrasesCore_() {
     let phrase = '';
     let duplicatePhrase = '';
 
+    prefetcher.prefetch(() => upcomingPhraseRequests(index));
+
     try {
       for (let attempt = 1; attempt <= COMMON_PHRASE_DUPLICATE_RETRY_LIMIT + 1; attempt++) {
         const previousTexts = getRecentCommonPhraseTexts_(generatedTexts, previousLimit);
-        const userPrompt = buildCommonPhrasePrompt_(
+        const userPrompt = attempt === 1 && fastPrompts[index] ? fastPrompts[index] : buildCommonPhrasePrompt_(
           prompt,
           sourceText,
           index,
@@ -729,6 +755,8 @@ function processPendingCommonPhrasesCore_() {
       break;
     }
   }
+
+  prefetcher.finish();
 
   styleCommonPhraseSheet_();
 
@@ -1309,12 +1337,27 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
 
   writeBehaviorStatusRows_(sh, h.status, statusUpdates);
 
+  // generateBehaviorRecommendationWithCharRetry_의 첫 요청과 같은 요청을 만든다.
+  const prefetcher = createAiPrefetcher_(config, 'processBehaviorRecommendationRows_');
+  const upcomingBehaviorRequests = fromIndex => candidates
+    .slice(fromIndex, fromIndex + Math.min(FAST_GENERATION_CONCURRENCY, batchSize - processed))
+    .map(candidate => ({
+      provider: ai.provider,
+      model: ai.model,
+      systemGuide,
+      userPrompt: buildBehaviorRecommendationPrompt_(candidate.data, maxInputChars, behaviorPrompt, charRange, null),
+      reasoning: ai.reasoning,
+      responseSchema: BEHAVIOR_RESPONSE_SCHEMA,
+    }));
+
   for (let i = 0; i < candidates.length; i++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
     if (processed >= batchSize || elapsedSeconds > maxRunSeconds) break;
 
     const item = candidates[i];
     attempted++;
+
+    prefetcher.prefetch(() => upcomingBehaviorRequests(i));
 
     try {
       sh.getRange(item.row, h.status).setValue('생성중');
@@ -1369,6 +1412,8 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       }
     }
   }
+
+  prefetcher.finish();
 
   return {
     processed,
@@ -2012,6 +2057,7 @@ function setupSheets() {
     ['BATCH_SIZE', '5', '자동 생성 트리거 1회 실행당 처리할 학생 수'],
     ['MAX_RUN_SECONDS', '270', 'Apps Script 6분 제한 전에 안전 중단할 시간'],
     ['AUTO_NEXT_DELAY_MS', '30000', ''],
+    ['FAST_GENERATION', 'OFF', '빠른 생성(실험)\nON이면 학생 3명까지 AI에 한꺼번에 요청해 더 빨리 만듭니다.\n요청 한도(429)나 서버 오류가 나면 30분 동안 자동으로 한 명씩 보내는 방식으로 돌아갑니다.\nAPI 키를 처음 만들어 사용량 등급이 낮다면 켜지 않는 것을 권장합니다.'],
     ['COMMON_PHRASE_PREVIOUS_LIMIT', String(COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT), '공통문구 생성 시 AI 프롬프트에 포함할 최근 생성 문구 수\n기본 10개. 입력 토큰 절감을 위해 너무 크게 설정하지 않는 것을 권장합니다.'],
     ['PROMPT_1', defaultRecordDraftPrompt_(), '생기부초안 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
     ['PROMPT_2', defaultStudentFinalRecordPrompt_(), '학생별생기부 만들 때 지시 또는 강조 사항(없으면 SYSTEM_GUIDE를 따라감)'],
@@ -2510,12 +2556,13 @@ function readAiSuccessResponse_(provider, json) {
   return { text: extractClaudeOutputText_(json), usage: json.usage || {} };
 }
 
-// 여러 AI 요청을 UrlFetchApp.fetchAll로 한꺼번에 보낸다. requests: [{provider, model, systemGuide, userPrompt, reasoning, responseSchema}]
-// 첫 요청이 오류(429 등)이거나 잘렸거나 네트워크가 끊긴 요청만 callAi_로 하나씩 다시 보내 기존 재시도 규칙을 그대로 따른다.
-// 결과는 요청과 같은 순서로 {result} 또는 {error}다.
-function callAiParallel_(requests) {
+// 여러 AI 요청을 UrlFetchApp.fetchAll로 한 번에 보낸다. requests: [{provider, model, systemGuide, userPrompt, reasoning, responseSchema}]
+// 재시도는 하지 않는다. outcomes[i]는 {result} 또는 {error}이고, 오류 응답·잘린 답·연결 실패면 null이다.
+// codes[i]는 받은 HTTP 상태 코드(못 받았으면 0), fetchError는 fetchAll 자체가 실패했을 때의 오류다.
+function fetchAiBatch_(requests) {
   const props = PropertiesService.getUserProperties();
   const outcomes = requests.map(() => null);
+  const codes = requests.map(() => 0);
   const sendable = [];
 
   requests.forEach((req, index) => {
@@ -2533,14 +2580,15 @@ function callAiParallel_(requests) {
   });
 
   let responses = [];
+  let fetchError = null;
   if (sendable.length) {
     try {
       ensureAiTimeBudget_(0);
       responses = UrlFetchApp.fetchAll(sendable.map(item => item.fetch));
     } catch (err) {
       if (isAiTimeBudgetError_(err)) throw err;
-      // 한 요청이라도 연결이 끊기면 fetchAll 전체가 실패하므로, 모두 하나씩 다시 보낸다.
-      log_('callAiParallel_', 'RETRY', `동시 요청 실패, 하나씩 다시 보냅니다: ${String(err.message || err)}`);
+      // 한 요청이라도 연결이 끊기면 fetchAll 전체가 실패한다.
+      fetchError = err;
       responses = [];
     }
   }
@@ -2550,6 +2598,7 @@ function callAiParallel_(requests) {
     if (!res) return;
 
     const code = res.getResponseCode();
+    codes[item.index] = code;
     if (code < 200 || code >= 300) return;
 
     try {
@@ -2560,18 +2609,156 @@ function callAiParallel_(requests) {
     }
   });
 
-  sendable.forEach(item => {
-    if (outcomes[item.index]) return;
+  return { outcomes, codes, fetchError, sentIndexes: sendable.map(item => item.index) };
+}
 
-    const req = requests[item.index];
+// fetchAiBatch_로 한꺼번에 보낸 뒤, 오류(429 등)이거나 잘렸거나 네트워크가 끊긴 요청만 callAi_로 하나씩 다시 보내
+// 기존 재시도 규칙을 그대로 따른다. 결과는 요청과 같은 순서로 {result} 또는 {error}다.
+function callAiParallel_(requests) {
+  const batch = fetchAiBatch_(requests);
+  const outcomes = batch.outcomes;
+
+  if (batch.fetchError) {
+    log_('callAiParallel_', 'RETRY', `동시 요청 실패, 하나씩 다시 보냅니다: ${String(batch.fetchError.message || batch.fetchError)}`);
+  }
+
+  batch.sentIndexes.forEach(index => {
+    if (outcomes[index]) return;
+
+    const req = requests[index];
     try {
-      outcomes[item.index] = { result: callAi_(req.provider, req.model, req.systemGuide, req.userPrompt, req.reasoning, req.responseSchema) };
+      outcomes[index] = { result: callAi_(req.provider, req.model, req.systemGuide, req.userPrompt, req.reasoning, req.responseSchema) };
     } catch (err) {
-      outcomes[item.index] = { error: err };
+      outcomes[index] = { error: err };
     }
   });
 
   return outcomes;
+}
+
+// --- 빠른 생성(실험) -----------------------------------------------------
+// 설정 FAST_GENERATION이 ON이면 다음 학생 몇 명의 첫 요청을 fetchAll로 미리 한꺼번에 받아 둔다.
+// 생성 루프는 지금처럼 한 명씩 돌고, callAi_가 똑같은 요청이 오면 받아 둔 답을 꺼내 쓴다.
+// 분량 재요청, 오류 판정, 중단 규칙은 모두 기존 순차 경로를 그대로 따른다.
+// 안전장치:
+// - 한 번에 최대 FAST_GENERATION_CONCURRENCY개, 이번 실행에서 처리할 남은 수(BATCH_SIZE)를 넘겨 받지 않는다.
+// - 미리 받기에서 오류 응답이 하나라도 오면 이번 실행은 한 명씩으로 돌아가고, 오류 응답은 순차 경로가 다시 보낸다.
+// - 429나 서버 오류(5xx)면 FAST_GENERATION_PAUSE_MS 동안 다음 실행들도 한 명씩 보낸다.
+// - 남은 실행 시간이 요청 한 번에 모자라면 미리 받지 않는다.
+const FAST_GENERATION_CONCURRENCY = 3;
+const FAST_GENERATION_PAUSE_MS = 30 * 60 * 1000;
+const FAST_GENERATION_PAUSED_UNTIL_PROPERTY = 'FAST_GENERATION_PAUSED_UNTIL';
+let AI_PREFETCHED_ = {};
+let AI_PREFETCHED_COUNT_ = 0;
+
+function aiRequestKey_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
+  const text = JSON.stringify([
+    normalizeAiProvider_(provider),
+    String(model || ''),
+    String(systemGuide || ''),
+    String(userPrompt || ''),
+    normalizeReasoning_(reasoning),
+    responseSchema || null,
+  ]);
+  return Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, text, Utilities.Charset.UTF_8));
+}
+
+function takePrefetchedAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
+  if (AI_PREFETCHED_COUNT_ < 1) return null;
+
+  const key = aiRequestKey_(provider, model, systemGuide, userPrompt, reasoning, responseSchema);
+  const result = AI_PREFETCHED_[key];
+  if (!result) return null;
+
+  delete AI_PREFETCHED_[key];
+  AI_PREFETCHED_COUNT_--;
+  return result;
+}
+
+function clearPrefetchedAi_() {
+  AI_PREFETCHED_ = {};
+  AI_PREFETCHED_COUNT_ = 0;
+}
+
+function isFastGenerationOn_(config) {
+  if (String((config && config.FAST_GENERATION) || '').trim().toUpperCase() !== 'ON') return false;
+
+  const pausedUntil = Number(PropertiesService.getUserProperties().getProperty(FAST_GENERATION_PAUSED_UNTIL_PROPERTY) || 0);
+  return Date.now() >= pausedUntil;
+}
+
+// 생성 루프마다 하나 만든다. prefetch(makeRequests)는 지금 학생부터 차례로 보낼 첫 요청 목록을 만드는 함수를 받는다.
+// 빠른 생성이 꺼져 있으면 목록을 만들지도 않는다. 루프가 끝나면 finish()로 남은 답을 비운다.
+function createAiPrefetcher_(config, label) {
+  clearPrefetchedAi_();
+
+  let on = isFastGenerationOn_(config);
+  const attempted = {};
+
+  return {
+    prefetch(makeRequests) {
+      if (!on) return;
+
+      try {
+        const requests = makeRequests() || [];
+        const keys = requests.map(req => aiRequestKey_(req.provider, req.model, req.systemGuide, req.userPrompt, req.reasoning, req.responseSchema));
+
+        // 지금 학생의 요청을 이미 미리 보냈으면(받았든 못 받았든) 기다렸다가 다음 묶음을 보낸다.
+        if (!requests.length || attempted[keys[0]]) return;
+
+        const batch = [];
+        const batchKeys = [];
+        requests.forEach((req, i) => {
+          if (batch.length >= FAST_GENERATION_CONCURRENCY || attempted[keys[i]]) return;
+          batch.push(req);
+          batchKeys.push(keys[i]);
+        });
+
+        if (batch.length < 2) return;
+
+        ensureAiTimeBudget_(0);
+        batchKeys.forEach(key => { attempted[key] = true; });
+
+        const sent = fetchAiBatch_(batch);
+        sent.outcomes.forEach((outcome, i) => {
+          if (!outcome || !outcome.result || AI_PREFETCHED_[batchKeys[i]]) return;
+          AI_PREFETCHED_[batchKeys[i]] = outcome.result;
+          AI_PREFETCHED_COUNT_++;
+        });
+
+        const badCodes = sent.codes.filter(code => code && (code < 200 || code >= 300));
+        if (sent.fetchError || badCodes.length) {
+          on = false;
+
+          const overloaded = badCodes.some(code => code === 429 || code >= 500);
+          if (overloaded) {
+            PropertiesService.getUserProperties().setProperty(
+              FAST_GENERATION_PAUSED_UNTIL_PROPERTY,
+              String(Date.now() + FAST_GENERATION_PAUSE_MS)
+            );
+          }
+
+          log_(label, 'FAST_OFF', [
+            sent.fetchError ? `동시 요청 실패: ${String(sent.fetchError.message || sent.fetchError)}` : `오류 응답 ${badCodes.join(', ')}`,
+            overloaded ? `요청 한도 또는 서버 과부하로 ${FAST_GENERATION_PAUSE_MS / 60000}분 동안 한 명씩 보냅니다.` : '이번 실행은 한 명씩 보냅니다.',
+          ].join(' / '));
+        }
+      } catch (err) {
+        // 미리 받기는 덤이다. 실패하면 조용히 한 명씩 보내는 경로로 넘긴다.
+        on = false;
+        if (!isAiTimeBudgetError_(err)) {
+          log_(label, 'FAST_OFF', `미리 받기 실패, 한 명씩 보냅니다: ${String(err.message || err)}`);
+        }
+      }
+    },
+
+    finish() {
+      if (AI_PREFETCHED_COUNT_ > 0) {
+        log_(label, 'FAST', `미리 받았지만 이번 실행에서 쓰지 못한 답 ${AI_PREFETCHED_COUNT_}개`);
+      }
+      clearPrefetchedAi_();
+    },
+  };
 }
 
 // responseSchema를 주지 않으면 GPT·Gemini는 생기부 초안 형식(evidence_summary, record_draft, caution)으로 답하게 한다.
@@ -2579,6 +2766,9 @@ function callAiParallel_(requests) {
 function callAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
   provider = normalizeAiProvider_(provider);
   reasoning = normalizeReasoning_(reasoning);
+
+  const prefetched = takePrefetchedAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema);
+  if (prefetched) return prefetched;
 
   if (provider === 'gpt') {
     return callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema);
@@ -3260,6 +3450,7 @@ const CONFIG_VALIDATION_OPTIONS = {
   GPT_MODEL: ['gpt-6-luna', 'gpt-6.1-terra'],
   GEMINI_MODEL: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
   REASONING: ['none', 'low', 'medium'],
+  FAST_GENERATION: ['OFF', 'ON'],
 };
 
 function syncConfigModelsOnOpen_() {
@@ -6096,6 +6287,59 @@ function processPendingRecordDraftsCore_(showUi) {
 
   const submissionValues = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
 
+  const isDraftRowReady = values => {
+    const status = String(rowValueAt_(values, h.aiStatus) || '').trim();
+    const text = rowValueAt_(values, h.extractedText);
+    return (status === '대기' || status === '재시도필요') &&
+      !!rowValueAt_(values, h.submissionKey) && !!text && String(text).length >= 20;
+  };
+
+  const buildDraftUserPrompt = values => {
+    const promptSanitizeOptions = {
+      studentName: rowValueAt_(values, h.studentName),
+      studentNo: rowValueAt_(values, h.studentNo),
+      email: rowValueAt_(values, h.email),
+    };
+    const assignmentDescription = h.assignmentDescription ? rowValueAt_(values, h.assignmentDescription) : '';
+
+    return buildRecordDraftPrompt_({
+      promptTemplate: recordPromptTemplate,
+      courseName: rowValueAt_(values, h.courseName),
+      assignmentTitle: rowValueAt_(values, h.assignmentTitle),
+      state: rowValueAt_(values, h.state),
+      late: rowValueAt_(values, h.late),
+      gradeText: formatGradeContext_(
+        h.draftGrade ? rowValueAt_(values, h.draftGrade) : '',
+        h.assignedGrade ? rowValueAt_(values, h.assignedGrade) : '',
+        h.maxPoints ? rowValueAt_(values, h.maxPoints) : '',
+        h.teacherGrade ? rowValueAt_(values, h.teacherGrade) : ''
+      ),
+      assignmentDescription: sanitizePromptText_(
+        assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
+        promptSanitizeOptions
+      ),
+      recordDraftMinChars,
+      recordDraftMaxChars,
+      recordDraftMinBytes: byteRange.min,
+      recordDraftMaxBytes: byteRange.max,
+      extractedText: truncate_(sanitizePromptText_(rowValueAt_(values, h.extractedText), promptSanitizeOptions), maxInputChars),
+    });
+  };
+
+  const prefetcher = createAiPrefetcher_(config, 'processPendingRecordDraftsCore_');
+  const upcomingDraftRequests = fromRow => {
+    const requests = [];
+    const limit = Math.min(FAST_GENERATION_CONCURRENCY, batchSize - processed);
+
+    for (let r = fromRow; r <= lastRow && requests.length < limit; r++) {
+      const values = submissionValues[r - 2] || [];
+      if (!isDraftRowReady(values)) continue;
+      requests.push({ provider, model, systemGuide, userPrompt: buildDraftUserPrompt(values), reasoning });
+    }
+
+    return requests;
+  };
+
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
@@ -6143,25 +6387,10 @@ function processPendingRecordDraftsCore_(showUi) {
       continue;
     }
 
-    const promptSanitizeOptions = { studentName, studentNo, email };
     const gradeText = formatGradeContext_(draftGrade, assignedGrade, maxPoints, teacherGrade);
-    const userPrompt = buildRecordDraftPrompt_({
-      promptTemplate: recordPromptTemplate,
-      courseName,
-      assignmentTitle,
-      state,
-      late,
-      gradeText,
-      assignmentDescription: sanitizePromptText_(
-        assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
-        promptSanitizeOptions
-      ),
-      recordDraftMinChars,
-      recordDraftMaxChars,
-      recordDraftMinBytes: byteRange.min,
-      recordDraftMaxBytes: byteRange.max,
-      extractedText: truncate_(sanitizePromptText_(extractedText, promptSanitizeOptions), maxInputChars),
-    });
+    const userPrompt = buildDraftUserPrompt(rowValues);
+
+    prefetcher.prefetch(() => upcomingDraftRequests(row));
 
     try {
       sh.getRange(row, h.aiStatus).setValue('생성중');
@@ -6237,6 +6466,8 @@ function processPendingRecordDraftsCore_(showUi) {
       if (blocked) break;
     }
   }
+
+  prefetcher.finish();
 
   if (savedRows.length > 0) {
     applyNeisByteFormulasToRecords_(savedRows);
@@ -6691,6 +6922,37 @@ function processManualAddedRecordsCore_() {
     };
   }
 
+  const buildManualUserPrompt = (row, manualInput) => buildManualRecordPrompt_({
+    promptTemplate: manualConfig.prompt,
+    rowNumber: row,
+    manualInput: truncate_(manualInput, maxInputChars),
+    inputColumns: manualConfig.inputCols.map(colToA1_).join(', '),
+    recordDraftMinChars,
+    recordDraftMaxChars,
+    recordDraftMinBytes: byteRange.min,
+    recordDraftMaxBytes: byteRange.max,
+  });
+
+  const prefetcher = createAiPrefetcher_(config, 'processManualAddedRecordsCore_');
+  const upcomingManualRequests = fromRow => {
+    const requests = [];
+    const limit = Math.min(FAST_GENERATION_CONCURRENCY, batchSize - processed);
+
+    for (let r = fromRow; r <= lastRow && requests.length < limit; r++) {
+      const index = r - manualConfig.startRow;
+      const values = manualValues[index] || [];
+      const note = String((outputNotes[index] && outputNotes[index][0]) || '').trim();
+      if (String(rowValueAt_(values, manualConfig.outputCol) || '').trim() || isManualOutputHandledNote_(note)) continue;
+
+      const manualInput = buildManualInputFromRowValues_(values, headers, manualConfig.inputCols);
+      if (manualInput.length < 20) continue;
+
+      requests.push({ provider, model, systemGuide, userPrompt: buildManualUserPrompt(r, manualInput), reasoning });
+    }
+
+    return requests;
+  };
+
   for (let row = manualConfig.startRow; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
@@ -6721,16 +6983,9 @@ function processManualAddedRecordsCore_() {
       continue;
     }
 
-    const userPrompt = buildManualRecordPrompt_({
-      promptTemplate: manualConfig.prompt,
-      rowNumber: row,
-      manualInput: truncate_(manualInput, maxInputChars),
-      inputColumns: manualConfig.inputCols.map(colToA1_).join(', '),
-      recordDraftMinChars,
-      recordDraftMaxChars,
-      recordDraftMinBytes: byteRange.min,
-      recordDraftMaxBytes: byteRange.max,
-    });
+    const userPrompt = buildManualUserPrompt(row, manualInput);
+
+    prefetcher.prefetch(() => upcomingManualRequests(row));
 
     const outputCell = sh.getRange(row, manualConfig.outputCol);
 
@@ -6784,6 +7039,8 @@ function processManualAddedRecordsCore_() {
       }
     }
   }
+
+  prefetcher.finish();
 
   const remaining = countPendingManualAddedRows_();
 
@@ -8161,6 +8418,43 @@ function processPendingStudentFinalRecordsCore_(showUi) {
     };
   }
 
+  // get(col)은 그 행의 칸 값을 돌려준다. 루프는 칸을 바로 읽고, 미리 받기는 한 번에 읽어 둔 값을 쓴다.
+  const buildFinalUserPrompt = get => buildStudentFinalRecordPrompt_({
+    promptTemplate: studentFinalPromptTemplate,
+    courseName: get(h.courseName),
+    assignmentCount: get(h.assignmentCount),
+    evidencePack: sanitizePromptText_(get(h.evidencePack), {
+      studentName: get(h.studentName),
+      studentNo: get(h.studentNo),
+      email: get(h.email),
+    }),
+    recordDraftMinChars,
+    recordDraftMaxChars,
+    recordDraftMinBytes: byteRange.min,
+    recordDraftMaxBytes: byteRange.max,
+  });
+
+  const prefetcher = createAiPrefetcher_(config, 'processPendingStudentFinalRecordsCore_');
+  let finalValues = null;
+  const upcomingFinalRequests = fromRow => {
+    if (!finalValues) finalValues = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+
+    const requests = [];
+    const limit = Math.min(FAST_GENERATION_CONCURRENCY, batchSize - processed);
+
+    for (let r = fromRow; r <= lastRow && requests.length < limit; r++) {
+      const values = finalValues[r - 2] || [];
+      const get = col => rowValueAt_(values, col);
+      const status = String(get(h.finalStatus) || '').trim();
+      if (status !== '대기' && status !== '재시도필요') continue;
+      if (!get(h.studentName) || !get(h.evidencePack)) continue;
+
+      requests.push({ provider, model, systemGuide, userPrompt: buildFinalUserPrompt(get), reasoning });
+    }
+
+    return requests;
+  };
+
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
@@ -8194,17 +8488,9 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       continue;
     }
 
-    const promptSanitizeOptions = { studentName, studentNo, email };
-    const userPrompt = buildStudentFinalRecordPrompt_({
-      promptTemplate: studentFinalPromptTemplate,
-      courseName,
-      assignmentCount,
-      evidencePack: sanitizePromptText_(evidencePack, promptSanitizeOptions),
-      recordDraftMinChars,
-      recordDraftMaxChars,
-      recordDraftMinBytes: byteRange.min,
-      recordDraftMaxBytes: byteRange.max,
-    });
+    const userPrompt = buildFinalUserPrompt(col => valueAt_(sh, row, col));
+
+    prefetcher.prefetch(() => upcomingFinalRequests(row));
 
     try {
       sh.getRange(row, h.finalStatus).setValue('생성중');
@@ -8272,6 +8558,8 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       if (blocked) break;
     }
   }
+
+  prefetcher.finish();
 
   if (touchedRows.length > 0) {
     formatStudentFinalRecordRows_(touchedRows);
