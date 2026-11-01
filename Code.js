@@ -231,7 +231,8 @@ function onOpen() {
     .addSeparator()
     .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
     .addSeparator()
-    .addItem('AI 모델·추론 조합 점검', 'checkAllAiCombinations');
+    .addItem('AI 모델·추론 조합 점검', 'checkAllAiCombinations')
+    .addItem('행발 추천 모든 모델로 비교 (선택한 행)', 'compareBehaviorAcrossModels');
 
   ui.createMenu('⭐ 생기부 자동화')
     .addItem('▶ 생기부 도우미 열기', 'openAssistant')
@@ -1333,7 +1334,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
         throw makeBehaviorResponseFormatError_('recommended_record 값이 비어 있습니다.');
       }
 
-      writeBehaviorRecommendationResult_(sh, h, item.row, recommendedRecord, '생성완료', caution);
+      writeBehaviorRecommendationResult_(sh, h, item.row, recommendedRecord, '생성완료', caution, generated.reframes);
       processed++;
       Utilities.sleep(1200);
     } catch (err) {
@@ -1429,8 +1430,44 @@ function behaviorRecommendationSystemGuide_() {
     '비난, 낙인, 모욕적 표현은 쓰지 않는다.',
     '보완점은 부정적인 사실을 그대로 쓰지 않고, 그 이면의 장점이나 성장 가능성으로 돌려 표현한다.',
     'caution에는 교사가 참고할 점(근거가 부족한 특성 등)이 있을 때만 짧게 쓰고, 없으면 빈 문자열로 둔다.',
-    '반드시 JSON 형식으로만 답한다.',
-    '{"recommended_record":"", "caution":""}',
+    '반드시 JSON 형식으로만 답한다. reframes를 먼저 채운 뒤 recommended_record를 쓴다.',
+    BEHAVIOR_RESPONSE_FORMAT,
+  ].join('\n');
+}
+
+// reframes를 recommended_record보다 앞에 두어, 보완점을 돌려 쓴 표현 후보를 먼저 떠올린 뒤 본문을 쓰게 한다.
+const BEHAVIOR_RESPONSE_FORMAT = '{"reframes":[{"trait":"", "candidates":["", "", ""], "chosen":""}], "recommended_record":"", "caution":""}';
+const BEHAVIOR_RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    reframes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          trait: { type: 'string' },
+          candidates: { type: 'array', items: { type: 'string' } },
+          chosen: { type: 'string' },
+        },
+        required: ['trait', 'candidates', 'chosen'],
+      },
+    },
+    recommended_record: { type: 'string' },
+    caution: { type: 'string' },
+  },
+  required: ['reframes', 'recommended_record', 'caution'],
+};
+
+function buildBehaviorReframeInstruction_() {
+  return [
+    '[보완점 돌려 쓰기 절차]',
+    '1. improvementNeeded 등 입력에 부정적인 내용이 있으면, 하나씩 reframes에 담는다. trait에는 원래 내용을 짧게 쓴다. 부정적인 내용이 없으면 reframes는 빈 배열로 둔다.',
+    '2. 각 보완점마다 "행동 → 그 행동 뒤에 있는 성향 → 그 성향을 가치 있게 보는 관점" 순서로 생각하여, 서로 다른 관점의 돌려 쓴 표현을 candidates에 3개 쓴다.',
+    "3. 처음 떠오르는 무난한 표현에 머물지 않는다. '성장 가능성이 기대됨', '노력한다면', '~할 필요가 있음', '~하면 좋겠음' 같은 상투적인 표현은 후보로 쓰지 않는다.",
+    '4. 후보는 긍정적으로 읽히되, 담임교사가 읽으면 어떤 모습을 말하는지 알아챌 수 있어야 한다.',
+    '5. 후보 중 학생의 다른 특성과 가장 자연스럽게 이어지는 것을 chosen에 쓰고, recommended_record에 그 표현을 녹여 쓴다.',
   ].join('\n');
 }
 
@@ -1521,11 +1558,12 @@ function buildBehaviorRecommendationPrompt_(data, maxInputChars, behaviorPrompt,
     '',
     behaviorPrompt || defaultBehaviorRecordPrompt_(),
     traitInstruction,
+    buildBehaviorReframeInstruction_(),
     charInstruction,
     retryInstruction,
     '',
     '[응답 형식]',
-    '{"recommended_record":"", "caution":""}',
+    BEHAVIOR_RESPONSE_FORMAT,
   ].join('\n'), maxInputChars || 30000);
 }
 
@@ -1572,7 +1610,8 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
         options.ai.model,
         options.systemGuide,
         userPrompt,
-        options.ai.reasoning
+        options.ai.reasoning,
+        BEHAVIOR_RESPONSE_SCHEMA
       );
       const parsed = parseBehaviorRecommendationJson_(result.text);
       const recommendedRecord = normalizeAiText_(parsed.recommended_record);
@@ -1582,6 +1621,7 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
         recommendedRecord,
         caution,
         charCount,
+        reframes: parsed.reframes,
       };
 
       if (!recommendedRecord) {
@@ -1674,7 +1714,33 @@ function parseBehaviorRecommendationJson_(text) {
   return {
     recommended_record: recommendedRecord,
     caution: parsed.caution === undefined ? '' : String(parsed.caution || ''),
+    reframes: normalizeBehaviorReframes_(parsed.reframes),
   };
+}
+
+// 모델마다 형식이 조금씩 달라도 [{trait, candidates[], chosen}] 모양으로 맞춘다. 형식이 틀리면 빈 배열로 두고 생성은 계속한다.
+function normalizeBehaviorReframes_(reframes) {
+  if (!Array.isArray(reframes)) return [];
+
+  return reframes
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({
+      trait: String(item.trait || '').trim(),
+      candidates: (Array.isArray(item.candidates) ? item.candidates : [])
+        .map(candidate => String(candidate || '').trim())
+        .filter(Boolean),
+      chosen: String(item.chosen || '').trim(),
+    }))
+    .filter(item => item.trait || item.candidates.length);
+}
+
+function formatBehaviorReframes_(reframes) {
+  if (!reframes || !reframes.length) return '';
+
+  return reframes.map(item => [
+    `- ${item.trait || '보완점'}`,
+    ...item.candidates.map(candidate => `  · ${candidate}${candidate === item.chosen ? ' (사용)' : ''}`),
+  ].join('\n')).join('\n');
 }
 
 function makeBehaviorResponseFormatError_(message) {
@@ -1687,15 +1753,19 @@ function isBehaviorResponseFormatError_(err) {
   return err && err.name === 'BehaviorResponseFormatError';
 }
 
-function writeBehaviorRecommendationResult_(sh, h, row, recommendedRecord, status, note) {
+function writeBehaviorRecommendationResult_(sh, h, row, recommendedRecord, status, note, reframes) {
   const record = String(recommendedRecord || '').trim();
   const byteCount = record ? neisByteCount_(record) : '';
   const cleanNote = String(note || '').trim();
-  const noteText = cleanNote
-    ? status === '생성완료'
-      ? `[caution]\n${cleanNote}`
-      : `[${status}]\n${cleanNote}`
-    : '';
+  const reframeText = formatBehaviorReframes_(reframes);
+  const noteText = [
+    cleanNote
+      ? status === '생성완료'
+        ? `[caution]\n${cleanNote}`
+        : `[${status}]\n${cleanNote}`
+      : '',
+    reframeText ? `[돌려 쓴 표현 후보]\n${reframeText}` : '',
+  ].filter(Boolean).join('\n\n');
 
   sh.getRange(row, h.recommendedRecord, 1, 3).setValues([[
     record,
@@ -2406,16 +2476,18 @@ function fetchAiWithinBudget_(url, options) {
   return UrlFetchApp.fetch(url, options);
 }
 
-function callAi_(provider, model, systemGuide, userPrompt, reasoning) {
+// responseSchema를 주지 않으면 GPT·Gemini는 생기부 초안 형식(evidence_summary, record_draft, caution)으로 답하게 한다.
+// Claude는 형식을 강제하지 않고 프롬프트의 JSON 예시를 따른다.
+function callAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
   provider = normalizeAiProvider_(provider);
   reasoning = normalizeReasoning_(reasoning);
 
   if (provider === 'gpt') {
-    return callOpenAi_(model, systemGuide, userPrompt, reasoning);
+    return callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema);
   }
 
   if (provider === 'gemini') {
-    return callGemini_(model, systemGuide, userPrompt, reasoning);
+    return callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema);
   }
 
   if (provider === 'claude') {
@@ -2530,7 +2602,30 @@ function rememberGeminiMinimalUnsupported_(model) {
 }
 
 
-function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
+const RECORD_DRAFT_RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    evidence_summary: { type: 'string' },
+    record_draft: { type: 'string' },
+    caution: { type: 'string' },
+  },
+  required: ['evidence_summary', 'record_draft', 'caution'],
+};
+
+// Gemini 형식에는 additionalProperties를 넣지 않는다(기존 초안 형식도 넣지 않고 써 왔다).
+function stripAdditionalProperties_(schema) {
+  if (Array.isArray(schema)) return schema.map(stripAdditionalProperties_);
+  if (!schema || typeof schema !== 'object') return schema;
+
+  const result = {};
+  Object.keys(schema).forEach(key => {
+    if (key !== 'additionalProperties') result[key] = stripAdditionalProperties_(schema[key]);
+  });
+  return result;
+}
+
+function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) {
   const apiKey = PropertiesService.getUserProperties().getProperty('OPENAI_API_KEY');
 
   if (!apiKey) {
@@ -2565,16 +2660,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
         type: 'json_schema',
         name: 'student_record_draft',
         strict: true,
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            evidence_summary: { type: 'string' },
-            record_draft: { type: 'string' },
-            caution: { type: 'string' },
-          },
-          required: ['evidence_summary', 'record_draft', 'caution'],
-        },
+        schema: responseSchema || RECORD_DRAFT_RESPONSE_SCHEMA,
       },
     },
   };
@@ -2684,7 +2770,7 @@ function formatUsageNumber_(snakeValue, camelValue) {
   return '';
 }
 
-function callGemini_(model, systemGuide, userPrompt, reasoning) {
+function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) {
   const apiKey = PropertiesService.getUserProperties().getProperty('GEMINI_API_KEY');
 
   if (!apiKey) {
@@ -2708,15 +2794,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
     response_format: {
       type: 'text',
       mime_type: 'application/json',
-      schema: {
-        type: 'object',
-        properties: {
-          evidence_summary: { type: 'string' },
-          record_draft: { type: 'string' },
-          caution: { type: 'string' },
-        },
-        required: ['evidence_summary', 'record_draft', 'caution'],
-      },
+      schema: stripAdditionalProperties_(responseSchema || RECORD_DRAFT_RESPONSE_SCHEMA),
     },
   };
 
@@ -6982,6 +7060,143 @@ function checkAllAiCombinations() {
 
   log_('checkAllAiCombinations', failed.length ? 'ERROR' : 'OK', lines.join('\n'));
   getUi_().alert(lines.join('\n'));
+}
+
+// 행발문구추천 시트에서 선택한 학생 한 명의 입력으로, 키가 저장된 모든 모델에 행발 추천을 만들어 '행발비교' 시트에 나란히 적는다.
+// 실제 생성과 같은 프롬프트·분량 범위·재요청 경로를 쓰고, 행발문구추천 시트에는 쓰지 않는다.
+function compareBehaviorAcrossModels() {
+  const ui = getUi_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const source = ss.getActiveSheet();
+
+  if (!source || source.getName() !== SHEET_NAMES.behaviorRecommendations) {
+    ui.alert('행발문구추천 시트에서 비교할 학생 행을 하나 선택한 뒤 실행하세요.');
+    return;
+  }
+
+  const sourceRow = source.getActiveRange().getRow();
+  if (sourceRow < 2) {
+    ui.alert('제목 줄이 아닌 학생 행을 선택하세요.');
+    return;
+  }
+
+  const h = headerMap_(source);
+  const lastCol = Math.max(source.getLastColumn(), BEHAVIOR_RECOMMENDATION_HEADERS.length);
+  const data = buildBehaviorRecommendationData_(source.getRange(sourceRow, 1, 1, lastCol).getValues()[0], h);
+
+  if (!data.hasSelectedTraits) {
+    ui.alert(`${sourceRow}행에 고른 특성이 없습니다. 특성을 고른 행을 선택하세요.`);
+    return;
+  }
+
+  const config = getConfigMap_();
+  const reasoning = normalizeReasoning_(config.REASONING || config.reasoning);
+  const behaviorPrompt = getBehaviorRecordPrompt_(config);
+  const charRange = getBehaviorRecordCharRange_(config);
+  const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
+  const systemGuide = behaviorRecommendationSystemGuide_();
+  const props = PropertiesService.getUserProperties();
+  const keyProperty = { claude: 'CLAUDE_API_KEY', gpt: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY' };
+  const modelOptions = {
+    claude: CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL,
+    gpt: CONFIG_VALIDATION_OPTIONS.GPT_MODEL,
+    gemini: CONFIG_VALIDATION_OPTIONS.GEMINI_MODEL,
+  };
+  const headers = ['회사', '모델', '추론', '결과', '걸린 시간(초)', '바이트', '추천 문구', '돌려 쓴 표현 후보', '확인할 점 / 오류'];
+  const sh = ss.getSheetByName('행발비교') || ss.insertSheet('행발비교');
+
+  // 같은 입력·프롬프트로 다시 실행하면(6분 제한으로 끊긴 경우) 이미 '정상'인 모델은 그대로 두고 나머지만 만든다.
+  const runKey = Utilities.base64Encode(Utilities.computeDigest(
+    Utilities.DigestAlgorithm.MD5,
+    JSON.stringify([sourceRow, data, reasoning, behaviorPrompt, charRange.min, charRange.max]),
+    Utilities.Charset.UTF_8
+  ));
+  const passed = {};
+  if (sh.getRange(1, headers.length + 2).getValue() === runKey && sh.getLastRow() > 1) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, headers.length).getValues().forEach(r => {
+      if (r[3] === '정상') passed[`${r[0]}|${r[1]}`] = r;
+    });
+  }
+
+  const startedAt = Date.now();
+  const rows = [];
+
+  Object.keys(modelOptions).forEach(provider => {
+    const hasKey = !!props.getProperty(keyProperty[provider]);
+
+    modelOptions[provider].forEach(model => {
+      if (passed[`${provider}|${model}`]) {
+        rows.push(passed[`${provider}|${model}`]);
+        return;
+      }
+
+      const row = [provider, model, reasoning, '', '', '', '', '', ''];
+      rows.push(row);
+
+      if (!hasKey) {
+        row[3] = '건너뜀';
+        row[8] = 'API 키가 저장되어 있지 않음';
+        return;
+      }
+
+      // 재요청까지 하면 모델 하나에 두 번 부를 수 있으므로 여유를 두고 멈춘다.
+      if ((Date.now() - startedAt) / 1000 > 240) {
+        row[3] = '건너뜀';
+        row[8] = '실행 시간 제한에 가까워 이번에는 만들지 않음. 같은 행을 선택하고 메뉴를 한 번 더 실행하면 이어서 만듭니다.';
+        return;
+      }
+
+      const callStartedAt = Date.now();
+
+      try {
+        const generated = generateBehaviorRecommendationWithCharRetry_({
+          ai: { provider, model, reasoning },
+          systemGuide,
+          data,
+          maxInputChars,
+          behaviorPrompt,
+          charRange,
+        });
+        row[3] = '정상';
+        row[5] = generated.charCount;
+        row[6] = generated.recommendedRecord;
+        row[7] = formatBehaviorReframes_(generated.reframes);
+        row[8] = generated.caution;
+      } catch (err) {
+        row[3] = isAiTimeBudgetError_(err) ? '건너뜀' : '오류';
+        row[8] = String(err.message || err).slice(0, 1000);
+      }
+
+      row[4] = Math.round((Date.now() - callStartedAt) / 100) / 10;
+    });
+  });
+
+  sh.clear();
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  sh.getRange(1, headers.length + 1).setValue(
+    `${sourceRow}행 비교 · ${formatByteRange_(charRange)} · ${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm')}`
+  );
+  sh.getRange(1, headers.length + 2).setValue(runKey).setFontColor('#ffffff');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(7, 420);
+  sh.setColumnWidth(8, 320);
+  sh.setColumnWidth(9, 260);
+  sh.getRange(2, 1, rows.length, headers.length).setWrap(true).setVerticalAlignment('top');
+  ss.setActiveSheet(sh);
+
+  const count = status => rows.filter(r => r[3] === status).length;
+  const lines = [
+    `행발 추천 모델 비교 ('행발비교' 시트, ${sourceRow}행 입력, 추론 ${reasoning})`,
+    '',
+    `정상 ${count('정상')}개, 오류 ${count('오류')}개, 건너뜀 ${count('건너뜀')}개`,
+  ];
+  if (rows.some(r => r[3] === '건너뜀' && /실행 시간/.test(r[8]))) {
+    lines.push('', '시간이 모자라 일부 모델을 건너뛰었습니다. 같은 행을 선택하고 메뉴를 한 번 더 실행하면 이어서 만듭니다.');
+  }
+
+  log_('compareBehaviorAcrossModels', count('오류') ? 'ERROR' : 'OK', lines.join('\n'));
+  ui.alert(lines.join('\n'));
 }
 
 function clearOpenAiApiKey() {
