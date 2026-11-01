@@ -604,7 +604,10 @@
 
   function draftStatusPill(s) {
     const status = String(s.aiStatus || '');
-    if (status === '대기' || status === '생성중') return `<span class="pill run">${esc(status)}</span>`;
+    if (status === '대기' || status === '생성중') {
+      // 자동 진행이 멈췄는데 남아 있는 것은 진행 중이 아니라 멈춘 것이다.
+      return S.boot.status.drafts.state === 'ON' ? `<span class="pill run">${esc(status)}</span>` : '<span class="pill warn">멈춤</span>';
+    }
     if (status === '오류' || status === '재시도필요') return `<span class="pill err">${esc(status)}</span>`;
     if (s.hasDraft) return '<span class="pill ok">초안 있음</span>';
     return status ? `<span class="pill">${esc(status)}</span>` : '<span class="pill">초안 없음</span>';
@@ -704,8 +707,11 @@
     const title = kind === 'review'
       ? `${esc(r.courseName)} · ${esc(r.assignmentTitle)}`
       : `${esc(r.courseName)} · 과제 ${esc(r.assignmentCount)}개`;
+    const finalRunning = S.boot.status.final.state === 'ON';
     const status = kind === 'final' && r.finalStatus && r.finalStatus !== '생성완료'
-      ? `<span class="pill ${r.finalStatus === '오류' ? 'err' : 'run'}">${esc(r.finalStatus)}</span>` : '';
+      ? r.finalStatus === '오류' ? `<span class="pill err">오류</span>`
+        : finalRunning ? `<span class="pill run">${esc(r.finalStatus)}</span>` : '<span class="pill warn">멈춤</span>'
+      : '';
 
     return `
       <div class="record ${r.teacherChecked ? 'checked' : ''}">
@@ -771,15 +777,24 @@
       ${drafts.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="final">다음: 초안 합치기 (선택) →</button></div>' : ''}`;
   }
 
+  // 아직 합치지 못한 학생(대기·생성중·재시도필요·오류) 수
+  function finalLeftover() {
+    return (S.finals || []).filter(r => ['대기', '생성중', '재시도필요', '오류'].includes(String(r.finalStatus || ''))).length;
+  }
+
   function viewFinal() {
     const c = S.boot.counts;
     const running = S.boot.status.final.state === 'ON';
     const finals = S.finals || [];
+    const leftover = finalLeftover();
 
     return `
       <h1>초안 합치기</h1>
       <p class="lead">체크한 과제(${c.includedAssignments}개)의 초안을 학생별로 묶어 하나의 생기부로 만들어요.</p>
       ${busyNote()}
+      ${!running && leftover ? `
+        <div class="card row between"><div>멈추거나 오류가 나서 만들지 못한 학생이 <b>${leftover}</b>명 있어요.</div>
+          <button class="btn" data-action="resume-final" ${S.busy ? 'disabled' : ''}>남은 학생만 이어서 만들기</button></div>` : ''}
       ${promptCard('PROMPT_2', '초안 합치기 프롬프트 확인')}
       <div class="card row between">
         <div>초안 <b>${c.drafts}</b>개를 바탕으로 만들어요.</div>
@@ -1010,9 +1025,23 @@
         updatePolling();
       });
     },
+    async 'resume-final'() {
+      if (!await preparePrompt('PROMPT_2')) return;
+      await withBusy('남은 학생을 이어서 합치는 중…', async () => {
+        const result = await call('uiResumeFinalRecords');
+        S.finals = await call('uiListFinalRecords');
+        S.boot = await call('uiGetBootstrap');
+        showMessages(result, '이어서 만들기를 시작했어요.');
+        updatePolling();
+      });
+    },
     async 'make-final'() {
       if (!await preparePrompt('PROMPT_2')) return;
-      if (!await confirmModal('초안 합치기', '체크한 과제의 초안을 학생별로 묶어 하나의 생기부로 합칠까요?', '합치기')) return;
+      const leftover = finalLeftover();
+      const message = leftover
+        ? `만들지 못한 학생 ${leftover}명이 남아 있어요. 그 학생만 만들려면 [남은 학생만 이어서 만들기]를 누르세요.\n\n그래도 체크한 과제의 초안을 모든 학생에 대해 처음부터 다시 합칠까요?`
+        : '체크한 과제의 초안을 학생별로 묶어 하나의 생기부로 합칠까요?';
+      if (!await confirmModal('초안 합치기', message, '합치기')) return;
       await withBusy('학생별로 초안을 합치는 중… 몇 분 걸릴 수 있어요.', async () => {
         const result = await call('uiStartFinalRecords');
         S.finals = await call('uiListFinalRecords');

@@ -573,8 +573,38 @@ function uiQueueDrafts(submissionKeys) {
 }
 
 function uiStartDrafts() {
+  // 실행이 끊겨 '생성중'으로 남은 제출물도 이어서 만든다.
+  if (PropertiesService.getUserProperties().getProperty('AUTO_RECORD_DRAFT_TRIGGER') !== 'ON') {
+    withDocumentLock_(() => resetStatusValues_(SHEET_NAMES.submissions, 'aiStatus', ['생성중'], '대기'));
+  }
   const result = runWithCollectedUi_(() => startAutoRecordDraftTrigger());
   return Object.assign(result, { status: uiGetStatus() });
+}
+
+// 초안 합치기를 처음부터 다시 하지 않고, 멈추거나 오류 난 학생만 이어서 만든다.
+function uiResumeFinalRecords() {
+  if (PropertiesService.getUserProperties().getProperty('AUTO_STUDENT_FINAL_TRIGGER') !== 'ON') {
+    withDocumentLock_(() => resetStatusValues_(SHEET_NAMES.studentFinalRecords, 'finalStatus', ['생성중', '오류'], '대기'));
+  }
+  const result = runWithCollectedUi_(() => startAutoStudentFinalRecordTrigger_());
+  return Object.assign(result, { status: uiGetStatus() });
+}
+
+// header 열에서 from 값인 칸을 to로 바꾼다. 바꾼 개수를 돌려준다.
+function resetStatusValues_(sheetName, header, from, to) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  const col = headerMap_(sh)[header];
+  if (!col) return 0;
+
+  const range = sh.getRange(2, col, sh.getLastRow() - 1, 1);
+  const values = range.getValues();
+  let changed = 0;
+  values.forEach(r => {
+    if (from.includes(String(r[0] || '').trim())) { r[0] = to; changed++; }
+  });
+  if (changed) range.setValues(values);
+  return changed;
 }
 
 function uiStopAll() {
@@ -632,7 +662,7 @@ function uiGetStatus() {
     common: {
       state: stateOf('AUTO_COMMON_PHRASE_TRIGGER', 'autoProcessPendingCommonPhrases'),
       triggers: triggerCount('autoProcessPendingCommonPhrases'),
-      // 공통문구는 [문구 만들기]를 다시 누르면 처음부터 새로 만들어서, 멈춘 뒤 남은 빈 칸은 이어서 할 작업이 아니다.
+      // 공통문구는 [문구 만들기]를 다시 누르면 처음부터 새로 만든다. 오류로 멈춘 뒤 남은 빈 칸은 화면의 [남은 것 이어서 만들기]로 따로 보여 준다.
       remaining: props.getProperty('AUTO_COMMON_PHRASE_TRIGGER') === 'ON' ? countPendingCommonPhrases_() : 0,
       last: getAutoCommonPhraseLastResult_(),
     },

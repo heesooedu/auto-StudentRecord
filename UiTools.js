@@ -34,7 +34,14 @@ function uiGetCommonPhrases() {
     sourceText: String(input[1] || ''),
     count: count || 10,
     phrases,
+    pending: countPendingCommonPhrases_(),
   };
+}
+
+// 멈춘 공통문구를 지우지 않고 빈 칸만 이어서 만든다.
+function uiResumeCommonPhrases() {
+  const result = runWithCollectedUi_(() => startAutoCommonPhraseTrigger_());
+  return Object.assign(result, { status: uiGetStatus(), data: uiGetCommonPhrases() });
 }
 
 function uiStartCommonPhrases(input) {
@@ -552,7 +559,24 @@ function uiClearManualOutputs() {
   return uiGetManual();
 }
 
-function uiStartManual() {
+function uiStartManual(options) {
+  // 오류 메모가 있는 행은 만들기 대상에서 빠지므로, 메모를 지워 다시 만든다.
+  if (options && options.retryErrors) {
+    withDocumentLock_(() => {
+      const sh = getSheet_(MANUAL_SHEET_NAME);
+      const config = getManualRecordConfig_(getConfigMap_());
+      const lastRow = sh.getLastRow();
+      if (lastRow < config.startRow) return;
+      const range = sh.getRange(config.startRow, config.outputCol, lastRow - config.startRow + 1, 1);
+      const values = range.getValues();
+      const notes = range.getNotes();
+      notes.forEach((n, i) => {
+        if (!String(values[i][0] || '').trim() && /^\[수동추가 오류\]/.test(String(n[0] || '').trim())) {
+          sh.getRange(config.startRow + i, config.outputCol).clearNote();
+        }
+      });
+    });
+  }
   const result = runWithCollectedUi_(() => generateManualAddedRecords());
   return Object.assign(result, { status: uiGetStatus(), data: uiGetManual() });
 }
