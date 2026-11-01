@@ -557,7 +557,7 @@
       ${list.length === 0
         ? '<div class="card empty">아직 가져온 과제가 없어요.<br>위의 [Classroom에서 과제 가져오기]를 눌러 주세요.</div>'
         : `<div class="list">${groupHtml || '<div class="empty">검색 결과가 없어요.</div>'}</div>`}
-      ${included > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="collect">다음: 제출물 수집 →</button></div>' : ''}`;
+      ${list.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-action="go-collect">다음: 제출물 수집 →</button></div>' : ''}`;
   }
 
   function statusPanel(job, unit) {
@@ -1121,6 +1121,13 @@
       } catch (err) {
         showError(err);
       }
+    },
+    // 체크 저장이 서버에서 돌아오기 전에 누를 수도 있어 화면의 체크박스도 함께 본다.
+    async 'go-collect'() {
+      const checked = (S.assignments || []).some(a => a.includeInFinal) ||
+        !!document.querySelector('[data-action="toggle-assignment"]:checked');
+      if (!checked && !await confirmModal('체크한 과제 없음', '아직 체크한 과제가 없어요.\n체크한 과제만 제출물을 모을 수 있어요. 그래도 다음으로 갈까요?', '그래도 이동')) return;
+      go('collect');
     },
     async 'save-settings'() {
       const patch = {};
