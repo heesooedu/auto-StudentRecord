@@ -206,7 +206,7 @@ function onOpen() {
     .addSeparator()
     .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn');
 
-  ui.createMenu('📝 생기부 자동화')
+  ui.createMenu('⭐ 생기부 자동화')
     .addItem('▶ 생기부 도우미 열기', 'openAssistant')
     .addSeparator()
     .addSubMenu(advancedMenu)
