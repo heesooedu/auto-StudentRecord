@@ -2447,13 +2447,35 @@ function extractClaudeOutputText_(json) {
     .join('\n');
 }
 
-function getGeminiThinkingLevel_(reasoning) {
+function getGeminiThinkingLevel_(reasoning, model) {
   reasoning = normalizeReasoning_(reasoning);
 
   if (reasoning === 'medium') return 'medium';
   if (reasoning === 'low') return 'low';
 
-  return 'minimal';
+  return isGeminiMinimalUnsupported_(model) ? 'low' : 'minimal';
+}
+
+// minimal을 400으로 거절한 모델을 기억해 둔다. 알려진 모델은 처음부터 low로 보내 헛 호출을 줄인다.
+const GEMINI_MINIMAL_UNSUPPORTED_MODELS = ['gemini-3.8-flash', 'gemini-3.7-flash'];
+
+function isGeminiMinimalUnsupported_(model) {
+  const value = String(model || '').trim().toLowerCase();
+  if (GEMINI_MINIMAL_UNSUPPORTED_MODELS.includes(value)) return true;
+
+  try {
+    return CacheService.getUserCache().get(`GEMINI_NO_MINIMAL_${value}`) === '1';
+  } catch (err) {
+    return false;
+  }
+}
+
+function rememberGeminiMinimalUnsupported_(model) {
+  try {
+    CacheService.getUserCache().put(`GEMINI_NO_MINIMAL_${String(model || '').trim().toLowerCase()}`, '1', 21600);
+  } catch (err) {
+    // 기억하지 못해도 다음 호출에서 다시 low로 재요청하므로 괜찮다.
+  }
 }
 
 
@@ -2619,7 +2641,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
       temperature: 0.2,
       // 생각에 쓴 토큰도 이 한도에 들어가므로 추론 수준에 맞춰 늘린다.
       max_output_tokens: getClaudeMaxTokens_(reasoning),
-      thinking_level: getGeminiThinkingLevel_(reasoning),
+      thinking_level: getGeminiThinkingLevel_(reasoning, model || 'gemini-3.8-flash'),
     },
     response_format: {
       type: 'text',
@@ -2678,6 +2700,14 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
     }
 
     lastErrorMessage = `Gemini API 오류 ${code}: ${body}`;
+
+    // gemini-3.8-flash·3.7-flash처럼 minimal을 받지 않는 모델은 가장 낮은 low로 다시 보내고, 다음부터는 처음부터 low로 보낸다.
+    if (code === 400 && payload.generation_config.thinking_level === 'minimal' && /THINKING_LEVEL_MINIMAL/.test(body)) {
+      payload.generation_config.thinking_level = 'low';
+      rememberGeminiMinimalUnsupported_(payload.model);
+      log_('callGemini_', 'RETRY', `${payload.model}은 thinking_level minimal을 지원하지 않아 low로 다시 요청합니다.`);
+      continue;
+    }
 
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
       const waitMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
