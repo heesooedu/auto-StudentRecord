@@ -4698,36 +4698,14 @@ function shouldKeepEmptyRecordDraft_(parsed) {
     !!String((parsed && parsed.caution) || '').trim();
 }
 
+// 근거가 없으면 프롬프트대로 AI가 record_draft를 비워 보낸다. 초안이 왔으면 지우지 않는다.
+// (예전에는 caution·evidence_summary의 단어로 근거 부족을 짐작해 초안을 지웠는데,
+// "생활기록부 작성 시 … 점수 정보가 없어"처럼 평범한 확인 문장에도 걸려 멀쩡한 초안이 사라졌다.)
 function shouldSuppressRecordDraft_(parsed) {
   const draft = String((parsed && parsed.record_draft) || '').trim();
   const caution = String((parsed && parsed.caution) || '').trim();
-  const evidenceSummary = String((parsed && parsed.evidence_summary) || '').trim();
-  const text = `${caution}\n${evidenceSummary}`;
 
-  if (!draft && caution) return true;
-
-  return hasNoUsableEvidenceSignal_(text);
-}
-
-function hasNoUsableEvidenceSignal_(text) {
-  const normalized = String(text || '').toLowerCase();
-
-  return [
-    /근거\s*부족/,
-    /수행\s*근거.*(없|부족|확인되지)/,
-    /작성에\s*사용할\s*수\s*있는.*(없|부족|확인되지)/,
-    /생활기록부.*작성.*(없|불가|어렵|부족)/,
-    /제출물\s*(없음|없|비어\s*있음|비어|부족)/,
-    /제출물.*학생\s*답변.*(없|비어|확인되지)/,
-    /학생\s*답변.*(없|비어|확인되지)/,
-    /학생\s*수행.*(없|비어|확인되지)/,
-    /미제출/,
-    /빈\s*제출/,
-    /모든\s*(첨부파일|첨부|파일|자료).*파일을\s*열\s*수\s*없음/,
-    /모든\s*(첨부파일|첨부|파일|자료).*텍스트\s*자동\s*추출\s*미지원/,
-    /전체\s*(첨부파일|첨부|파일|자료).*파일을\s*열\s*수\s*없음/,
-    /전체\s*(첨부파일|첨부|파일|자료).*텍스트\s*자동\s*추출\s*미지원/,
-  ].some(pattern => pattern.test(normalized));
+  return !draft && !!caution;
 }
 
 function hasExtractedTextWarning_(text) {
