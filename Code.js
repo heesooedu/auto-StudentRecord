@@ -223,7 +223,9 @@ function onOpen() {
     //.addItem('시트 순서 / 숨김 정리', 'organizeSheetTabs_')
     //.addItem('현황판 새로고침', 'refreshDashboard')
     .addSeparator()
-    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn');
+    .addItem('제출물 원문 열 보이기/숨기기', 'toggleExtractedTextColumn')
+    .addSeparator()
+    .addItem('AI 모델·추론 조합 점검', 'checkAllAiCombinations');
 
   ui.createMenu('⭐ 생기부 자동화')
     .addItem('▶ 생기부 도우미 열기', 'openAssistant')
@@ -2274,10 +2276,10 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
     throw new Error('Claude API 키가 없습니다. 메뉴에서 본인 Claude API 키를 먼저 저장하세요.');
   }
 
+  // temperature는 보내지 않는다. Claude Haiku 5.5·Sonnet 5.5는 기본값이 아닌 temperature를 400으로 거절한다.
   const payload = {
     model,
     max_tokens: getClaudeMaxTokens_(reasoning),
-    temperature: 0.2,
     system: systemGuide,
     messages: [
       {
@@ -2403,9 +2405,14 @@ function getClaudeMaxTokens_(reasoning) {
 function applyClaudeReasoning_(payload, model, reasoning) {
   reasoning = normalizeReasoning_(reasoning);
 
-  if (reasoning === 'none') return;
-
-  delete payload.temperature;
+  if (reasoning === 'none') {
+    // Haiku 5.5와 Sonnet 5.5는 thinking을 안 보내면 스스로 생각을 켠다. 그래서 '없음'일 때 명시적으로 끈다.
+    // Sonnet 5.5는 disabled를 400으로 거절하고 between_tools만 받는다.
+    const value = String(model || '').toLowerCase();
+    if (/claude-sonnet-5-5/.test(value)) payload.thinking = { type: 'between_tools' };
+    else if (/claude-haiku-5-5/.test(value)) payload.thinking = { type: 'disabled' };
+    return;
+  }
 
   if (usesLegacyClaudeThinking_(model)) {
     payload.thinking = {
@@ -6730,6 +6737,105 @@ function getAiProviderAndModel_(config) {
   };
 }
 
+
+// 저장된 API 키로 회사별 선택 가능한 모델 × 추론 수준을 모두 짧게 호출해 보고 'AI점검' 시트에 결과를 적는다.
+// 실제 생성과 같은 callAi_ → parseClaudeJson_ 경로를 쓰므로, 여기서 통과하면 같은 설정으로 생성할 때도 요청 형식 오류가 나지 않는다.
+function checkAllAiCombinations() {
+  const props = PropertiesService.getUserProperties();
+  const keyProperty = { claude: 'CLAUDE_API_KEY', gpt: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY' };
+  const modelOptions = {
+    claude: CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL,
+    gpt: CONFIG_VALIDATION_OPTIONS.GPT_MODEL,
+    gemini: CONFIG_VALIDATION_OPTIONS.GEMINI_MODEL,
+  };
+  const systemGuide = '너는 JSON으로만 답한다.';
+  const userPrompt = [
+    '고등학생이 과학 탐구 보고서를 성실히 제출했다는 내용으로 생활기록부 문장을 한 문장(50자 내외)으로 써라.',
+    '반드시 {"evidence_summary": "...", "record_draft": "...", "caution": ""} 형식의 JSON으로만 답하라.',
+  ].join('\n');
+  const startedAt = Date.now();
+  const rows = [];
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('AI점검') || ss.insertSheet('AI점검');
+
+  // 한 번에 다 못 끝내면(6분 제한) 다시 실행했을 때 이미 '정상'인 조합은 그대로 두고 나머지만 시험한다.
+  const passed = {};
+  if (sh.getLastRow() > 1) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, 7).getValues().forEach(r => {
+      if (r[3] === '정상') passed[`${r[0]}|${r[1]}|${r[2]}`] = r;
+    });
+  }
+
+  Object.keys(modelOptions).forEach(provider => {
+    const hasKey = !!props.getProperty(keyProperty[provider]);
+
+    modelOptions[provider].forEach(model => {
+      CONFIG_VALIDATION_OPTIONS.REASONING.forEach(reasoning => {
+        const previous = passed[`${provider}|${model}|${reasoning}`];
+        if (previous) {
+          rows.push(previous);
+          return;
+        }
+
+        const row = [provider, model, reasoning, '', '', '', ''];
+        rows.push(row);
+
+        if (!hasKey) {
+          row[3] = '건너뜀';
+          row[6] = 'API 키가 저장되어 있지 않음';
+          return;
+        }
+
+        if ((Date.now() - startedAt) / 1000 > 300) {
+          row[3] = '건너뜀';
+          row[6] = '실행 시간 제한에 가까워 이번에는 시험하지 않음. 메뉴를 한 번 더 실행하면 이어서 시험합니다.';
+          return;
+        }
+
+        const callStartedAt = Date.now();
+
+        try {
+          const result = callAi_(provider, model, systemGuide, userPrompt, reasoning);
+          const parsed = parseClaudeJson_(result.text);
+          const draft = String(parsed.record_draft || '').trim();
+          row[3] = draft ? '정상' : '응답 비어 있음';
+          row[5] = draft;
+        } catch (err) {
+          row[3] = '오류';
+          row[6] = String(err.message || err).slice(0, 1000);
+        }
+
+        row[4] = Math.round((Date.now() - callStartedAt) / 100) / 10;
+      });
+    });
+  });
+
+  sh.clear();
+  sh.getRange(1, 1, 1, 7).setValues([['회사', '모델', '추론', '결과', '걸린 시간(초)', '받은 문장', '오류 내용']]).setFontWeight('bold');
+  sh.getRange(2, 1, rows.length, 7).setValues(rows);
+  sh.getRange(1, 8).setValue(`점검 시각: ${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm')}`);
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(6, 320);
+  sh.setColumnWidth(7, 420);
+  sh.getRange(2, 6, rows.length, 2).setWrap(true);
+  ss.setActiveSheet(sh);
+
+  const count = status => rows.filter(r => r[3] === status).length;
+  const failed = rows.filter(r => r[3] === '오류' || r[3] === '응답 비어 있음');
+  const lines = [
+    `AI 조합 점검 결과 ('AI점검' 시트)`,
+    '',
+    `정상 ${count('정상')}개, 오류 ${failed.length}개, 건너뜀 ${count('건너뜀')}개`,
+  ];
+
+  if (failed.length) {
+    lines.push('', '[오류 난 조합]');
+    failed.forEach(r => lines.push(`- ${r[1]} / ${r[2]}: ${String(r[6] || r[3]).slice(0, 150)}`));
+  }
+
+  log_('checkAllAiCombinations', failed.length ? 'ERROR' : 'OK', lines.join('\n'));
+  getUi_().alert(lines.join('\n'));
+}
 
 function clearOpenAiApiKey() {
   PropertiesService.getUserProperties().deleteProperty('OPENAI_API_KEY');
