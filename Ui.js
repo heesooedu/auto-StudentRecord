@@ -32,7 +32,7 @@ const ASSISTANT_SETTING_GROUPS = {
     'BEHAVIOR_RECORD_MIN_BYTES',
     'BEHAVIOR_RECORD_MAX_BYTES',
   ],
-  advanced: ['MAX_RECORD_CHARS', 'MAX_INPUT_CHARS', 'BATCH_SIZE', 'MAX_RUN_SECONDS', 'AUTO_NEXT_DELAY_MS', 'FAST_GENERATION'],
+  advanced: ['MAX_RECORD_CHARS', 'MAX_INPUT_CHARS', 'MAX_RUN_SECONDS', 'AUTO_NEXT_DELAY_MS', 'FAST_GENERATION'],
 };
 
 const ASSISTANT_SETTING_LABELS = {
@@ -59,7 +59,6 @@ const ASSISTANT_SETTING_LABELS = {
   COMMON_PHRASE_PREVIOUS_LIMIT: '공통문구 중복 방지용 참고 문구 수',
   MAX_RECORD_CHARS: '초안 최대 글자수(구버전 설정)',
   MAX_INPUT_CHARS: 'AI에 보낼 과제 원문 최대 글자수',
-  BATCH_SIZE: '자동 생성 1회당 처리 수',
   MAX_RUN_SECONDS: '1회 실행 안전 중단 시간(초)',
   AUTO_NEXT_DELAY_MS: '다음 자동 실행까지 대기(ms)',
   FAST_GENERATION: '빠른 생성(실험)',

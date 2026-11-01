@@ -604,7 +604,7 @@ function processPendingCommonPhrasesCore_() {
   const inputValues = sh.getRange(2, 1, 1, 2).getValues()[0];
   const prompt = String(inputValues[0] || '').trim();
   const sourceText = String(inputValues[1] || '').trim();
-  const batchSize = Number(config.BATCH_SIZE || 5);
+  const batchSize = RUN_ITEM_LIMIT_;
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const previousLimit = getCommonPhrasePreviousLimit_(config);
   const startedAt = Date.now();
@@ -807,7 +807,7 @@ function startAutoCommonPhraseTrigger_() {
     const props = PropertiesService.getUserProperties();
     props.setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'ON');
 
-    const result = processPendingCommonPhrasesCore_();
+    const result = runFirstBatchQuickly_(() => processPendingCommonPhrasesCore_());
 
     if (result.blocked) {
       props.setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'OFF');
@@ -1199,7 +1199,7 @@ function generateBehaviorRecommendationsCore_() {
     deleteAutoBehaviorRecommendationTriggers_();
 
     const config = getConfigMap_();
-    const result = processBehaviorRecommendationRows_(sh, h, target.startRow, target.rowCount, config);
+    const result = runFirstBatchQuickly_(() => processBehaviorRecommendationRows_(sh, h, target.startRow, target.rowCount, config));
     result.scopeLabel = target.scopeLabel;
 
     styleBehaviorRecommendationSheet_();
@@ -1256,7 +1256,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
   }
 
   const pendingOnly = !!(options && options.pendingOnly);
-  const batchSize = Math.max(Number(config.BATCH_SIZE || 5), 1);
+  const batchSize = RUN_ITEM_LIMIT_;
   const maxRunSeconds = Math.max(Number(config.MAX_RUN_SECONDS || 270), 30);
   const maxInputChars = Number(config.MAX_INPUT_CHARS || 30000);
   const behaviorPrompt = getBehaviorRecordPrompt_(config);
@@ -1658,7 +1658,12 @@ function generateBehaviorRecommendationWithCharRetry_(options) {
   };
 
   const first = call(null);
-  if (!needsBehaviorCharRetry_(first, options.charRange)) return first;
+  if (!needsBehaviorCharRetry_(first, options.charRange)) {
+    if (isBehaviorCharOutOfRange_(first.charCount, options.charRange)) {
+      first.caution = appendBehaviorCaution_(first.caution, nearByteRangeNote_(first.charCount, options.charRange.min, options.charRange.max));
+    }
+    return first;
+  }
 
   Utilities.sleep(800);
   try {
@@ -1685,7 +1690,9 @@ function readBehaviorGenerated_(text) {
 }
 
 function needsBehaviorCharRetry_(generated, charRange) {
-  return !!(charRange && charRange.enabled && isBehaviorCharOutOfRange_(generated.charCount, charRange));
+  return !!(charRange && charRange.enabled &&
+    isBehaviorCharOutOfRange_(generated.charCount, charRange) &&
+    !isNearByteRange_(generated.charCount, charRange.min, charRange.max));
 }
 
 // 분량 재요청 결과를 정리한다. 범위를 벗어나도 결과는 버리지 않고, 벗어났다는 말을 caution에 붙인다.
@@ -2054,7 +2061,6 @@ function setupSheets() {
     ['MANUAL_RECORD_MAX_BYTES', '1200', '수동추가 최대 바이트(나이스 기준)'],
     ['NEIS_MAX_BYTES', '1500', ''],
     ['NEIS_WARNING_BYTES', '1400', ''],
-    ['BATCH_SIZE', '5', '자동 생성 트리거 1회 실행당 처리할 학생 수'],
     ['MAX_RUN_SECONDS', '270', 'Apps Script 6분 제한 전에 안전 중단할 시간'],
     ['AUTO_NEXT_DELAY_MS', '30000', ''],
     ['FAST_GENERATION', 'OFF', '빠른 생성(실험)\nON이면 학생 3명까지 AI에 한꺼번에 요청해 더 빨리 만듭니다.\n요청 한도(429)나 서버 오류가 나면 30분 동안 자동으로 한 명씩 보내는 방식으로 돌아갑니다.\nAPI 키를 처음 만들어 사용량 등급이 낮다면 켜지 않는 것을 권장합니다.'],
@@ -2489,6 +2495,25 @@ const AI_EXECUTION_STARTED_AT = Date.now();
 const AI_EXECUTION_LIMIT_MS = 345 * 1000;
 const AI_FETCH_RESERVE_MS = 70 * 1000;
 
+// 생성 루프가 한 번 실행에서 처리하는 최대 수. 예전에는 BATCH_SIZE(기본 5)만큼 만들고 다음 실행을 기다려
+// 쓸 수 있는 시간의 절반도 못 쓰고 쉬었다. 이제는 MAX_RUN_SECONDS와 위의 시간 예산까지 이어서 만들고,
+// 이 값은 만일을 위한 상한으로만 둔다.
+const MAX_ITEMS_PER_RUN = 100;
+
+// [시작]을 눌렀을 때 바로 도는 첫 실행은 사용자가 화면에서 기다리므로 예전처럼 몇 명만 만들고 돌려준다.
+// 나머지는 뒤에서 도는 자동 실행이 시간 한도까지 이어서 만든다.
+const FIRST_RUN_MAX_ITEMS = 5;
+let RUN_ITEM_LIMIT_ = MAX_ITEMS_PER_RUN;
+
+function runFirstBatchQuickly_(run) {
+  RUN_ITEM_LIMIT_ = FIRST_RUN_MAX_ITEMS;
+  try {
+    return run();
+  } finally {
+    RUN_ITEM_LIMIT_ = MAX_ITEMS_PER_RUN;
+  }
+}
+
 function ensureAiTimeBudget_(extraMs) {
   const remainingMs = AI_EXECUTION_STARTED_AT + AI_EXECUTION_LIMIT_MS - Date.now();
 
@@ -2641,11 +2666,12 @@ function callAiParallel_(requests) {
 // 생성 루프는 지금처럼 한 명씩 돌고, callAi_가 똑같은 요청이 오면 받아 둔 답을 꺼내 쓴다.
 // 분량 재요청, 오류 판정, 중단 규칙은 모두 기존 순차 경로를 그대로 따른다.
 // 안전장치:
-// - 한 번에 최대 FAST_GENERATION_CONCURRENCY개, 이번 실행에서 처리할 남은 수(BATCH_SIZE)를 넘겨 받지 않는다.
+// - 한 번에 최대 FAST_GENERATION_CONCURRENCY개까지만 받는다.
 // - 미리 받기에서 오류 응답이 하나라도 오면 이번 실행은 한 명씩으로 돌아가고, 오류 응답은 순차 경로가 다시 보낸다.
 // - 429나 서버 오류(5xx)면 FAST_GENERATION_PAUSE_MS 동안 다음 실행들도 한 명씩 보낸다.
-// - 남은 실행 시간이 요청 한 번에 모자라면 미리 받지 않는다.
+// - 남은 실행 시간이 요청 한 번과 FAST_GENERATION_TAIL_MS에 모자라면 미리 받지 않는다.
 const FAST_GENERATION_CONCURRENCY = 3;
+const FAST_GENERATION_TAIL_MS = 30 * 1000;
 const FAST_GENERATION_PAUSE_MS = 30 * 60 * 1000;
 const FAST_GENERATION_PAUSED_UNTIL_PROPERTY = 'FAST_GENERATION_PAUSED_UNTIL';
 let AI_PREFETCHED_ = {};
@@ -2716,7 +2742,8 @@ function createAiPrefetcher_(config, label) {
 
         if (batch.length < 2) return;
 
-        ensureAiTimeBudget_(0);
+        // 실행이 끝나 갈 때 미리 받으면 쓰지 못하고 버리기 쉬우므로, 넉넉히 남았을 때만 받는다.
+        ensureAiTimeBudget_(FAST_GENERATION_TAIL_MS);
         batchKeys.forEach(key => { attempted[key] = true; });
 
         const sent = fetchAiBatch_(batch);
@@ -4597,6 +4624,18 @@ function createRecordDraftWithLength_(provider, model, systemGuide, userPrompt, 
     };
   }
 
+  if (isNearByteRange_(len, minBytes, maxBytes)) {
+    const note = nearByteRangeNote_(len, minBytes, maxBytes);
+    const caution = String(parsed.caution || '').trim();
+    parsed.caution = caution ? `${caution}\n${note}` : note;
+
+    return {
+      parsed,
+      usage: result.usage || {},
+      retry: false,
+    };
+  }
+
   const retryPrompt = [
     userPrompt,
     '',
@@ -4681,6 +4720,27 @@ function charRangeDistance_(len, minChars, maxChars) {
   if (len < minChars) return minChars - len;
   if (len > maxChars) return len - maxChars;
   return 0;
+}
+
+// 설정 범위를 이 비율 이내로 벗어난 분량은 재요청하지 않는다. 재요청하면 그 학생은 시간과 비용이 두 배가 든다.
+// 위쪽 여유는 나이스 최대 바이트(설정 NEIS_MAX_BYTES, 기본 1500)를 넘지 않게 한다.
+const BYTE_RETRY_TOLERANCE = 0.1;
+
+function isNearByteRange_(len, minBytes, maxBytes) {
+  let neisMax = 1500;
+  try {
+    neisMax = parsePositiveInteger_(getConfigMap_().NEIS_MAX_BYTES) || neisMax;
+  } catch (err) {
+    // 설정을 못 읽으면 기본값을 쓴다.
+  }
+
+  const low = Math.floor(minBytes * (1 - BYTE_RETRY_TOLERANCE));
+  const high = Math.max(maxBytes, Math.min(Math.ceil(maxBytes * (1 + BYTE_RETRY_TOLERANCE)), neisMax));
+  return len >= low && len <= high;
+}
+
+function nearByteRangeNote_(len, minBytes, maxBytes) {
+  return `설정 분량 범위(${formatByteRange_({ min: minBytes, max: maxBytes })})를 조금 벗어남: ${len}바이트. 10% 이내라 재요청하지 않음.`;
 }
 
 function normalizeNoEvidenceRecordResponse_(parsed) {
@@ -6121,7 +6181,7 @@ function toastAutoRecordDraft_(message, title) {
 }
 
 function processPendingRecordDrafts() {
-  const result = processPendingRecordDraftsCore_(true);
+  const result = runFirstBatchQuickly_(() => processPendingRecordDraftsCore_(true));
   saveAutoRecordDraftLastResult_(result.blocked ? 'BLOCKED' : 'MANUAL_RUN', result);
 
   getUi_().alert(buildRecordDraftResultMessage_('이번 실행 결과', result));
@@ -6223,7 +6283,7 @@ function processPendingRecordDraftsCore_(showUi) {
   const h = headerMap_(sh);
   const config = getConfigMap_();
 
-  const batchSize = Number(config.BATCH_SIZE || 5);
+  const batchSize = RUN_ITEM_LIMIT_;
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const startedAt = Date.now();
 
@@ -6541,7 +6601,7 @@ function startAutoRecordDraftTrigger() {
     const props = PropertiesService.getUserProperties();
     props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'ON');
 
-    const result = processPendingRecordDraftsCore_(false);
+    const result = runFirstBatchQuickly_(() => processPendingRecordDraftsCore_(false));
 
     if (result.blocked) {
       props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
@@ -6751,7 +6811,7 @@ function generateManualAddedRecords() {
     deleteAutoManualRecordTriggers_();
     PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'ON');
 
-    const result = processManualAddedRecordsCore_();
+    const result = runFirstBatchQuickly_(() => processManualAddedRecordsCore_());
 
     if (result.blocked) {
       PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
@@ -6858,7 +6918,7 @@ function processManualAddedRecordsCore_() {
   const sh = getSheet_(MANUAL_SHEET_NAME);
   ensureManualOutputColumns_(sh, manualConfig);
 
-  const batchSize = Number(config.BATCH_SIZE || 5);
+  const batchSize = RUN_ITEM_LIMIT_;
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const startedAt = Date.now();
   const ai = getAiProviderAndModel_(config);
@@ -8362,7 +8422,7 @@ function processPendingStudentFinalRecordsCore_(showUi) {
   const sh = getSheet_(SHEET_NAMES.studentFinalRecords);
   const h = ensureStudentFinalRecordQueueHeaders_();
   const config = getConfigMap_();
-  const batchSize = Number(config.BATCH_SIZE || 5);
+  const batchSize = RUN_ITEM_LIMIT_;
   const maxRunSeconds = Number(config.MAX_RUN_SECONDS || 270);
   const startedAt = Date.now();
   const ai = getAiProviderAndModel_(config);
@@ -8698,7 +8758,7 @@ function startAutoStudentFinalRecordTrigger_() {
     const props = PropertiesService.getUserProperties();
     props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'ON');
 
-    const result = processPendingStudentFinalRecordsCore_(false);
+    const result = runFirstBatchQuickly_(() => processPendingStudentFinalRecordsCore_(false));
 
     if (result.blocked) {
       props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
