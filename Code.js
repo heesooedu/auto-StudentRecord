@@ -666,7 +666,7 @@ function processPendingCommonPhrasesCore_() {
   while (processed < batchSize) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
-    if (elapsedSeconds > maxRunSeconds) {
+    if (elapsedSeconds > maxRunSeconds || isStopRequestedDuringRun_()) {
       log_(
         'processPendingCommonPhrasesCore_',
         'STOP',
@@ -796,7 +796,7 @@ function startAutoCommonPhraseTrigger_() {
 
   const lock = LockService.getScriptLock();
 
-  if (!lock.tryLock(1000)) {
+  if (!lock.tryLock(START_LOCK_WAIT_MS)) {
     ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
@@ -1193,7 +1193,7 @@ function generateBehaviorRecommendationsCore_() {
     return;
   }
 
-  if (!lock.tryLock(1000)) {
+  if (!lock.tryLock(START_LOCK_WAIT_MS)) {
     ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
@@ -1355,7 +1355,7 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
 
   for (let i = 0; i < candidates.length; i++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
-    if (processed >= batchSize || elapsedSeconds > maxRunSeconds) break;
+    if (processed >= batchSize || elapsedSeconds > maxRunSeconds || isStopRequestedDuringRun_()) break;
 
     const item = candidates[i];
     attempted++;
@@ -6193,6 +6193,24 @@ function processPendingRecordDrafts() {
   getUi_().alert(buildRecordDraftResultMessage_('이번 실행 결과', result));
 }
 
+// [중지]는 예약만 지워서, 이미 돌고 있던 실행은 시간 한도(최대 4분 넘게)까지 계속 돌며 잠금을 쥐고 있었다.
+// 그래서 중지한 시각을 남기고, 그보다 먼저 시작한 실행은 지금 학생까지만 마치고 다음 학생으로 넘어가지 않는다.
+const AUTO_STOP_REQUESTED_AT_PROPERTY = 'AUTO_STOP_REQUESTED_AT';
+let STOP_REQUEST_LOGGED_ = false;
+
+function isStopRequestedDuringRun_() {
+  const requestedAt = Number(PropertiesService.getUserProperties().getProperty(AUTO_STOP_REQUESTED_AT_PROPERTY) || 0);
+  if (requestedAt <= AI_EXECUTION_STARTED_AT) return false;
+  if (!STOP_REQUEST_LOGGED_) {
+    STOP_REQUEST_LOGGED_ = true;
+    log_('isStopRequestedDuringRun_', 'STOP', '중지를 눌러 이번 실행은 지금 학생까지만 마치고 멈춤');
+  }
+  return true;
+}
+
+// [시작]을 눌렀을 때 중지한 실행이 마무리 중이면(AI 응답 한 번, 보통 30초 안) 끝날 때까지 기다렸다가 시작한다.
+const START_LOCK_WAIT_MS = 45 * 1000;
+
 // 실행이 6분 제한으로 강제 종료되면 끝에서 만드는 다음 예약이 사라져 자동 작업이 그대로 멈춘다.
 // 그래서 시작할 때 6분보다 긴 시간 뒤의 예비 예약을 먼저 만들어 둔다. 정상으로 끝나면 이어서 할 때는 다음 예약으로 바뀌고,
 // 끝났거나 멈췄을 때는 endAutoRun_이 지운다. 강제 종료됐을 때만 이 예약이 남아 이어서 만든다.
@@ -6409,7 +6427,7 @@ function processPendingRecordDraftsCore_(showUi) {
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
-    if (elapsedSeconds > maxRunSeconds) {
+    if (elapsedSeconds > maxRunSeconds || isStopRequestedDuringRun_()) {
       log_(
         'processPendingRecordDraftsCore_',
         'STOP',
@@ -6618,7 +6636,7 @@ function startAutoRecordDraftTrigger() {
 
   const lock = LockService.getScriptLock();
 
-  if (!lock.tryLock(1000)) {
+  if (!lock.tryLock(START_LOCK_WAIT_MS)) {
     ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
@@ -6710,6 +6728,7 @@ function stopAutoRecordDraftTrigger(showUi) {
   PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
   PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'OFF');
   PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
+  PropertiesService.getUserProperties().setProperty(AUTO_STOP_REQUESTED_AT_PROPERTY, String(Date.now()));
 
   log_('stopAutoRecordDraftTrigger', 'OK', '자동 생성 트리거 중지');
 
@@ -6830,7 +6849,7 @@ function generateManualAddedRecords() {
   const ui = getUi_();
   const lock = LockService.getScriptLock();
 
-  if (!lock.tryLock(1000)) {
+  if (!lock.tryLock(START_LOCK_WAIT_MS)) {
     ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
@@ -7025,7 +7044,7 @@ function processManualAddedRecordsCore_() {
   for (let row = manualConfig.startRow; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
-    if (elapsedSeconds > maxRunSeconds) {
+    if (elapsedSeconds > maxRunSeconds || isStopRequestedDuringRun_()) {
       log_(
         'processManualAddedRecordsCore_',
         'STOP',
@@ -7763,7 +7782,7 @@ function collectSubmissionsForIncludedAssignments() {
 
   const lock = LockService.getScriptLock();
 
-  if (!lock.tryLock(1000)) {
+  if (!lock.tryLock(START_LOCK_WAIT_MS)) {
     ui.alert('이미 다른 자동 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
@@ -7929,7 +7948,7 @@ function processPendingSubmissionCollectionsCore_() {
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
-    if (elapsedSeconds > maxRunSeconds) {
+    if (elapsedSeconds > maxRunSeconds || isStopRequestedDuringRun_()) {
       log_(
         'processPendingSubmissionCollectionsCore_',
         'STOP',
@@ -8530,7 +8549,7 @@ function processPendingStudentFinalRecordsCore_(showUi) {
   for (let row = 2; row <= lastRow; row++) {
     const elapsedSeconds = (Date.now() - startedAt) / 1000;
 
-    if (elapsedSeconds > maxRunSeconds) {
+    if (elapsedSeconds > maxRunSeconds || isStopRequestedDuringRun_()) {
       log_(
         'processPendingStudentFinalRecordsCore_',
         'STOP',
@@ -8781,7 +8800,7 @@ function startAutoStudentFinalRecordTrigger_() {
 
   const lock = LockService.getScriptLock();
 
-  if (!lock.tryLock(1000)) {
+  if (!lock.tryLock(START_LOCK_WAIT_MS)) {
     ui.alert('이미 다른 자동 생성 작업이 실행 중입니다.\n현재 작업이 끝난 뒤 다시 시작해 주세요.');
     return;
   }
