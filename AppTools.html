@@ -456,6 +456,8 @@
     for (let i = head + 1; i < lines.length && lines[i].trim(); i++) {
       const m = lines[i].match(/^- ([^:]+):(.*)$/);
       if (m) items.push({ label: m[1].trim(), value: m[2].trim(), optional: m[1].includes('(선택)') });
+      // '- 항목:' 다음 줄에 이어 쓴 번호 목록 등도 그 항목의 값으로 본다.
+      else if (items.length) { const last = items[items.length - 1]; last.value = `${last.value} ${lines[i].trim()}`.trim(); }
     }
     return items;
   }
@@ -478,6 +480,36 @@
     return S.promptEdits[key] !== undefined && S.promptEdits[key] !== savedPrompt(key);
   }
 
+  // 프롬프트 카드에 따로 보여 주는 예시. [이 예시로 채우기]를 누르면 그대로 옮겨 온다.
+  const PROMPT_EXAMPLES = {
+    PROMPT_1: [
+      '[교사 안내] 초안을 만들기 전에 채워 주세요.',
+      '- 과목/작성 영역: 인공지능 기초',
+      '- 강조할 점(선택): 학생의 사고, 자료를 근거로 자신의 주장을 펼치는 능력',
+      '- 작성 순서/형식(선택):',
+      '1. 첫 문장은 "인공지능과 미래사회에 대한 글쓰기 수행평가에서"로 시작',
+      '2. 학생의 관점, 주장 1문장 압축 → 자료를 기반으로 학생의 주장을 요약 → 예상한 미래 모습과 필요하다고 주장하는 역량 순서로 요약',
+      '',
+      '[작성 원칙]',
+      '1. [교사 안내]의 과목/작성 영역에 맞는 어휘와 관점으로 쓰고, 작성 순서/형식이 있으면 그대로 따른다.',
+      '2. 강조할 점은 제출물에 근거가 있을 때만 반영한다.',
+      '3. 과제 문항, 교사 지시문, 예시문은 학생 답변을 이해하는 맥락으로만 쓰고, 학생이 직접 쓴 답변만 근거로 삼는다.',
+    ].join('\n'),
+  };
+
+  function promptExample(key) {
+    const example = PROMPT_EXAMPLES[key];
+    if (!example) return '';
+    return `
+      <details class="prompt-example" ${S.promptExampleOpen[key] ? 'open' : ''} data-prompt-example="${key}">
+        <summary>작성 예시 보기</summary>
+        <pre>${esc(example)}</pre>
+        <div class="row" style="justify-content:flex-end">
+          <button class="btn" data-action="use-prompt-example" data-key="${key}">이 예시로 채우기</button>
+        </div>
+      </details>`;
+  }
+
   function promptCard(key, title) {
     if (!S.settings) return '';
     const text = currentPrompt(key);
@@ -492,6 +524,8 @@
           <span class="muted small">${filled.length ? esc(filled.join(' · ')) : '과목이나 작성 영역을 적어 주면 결과가 좋아져요.'}</span></summary>
         <p class="muted small" style="margin:10px 0">맨 위 안내 줄에 과목·작성 영역을 적어 주세요. 과제 정보, 학생 제출물, 글자수, 점수 규칙은 여기에 없어도 자동으로 함께 보내져요.
           설정 화면의 프롬프트와 같은 값이에요.</p>
+        <div class="tip">처음부터 완벽하게 쓰지 않아도 돼요. <b>몇 개만 먼저 만들어 보고, 결과를 보며 프롬프트를 고쳐 다시 만들면</b> 점점 원하는 문장에 가까워져요.</div>
+        ${promptExample(key)}
         <textarea data-prompt-key="${key}" rows="12">${esc(text)}</textarea>
         <div class="row" style="justify-content:flex-end;margin-top:8px">
           <button class="btn" data-action="reset-prompt" data-key="${key}">기본 프롬프트로 바꾸기</button>
@@ -794,6 +828,15 @@
         banner('프롬프트를 저장했어요.', 'ok');
       });
     },
+    async 'use-prompt-example'(el) {
+      const key = el.dataset.key;
+      if (promptDirty(key) || currentPrompt(key).trim() !== String(S.settings.defaults[key] || '').trim()) {
+        if (!await confirmModal('예시로 채우기', '지금 프롬프트를 지우고 예시로 바꿀까요?\n과목·강조할 점은 내 수업에 맞게 고친 뒤 [프롬프트 저장]을 눌러 주세요.', '바꾸기')) return;
+      }
+      S.promptEdits[key] = PROMPT_EXAMPLES[key];
+      S.promptOpen[key] = true;
+      render();
+    },
     async 'reset-prompt'(el) {
       const key = el.dataset.key;
       if (!await confirmModal('기본 프롬프트로 바꾸기', '지금 프롬프트를 지우고 기본 프롬프트로 바꿀까요?\n[프롬프트 저장]을 눌러야 실제로 바뀌어요.', '바꾸기')) return;
@@ -929,6 +972,8 @@
   document.addEventListener('toggle', event => {
     const key = event.target.dataset && event.target.dataset.promptCard;
     if (key) S.promptOpen[key] = event.target.open;
+    const exampleKey = event.target.dataset && event.target.dataset.promptExample;
+    if (exampleKey) S.promptExampleOpen[exampleKey] = event.target.open;
   }, true);
 
   function handleToolChange(el) {
