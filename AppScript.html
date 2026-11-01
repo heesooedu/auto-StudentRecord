@@ -302,6 +302,9 @@
   }
 
   async function pollStatus() {
+    // 앞선 확인이 5초 안에 안 끝났으면 이번 차례는 건너뛴다. 요청이 쌓이면 Apps Script 동시 실행 한도에 걸린다.
+    if (S.polling) return;
+    S.polling = true;
     try {
       const before = S.boot.status;
       const status = await call('uiGetStatus');
@@ -329,6 +332,8 @@
       else renderNav();
     } catch (err) {
       // 폴링 실패는 다음 주기에 다시 시도한다.
+    } finally {
+      S.polling = false;
     }
   }
 

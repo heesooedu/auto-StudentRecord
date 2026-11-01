@@ -705,6 +705,11 @@ function processPendingCommonPhrasesCore_() {
       Utilities.sleep(1200);
 
     } catch (err) {
+      if (isAiTimeBudgetError_(err)) {
+        log_('processPendingCommonPhrasesCore_', 'STOP', `${index}번째 문구: ${err.message}`);
+        break;
+      }
+
       const message = String(err.message || err);
       const errorInfo = classifyRecordDraftError_(message);
 
@@ -1326,6 +1331,12 @@ function processBehaviorRecommendationRows_(sh, h, startRow, rowCount, config, o
       processed++;
       Utilities.sleep(1200);
     } catch (err) {
+      if (isAiTimeBudgetError_(err)) {
+        sh.getRange(item.row, h.status).setValue('대기');
+        log_('processBehaviorRecommendationRows_', 'STOP', `${item.row}행: ${err.message}`);
+        break;
+      }
+
       failed++;
 
       if (isBehaviorResponseFormatError_(err)) {
@@ -2296,16 +2307,27 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
-      method: 'post',
-      muteHttpExceptions: true,
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      payload: JSON.stringify(payload),
-    });
+    let res;
+
+    try {
+      res = fetchAiWithinBudget_('https://api.anthropic.com/v1/messages', {
+        method: 'post',
+        muteHttpExceptions: true,
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        payload: JSON.stringify(payload),
+      });
+    } catch (err) {
+      // 응답 없이 끊긴 경우(시간 초과, 연결 오류)도 잠시 뒤 다시 시도한다.
+      if (isAiTimeBudgetError_(err) || attempt === maxAttempts) throw err;
+      lastErrorMessage = `Claude API 네트워크 오류: ${String(err.message || err)}`;
+      log_('callClaude_', 'RETRY', `${lastErrorMessage}. ${attempt}/${maxAttempts}회 시도 실패`);
+      sleepWithinAiBudget_(Math.min(2000 * Math.pow(2, attempt - 1), 30000));
+      continue;
+    }
 
     const code = res.getResponseCode();
     const body = res.getContentText();
@@ -2318,7 +2340,7 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
         outputTokenRetryUsed = true;
         payload.max_tokens = Math.min(Number(payload.max_tokens) * 2, 16000);
         log_('callClaude_', 'RETRY', `Claude 응답이 max_tokens로 잘려 ${payload.max_tokens} 토큰으로 1회 재시도합니다.`);
-        Utilities.sleep(1200);
+        sleepWithinAiBudget_(1200);
         continue;
       }
 
@@ -2345,7 +2367,7 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
         `Claude API ${code} 오류. ${attempt}/${maxAttempts}회 시도 실패. ${Math.round(waitMs / 1000)}초 후 재시도`
       );
 
-      Utilities.sleep(waitMs);
+      sleepWithinAiBudget_(waitMs);
       continue;
     }
 
@@ -2353,6 +2375,37 @@ function callClaude_(model, systemGuide, userPrompt, reasoning) {
   }
 
   throw new Error(`Claude API 재시도 실패: ${lastErrorMessage}`);
+}
+
+// Apps Script 한 번 실행은 6분까지다. 전역 코드는 실행마다 다시 평가되므로 이 값이 이번 실행의 시작 시각이다.
+// 남은 시간이 AI 요청 한 번(최대 약 1분)에 모자라면 요청이나 재시도 대기를 시작하지 않고 멈춰서,
+// 강제 종료로 '생성중'이 남거나 다음 실행 예약이 사라지지 않게 한다.
+const AI_EXECUTION_STARTED_AT = Date.now();
+const AI_EXECUTION_LIMIT_MS = 345 * 1000;
+const AI_FETCH_RESERVE_MS = 70 * 1000;
+
+function ensureAiTimeBudget_(extraMs) {
+  const remainingMs = AI_EXECUTION_STARTED_AT + AI_EXECUTION_LIMIT_MS - Date.now();
+
+  if (remainingMs - (extraMs || 0) < AI_FETCH_RESERVE_MS) {
+    const err = new Error('실행 시간 제한(6분)에 가까워 이번 실행에서는 AI 요청을 보내지 않았습니다. 다음 실행에서 이어서 만듭니다.');
+    err.aiTimeBudget = true;
+    throw err;
+  }
+}
+
+function isAiTimeBudgetError_(err) {
+  return !!(err && err.aiTimeBudget);
+}
+
+function sleepWithinAiBudget_(ms) {
+  ensureAiTimeBudget_(ms);
+  Utilities.sleep(ms);
+}
+
+function fetchAiWithinBudget_(url, options) {
+  ensureAiTimeBudget_(0);
+  return UrlFetchApp.fetch(url, options);
 }
 
 function callAi_(provider, model, systemGuide, userPrompt, reasoning) {
@@ -2533,15 +2586,26 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = UrlFetchApp.fetch('https://api.openai.com/v1/responses', {
-      method: 'post',
-      muteHttpExceptions: true,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      payload: JSON.stringify(payload),
-    });
+    let res;
+
+    try {
+      res = fetchAiWithinBudget_('https://api.openai.com/v1/responses', {
+        method: 'post',
+        muteHttpExceptions: true,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        payload: JSON.stringify(payload),
+      });
+    } catch (err) {
+      // 응답 없이 끊긴 경우(시간 초과, 연결 오류)도 잠시 뒤 다시 시도한다.
+      if (isAiTimeBudgetError_(err) || attempt === maxAttempts) throw err;
+      lastErrorMessage = `OpenAI API 네트워크 오류: ${String(err.message || err)}`;
+      log_('callOpenAi_', 'RETRY', `${lastErrorMessage}. ${attempt}/${maxAttempts}회 시도 실패`);
+      sleepWithinAiBudget_(Math.min(2000 * Math.pow(2, attempt - 1), 30000));
+      continue;
+    }
 
     const code = res.getResponseCode();
     const body = res.getContentText();
@@ -2557,7 +2621,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
           'RETRY',
           `OpenAI 응답이 max_output_tokens로 중단되어 ${payload.max_output_tokens} 토큰으로 1회 재시도합니다. ${summarizeOpenAiUsage_(json)}`
         );
-        Utilities.sleep(1200);
+        sleepWithinAiBudget_(1200);
         continue;
       }
 
@@ -2577,7 +2641,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning) {
 
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
       const waitMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
-      Utilities.sleep(Math.min(waitMs, 30000));
+      sleepWithinAiBudget_(Math.min(waitMs, 30000));
       continue;
     }
 
@@ -2663,15 +2727,26 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-      method: 'post',
-      muteHttpExceptions: true,
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      payload: JSON.stringify(payload),
-    });
+    let res;
+
+    try {
+      res = fetchAiWithinBudget_('https://generativelanguage.googleapis.com/v1beta/interactions', {
+        method: 'post',
+        muteHttpExceptions: true,
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        payload: JSON.stringify(payload),
+      });
+    } catch (err) {
+      // 응답 없이 끊긴 경우(시간 초과, 연결 오류)도 잠시 뒤 다시 시도한다.
+      if (isAiTimeBudgetError_(err) || attempt === maxAttempts) throw err;
+      lastErrorMessage = `Gemini API 네트워크 오류: ${String(err.message || err)}`;
+      log_('callGemini_', 'RETRY', `${lastErrorMessage}. ${attempt}/${maxAttempts}회 시도 실패`);
+      sleepWithinAiBudget_(Math.min(2000 * Math.pow(2, attempt - 1), 30000));
+      continue;
+    }
 
     const code = res.getResponseCode();
     const body = res.getContentText();
@@ -2683,7 +2758,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
         outputTokenRetryUsed = true;
         payload.generation_config.max_output_tokens = Math.min(Number(payload.generation_config.max_output_tokens) * 2, 16000);
         log_('callGemini_', 'RETRY', `Gemini 응답이 출력 한도로 잘려 ${payload.generation_config.max_output_tokens} 토큰으로 1회 재시도합니다.`);
-        Utilities.sleep(1200);
+        sleepWithinAiBudget_(1200);
         continue;
       }
 
@@ -2711,7 +2786,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning) {
 
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
       const waitMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
-      Utilities.sleep(Math.min(waitMs, 30000));
+      sleepWithinAiBudget_(Math.min(waitMs, 30000));
       continue;
     }
 
@@ -5932,6 +6007,12 @@ function processPendingRecordDraftsCore_(showUi) {
       Utilities.sleep(1200);
 
     } catch (err) {
+      if (isAiTimeBudgetError_(err)) {
+        sh.getRange(row, h.aiStatus).setValue('대기');
+        log_('processPendingRecordDraftsCore_', 'STOP', `${studentName}: ${err.message}`);
+        break;
+      }
+
       const message = String(err.message || '');
       const errorInfo = classifyRecordDraftError_(message);
 
@@ -6474,6 +6555,11 @@ function processManualAddedRecordsCore_() {
       processed++;
       Utilities.sleep(1200);
     } catch (err) {
+      if (isAiTimeBudgetError_(err)) {
+        log_('processManualAddedRecordsCore_', 'STOP', `${row}행: ${err.message}`);
+        break;
+      }
+
       const message = String(err.message || '');
       const errorInfo = classifyRecordDraftError_(message);
 
@@ -7777,6 +7863,12 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       Utilities.sleep(1200);
 
     } catch (err) {
+      if (isAiTimeBudgetError_(err)) {
+        sh.getRange(row, h.finalStatus).setValue('대기');
+        log_('processPendingStudentFinalRecordsCore_', 'STOP', `${studentNo}${studentName}: ${err.message}`);
+        break;
+      }
+
       const message = String(err.message || '');
       const errorInfo = classifyRecordDraftError_(message);
 
