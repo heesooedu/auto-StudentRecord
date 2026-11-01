@@ -621,15 +621,28 @@
     const c = S.boot.counts;
     const running = S.boot.status.collect.state === 'ON';
     const rows = filterSubmissions(S.filters.collectAssignment);
+    // 체크한 과제 중 아직 '수집완료'가 아닌 것이 있으면 수집 버튼으로, 다 모았으면 다음 단계로 이끈다.
+    const included = (S.assignments || []).filter(a => a.includeInFinal);
+    const uncollected = included.filter(a => !/^수집완료/.test(String(a.collectStatus || ''))).length;
+    const collected = included.length > 0 && uncollected === 0;
+    const needsCollect = !!c.includedAssignments && !collected && !running && !S.collecting;
+    const collectLabel = S.collecting ? '<span class="spinner"></span> 가져오는 중…'
+      : running ? '<span class="spinner"></span> 자동으로 이어서 가져오는 중…'
+      : collected ? '다시 수집하기'
+      : '제출물 수집 시작 →';
 
     return `
       <h1>제출물 수집</h1>
       <p class="lead">체크한 과제의 학생 제출물과 첨부 문서 내용을 가져와요. 과제가 많으면 나누어 자동으로 이어서 가져와요.</p>
       ${busyNote()}
-      <div class="card">
+      <div class="card ${needsCollect ? 'hero' : ''}">
         <div class="row between">
-          <div>체크한 과제 <b>${c.includedAssignments}</b>개의 제출물을 가져와요.</div>
-          <button class="btn primary" data-action="collect" ${S.busy || running || !c.includedAssignments ? 'disabled' : ''}>제출물 수집 시작</button>
+          <div>
+            <div>체크한 과제 <b>${c.includedAssignments}</b>개의 제출물을 가져와요.</div>
+            ${needsCollect ? `<div class="help"><b>오른쪽 [제출물 수집 시작] 버튼을 눌러야</b> 제출물을 가져오기 시작해요.${uncollected < included.length ? ` (아직 안 모은 과제 ${uncollected}개)` : ''}</div>` : ''}
+            ${collected && !running ? '<div class="help">체크한 과제의 제출물을 모두 가져왔어요. 아래 [다음: 초안 만들기]로 넘어가세요.</div>' : ''}
+          </div>
+          <button class="btn ${collected ? '' : 'primary'} ${needsCollect ? 'lg' : ''}" data-action="collect" ${S.busy || running || !c.includedAssignments ? 'disabled' : ''}>${collectLabel}</button>
         </div>
         ${!c.includedAssignments ? '<div class="help">먼저 [과제 고르기]에서 과제를 체크하세요.</div>' : ''}
       </div>
@@ -951,15 +964,21 @@
     async collect() {
       const count = S.boot.counts.includedAssignments;
       if (!await confirmModal('제출물 수집', `체크한 과제 ${count}개의 제출물을 가져올까요?\n과제가 많으면 나누어 자동으로 이어서 가져와요.`, '수집 시작')) return;
-      await withBusy('제출물을 가져오는 중… 첫 묶음은 몇 분 걸릴 수 있어요.', async () => {
-        const result = await call('uiStartCollect');
-        S.boot.status = result.status;
-        S.submissions = await call('uiListSubmissions');
-        S.assignments = await call('uiListAssignments');
-        S.boot = await call('uiGetBootstrap');
-        showMessages(result);
-        updatePolling();
-      });
+      S.collecting = true;
+      try {
+        await withBusy('제출물을 가져오는 중… 첫 묶음은 몇 분 걸릴 수 있어요.', async () => {
+          const result = await call('uiStartCollect');
+          S.boot.status = result.status;
+          S.submissions = await call('uiListSubmissions');
+          S.assignments = await call('uiListAssignments');
+          S.boot = await call('uiGetBootstrap');
+          showMessages(result);
+          updatePolling();
+        });
+      } finally {
+        S.collecting = false;
+        render();
+      }
     },
     'show-text': async el => {
       openModal('제출물 원문', '<div class="loading">불러오는 중…</div>');
