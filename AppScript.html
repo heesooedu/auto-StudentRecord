@@ -87,6 +87,19 @@
     return bytes;
   }
 
+  // 방금 저장한 설정(uiSaveSettings의 결과)으로 화면의 AI·모델·추론 표시만 바꾼다.
+  // 전체 상태(uiGetBootstrap)를 다시 읽으면 시트 여러 개와 트리거를 읽어서 저장이 느려진다.
+  // 모델 칸이 비어 기본값을 써야 하면 false를 돌려주고, 그때만 전체 상태를 다시 읽는다.
+  function applyAiSettings() {
+    const provider = PROVIDERS.find(p => p.id === settingValue('AI_PROVIDER', ''));
+    const model = provider && settingValue(provider.modelKey, '');
+    if (!model) return false;
+    S.boot.provider = provider.id;
+    S.boot.model = model;
+    S.boot.reasoning = settingValue('REASONING', S.boot.reasoning);
+    return true;
+  }
+
   function settingValue(key, fallback) {
     if (!S.settings) return fallback;
     for (const group of Object.values(S.settings.groups)) {
@@ -915,7 +928,7 @@
     async provider(el) {
       await withBusy('AI 서비스를 바꾸는 중…', async () => {
         S.settings = await call('uiSaveSettings', { AI_PROVIDER: el.dataset.id });
-        S.boot = await call('uiGetBootstrap');
+        if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
       });
     },
     'show-key-input'() {
@@ -943,7 +956,7 @@
       await withBusy('모델을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
         S.manual = null;
-        S.boot = await call('uiGetBootstrap');
+        if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
         banner('모델을 저장했어요.', 'ok');
       });
     },
