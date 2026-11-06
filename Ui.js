@@ -19,7 +19,7 @@ const ASSISTANT_SETTING_GROUPS = {
     'NEIS_WARNING_BYTES',
   ],
   ai: ['AI_PROVIDER', 'CLAUDE_MODEL', 'GPT_MODEL', 'GEMINI_MODEL', 'REASONING'],
-  prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE', 'BEHAVIOR_RECORD_PROMPT', 'MANUAL_PROMPT'],
+  prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE', 'GRADING_GUIDE', 'BEHAVIOR_RECORD_PROMPT', 'MANUAL_PROMPT'],
   tools: ['COMMON_PHRASE_PREVIOUS_LIMIT'],
   // 분량 기준은 설정 화면이 아니라 각 화면의 프롬프트 카드 아래에서 바꾼다.
   lengths: [
@@ -54,6 +54,7 @@ const ASSISTANT_SETTING_LABELS = {
   PROMPT_1: '과제별 초안 지시사항',
   PROMPT_2: '초안 합치기 지시사항',
   SYSTEM_GUIDE: '공통 작성 지침',
+  GRADING_GUIDE: '채점 공통 지침',
   BEHAVIOR_RECORD_PROMPT: '행발 추천 문구 작성 지침',
   MANUAL_PROMPT: '수동추가 생기부 작성 지침',
   COMMON_PHRASE_PREVIOUS_LIMIT: '공통문구 중복 방지용 참고 문구 수',
@@ -433,6 +434,7 @@ function uiGetDefaultPrompt(key) {
   if (key === 'PROMPT_1') return defaultRecordDraftPrompt_();
   if (key === 'PROMPT_2') return defaultStudentFinalRecordPrompt_();
   if (key === 'SYSTEM_GUIDE') return defaultSystemGuide_();
+  if (key === 'GRADING_GUIDE') return defaultGradingGuide_();
   if (key === 'BEHAVIOR_RECORD_PROMPT') return defaultBehaviorRecordPrompt_();
   if (key === 'MANUAL_PROMPT') return defaultManualRecordPrompt_();
 
@@ -695,6 +697,12 @@ function uiGetStatus() {
       remaining: countPendingManualAddedRows_(),
       last: null,
     },
+    grading: {
+      state: stateOf(AUTO_GRADING_TRIGGER_PROPERTY, 'autoProcessPendingGrades'),
+      triggers: triggerCount('autoProcessPendingGrades'),
+      remaining: countPendingGrades_(),
+      last: getAutoGradingLastResult_(),
+    },
   };
 }
 
@@ -891,6 +899,7 @@ function uiExportData(kind) {
   if (kind === 'common') return exportCommonPhrases_();
   if (kind === 'behavior') return exportBehaviorRows_();
   if (kind === 'manual') return exportManualSheet_();
+  if (kind === 'grading') return exportGradingResults_();
   throw new Error('알 수 없는 다운로드 종류입니다.');
 }
 

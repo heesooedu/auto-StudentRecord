@@ -1,5 +1,5 @@
 <script>
-  // ---- 도구 화면: 공통문구 · 행발 추천 · 수동추가 ------------------------------
+  // ---- 도구 화면: 공통문구 · 행발 추천 · 수동추가 · 채점 --------------------------
   // AppScript.html의 S, call, esc, withBusy 등을 함께 쓴다.
 
   const BEHAVIOR_FIELDS = [
@@ -12,6 +12,7 @@
     if (view === 'common') S.common = await call('uiGetCommonPhrases');
     if (view === 'behavior' && !S.bDraft) S.behavior = await call('uiListBehaviorRows');
     if (view === 'manual') S.manual = await call('uiGetManual');
+    if (view === 'grading') S.grading = await call('uiGetGrading');
   }
 
   // 결과 문구를 고치고 저장하는 공통 블록
@@ -545,6 +546,10 @@
       summary: '작성 스타일에 맞게 고쳐 쓸 수 있어요.',
       help: 'AI가 행발 문구를 쓸 때 따르는 지침이에요. 학생별 특성·관찰 내용과 글자수는 여기에 없어도 자동으로 함께 보내져요.',
     },
+    GRADING_GUIDE: {
+      summary: '"매우 관대하게 채점한다"처럼 채점 태도를 적을 수 있어요.',
+      help: '모든 과제의 채점에 적용되는 지침이에요. 과제별 채점 기준과 학생 제출물은 여기에 없어도 자동으로 함께 보내져요.',
+    },
   };
 
   function promptCard(key, title) {
@@ -759,7 +764,334 @@
           </div>`).join('')}` : ''}`;
   }
 
-  const TOOL_VIEWS = { common: viewCommon, behavior: viewBehavior, manual: viewManual };
+  // ---- 채점 -----------------------------------------------------------------
+  function gradingAssignment() {
+    const list = (S.grading && S.grading.assignments) || [];
+    return list.find(a => a.key === S.gradingKey) || list[0] || null;
+  }
+
+  function gradingRows() {
+    const a = gradingAssignment();
+    const text = S.filters.search.trim().toLowerCase();
+    return ((S.grading && S.grading.rows) || []).filter(r =>
+      a && r.assignmentKey === a.key && (!text || `${r.studentNo} ${r.studentName}`.toLowerCase().includes(text)));
+  }
+
+  function gradingRubricSaved(a) {
+    return !!(a && a.maxScore && String(a.rubric || '').trim());
+  }
+
+  // 줄바꿈 방식이나 50과 50.0 같은 표기 차이는 바뀐 내용으로 보지 않는다.
+  function rubricText(value) {
+    return String(value || '').replace(/\r\n?/g, '\n').trim();
+  }
+
+  function rubricDirty(a) {
+    const edit = a && S.rubricEdits[a.key];
+    return !!edit && (Number(edit.maxScore || 0) !== Number(a.maxScore || 0) || rubricText(edit.rubric) !== rubricText(a.rubric));
+  }
+
+  function gradingUnsavedRubrics() {
+    return ((S.grading && S.grading.assignments) || []).filter(rubricDirty);
+  }
+
+  function rubricValues(a) {
+    const edit = S.rubricEdits[a.key];
+    return edit || { maxScore: String(a.maxScore || a.maxPoints || ''), rubric: String(a.rubric || '') };
+  }
+
+  // 저장한 기준과 다르거나, 아직 저장하지 않았는데 내용이 있으면 저장할 수 있다.
+  function rubricCanSave(a) {
+    return rubricDirty(a) || (!gradingRubricSaved(a) && !!rubricValues(a).rubric.trim());
+  }
+
+  function rubricPill(a) {
+    if (!gradingRubricSaved(a)) return '<span class="pill warn">입력 필요</span>';
+    return rubricDirty(a) ? '<span class="pill warn">저장 안 함</span>' : '<span class="pill ok">저장됨</span>';
+  }
+
+  function gradingReadyHelp(a) {
+    if (!gradingRubricSaved(a)) return '채점 기준과 만점을 저장해야 채점할 수 있어요.';
+    return rubricDirty(a) ? '바꾼 채점 기준을 저장해야 채점할 수 있어요.' : '';
+  }
+
+  function gradingCanStart(a) {
+    return !S.busy && S.boot.status.grading.state !== 'ON' && S.selected.size > 0 && !gradingReadyHelp(a);
+  }
+
+  // 입력 중에는 화면을 다시 그리지 않으므로, 저장 상태가 드러나는 곳만 바로 바꾼다.
+  function syncRubricState(a) {
+    const save = document.querySelector('[data-action="save-rubric"]');
+    const start = document.querySelector('[data-action="make-grades"]');
+    const pill = $('#rubric-pill');
+    const help = $('#grading-ready-help');
+    if (save) save.disabled = !rubricCanSave(a);
+    if (start) start.disabled = !gradingCanStart(a);
+    if (pill) pill.innerHTML = rubricPill(a);
+    if (help) {
+      help.textContent = gradingReadyHelp(a);
+      help.style.display = help.textContent ? '' : 'none';
+    }
+  }
+
+  function gradingRubricCard(a) {
+    const saved = gradingRubricSaved(a);
+    const values = rubricValues(a);
+    return `
+      <div class="card ${saved ? '' : 'hero'}">
+        <div class="row between">
+          <div class="prompt-card-title">채점 기준 <span id="rubric-pill">${rubricPill(a)}</span></div>
+          ${a.description ? '<button class="btn" data-action="copy-description">과제 본문 복사해 오기</button>' : ''}
+        </div>
+        <p class="muted small" style="margin:6px 0 10px">이 과제를 채점할 기준이에요. AI는 여기에 저장한 기준으로만 채점해요. 평가 요소와 충족 개수별 점수처럼 점수를 정하는 방법까지 적어 주세요.</p>
+        <label class="field"><span>만점</span>
+          <input type="number" id="grading-max" class="length-input" style="width:96px" min="0" step="any" value="${esc(values.maxScore)}"></label>
+        <label class="field"><span>채점 기준</span>
+          <textarea id="grading-rubric" rows="10" placeholder="예: 평가 요소 5개 중 충족한 개수에 따라 5개 50점, 4개 30점, 3개 20점, 2개 10점, 0~1개 3점">${esc(values.rubric)}</textarea></label>
+        <div class="row" style="justify-content:flex-end">
+          <button class="btn primary" data-action="save-rubric" ${rubricCanSave(a) ? '' : 'disabled'}>채점 기준 저장</button>
+        </div>
+      </div>`;
+  }
+
+  function gradeStatusPill(r) {
+    const status = r.gradeStatus;
+    if (!status) return '<span class="pill">채점 전</span>';
+    if (status === '대기' || status === '생성중') {
+      return jobRunning('grading') ? `<span class="pill run">${esc(status)}</span>` : '<span class="pill warn">멈춤</span>';
+    }
+    if (status === '오류' || status === '재시도필요') return `<span class="pill err">${esc(status)}</span>`;
+    if (status === '내용 없음') return '<span class="pill warn">내용 없음</span>';
+    return '<span class="pill ok">채점 완료</span>';
+  }
+
+  function gradingCard(r) {
+    const edit = S.edits[`grading:${r.key}`] || {};
+    const score = edit.score !== undefined ? edit.score : r.score;
+    const reason = edit.reason !== undefined ? edit.reason : r.reason;
+    const done = r.gradeStatus === '완료';
+    const running = jobRunning('grading');
+    return `
+      <div class="record ${r.teacherChecked ? 'checked' : ''}">
+        <div class="row between">
+          <label class="row">
+            <input type="checkbox" data-action="select-one" data-key="${esc(r.key)}" ${S.selected.has(r.key) ? 'checked' : ''}>
+            <b>${esc(r.studentNo)} ${esc(r.studentName)}</b>
+            ${gradeStatusPill(r)}
+          </label>
+          ${done ? `<label class="row small"><input type="checkbox" data-action="check-grade" data-key="${esc(r.key)}" ${r.teacherChecked ? 'checked' : ''}> 확인함 (초안에 반영)</label>` : ''}
+        </div>
+        ${done ? `
+          <div class="row" style="margin-top:10px">
+            <input type="number" class="length-input" style="width:96px" min="0" max="${esc(r.maxScore)}" step="any" aria-label="점수" data-action="edit-grade" data-field="score" data-key="${esc(r.key)}" value="${esc(score)}">
+            <span>/ ${esc(r.maxScore)}점</span>
+          </div>
+          <textarea aria-label="채점 이유" data-action="edit-grade" data-field="reason" data-key="${esc(r.key)}">${esc(reason)}</textarea>` : ''}
+        <div class="row between">
+          <span class="muted small">${esc(r.gradedAt)}</span>
+          <div class="row">
+            ${r.row ? `<button class="btn danger" data-action="delete-grade" data-key="${esc(r.key)}" ${S.busy || running ? 'disabled' : ''}>결과 지우기</button>` : ''}
+            <button class="btn" data-action="show-text" data-key="${esc(r.key)}">제출물 보기</button>
+            ${done ? `<button class="btn primary" data-action="save-grade" data-key="${esc(r.key)}" ${S.edits[`grading:${r.key}`] ? '' : 'disabled'}>저장</button>` : ''}
+          </div>
+        </div>
+        ${r.caution ? `<div class="caution">${esc(r.caution)}</div>` : ''}
+      </div>`;
+  }
+
+  function viewGrading() {
+    const d = S.grading;
+    if (!d) return '<div class="loading">불러오는 중…</div>';
+
+    const head = `
+      <h1>채점</h1>
+      <p class="lead">[제출물 수집]을 마친 과제를 채점할 수 있어요. 입력한 채점 기준으로 AI가 학생별 점수와 이유를 매기고, 점수를 확인해 [확인함]을 체크하면 초안 만들 때 참고돼요.</p>
+      ${busyNote()}`;
+    if (!d.assignments.length) return `${head}<div class="card empty">아직 채점할 수 있는 과제가 없어요. 먼저 제출물을 수집해 주세요.
+      <div style="margin-top:12px"><button class="btn primary" data-go="collect">제출물 수집으로 이동</button></div></div>`;
+
+    const a = gradingAssignment();
+    const st = S.boot.status.grading;
+    const running = st.state === 'ON';
+    const rows = gradingRows();
+    const shown = rows.slice(0, S.pageSize.grading);
+    const readyHelp = gradingReadyHelp(a);
+    const allSelected = rows.length > 0 && rows.every(r => S.selected.has(r.key));
+    const results = rows.filter(r => r.row);
+
+    return `
+      ${head}
+      <div class="toolbar">
+        <select id="grading-assignment" class="grow">${d.assignments.map(x => `<option value="${esc(x.key)}" ${x.key === a.key ? 'selected' : ''}>${esc(x.courseName)} · ${esc(x.assignmentTitle)}${gradingRubricSaved(x) ? '' : ' (기준 입력 필요)'}</option>`).join('')}</select>
+      </div>
+      <div class="help" style="margin-bottom:12px">수집을 마친 과제 <b>${d.assignments.length}</b>개가 위 목록에 있어요. 목록에 없는 과제는 [제출물 수집]을 먼저 해 주세요.</div>
+      ${gradingRubricCard(a)}
+      ${promptCard('GRADING_GUIDE', '채점 공통 지침 확인')}
+      ${statusPanel('grading', '개')}
+      ${!running && st.remaining > 0 ? `
+        <div class="card row between"><div>채점하지 못하고 남은 제출물이 <b>${st.remaining}</b>개 있어요.</div>
+          <button class="btn" data-action="resume-grades" ${S.busy ? 'disabled' : ''}>남은 것 이어서 채점하기</button></div>` : ''}
+      <div class="toolbar">
+        <input type="search" id="search" class="grow" placeholder="학생 이름·번호로 찾기" value="${esc(S.filters.search)}">
+        <button class="btn" data-action="reload-grading">새로고침</button>
+        ${d.rows.some(r => r.row) ? downloadButton('grading') : ''}
+      </div>
+      <div class="toolbar">
+        <label class="row small"><input type="checkbox" data-action="select-all-grades" ${allSelected ? 'checked' : ''}> 전체 선택</label>
+        <button class="btn" data-action="select-ungraded">채점 안 된 것만 선택</button>
+        <button class="btn" data-action="select-clear">선택 해제</button>
+        <span class="grow"></span>
+        <span class="muted">선택 <b>${S.selected.size}</b>개</span>
+        <button class="btn primary" data-action="make-grades" ${gradingCanStart(a) ? '' : 'disabled'}>선택한 ${S.selected.size}개 채점하기</button>
+      </div>
+      <div class="help" id="grading-ready-help" ${readyHelp ? '' : 'style="display:none"'}>${esc(readyHelp)}</div>
+      ${results.length ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px">
+        <button class="btn danger" data-action="delete-grades-filtered" ${S.busy || running ? 'disabled' : ''}>목록의 결과 ${results.length}개 모두 지우기</button></div>` : ''}
+      ${shown.map(gradingCard).join('') || '<div class="card empty">조건에 맞는 제출물이 없어요.</div>'}
+      ${rows.length > shown.length ? `<button class="btn" data-action="more" data-kind="grading">더 보기 (${rows.length - shown.length}개 남음)</button>` : ''}`;
+  }
+
+  async function saveGrade(r, patch) {
+    Object.assign(r, await call('uiUpdateGrade', r.row, r.key, patch));
+    delete S.edits[`grading:${r.key}`];
+  }
+
+  async function deleteGrades(items) {
+    await withBusy('지우는 중…', async () => {
+      try {
+        const result = await call('uiDeleteGrades', items.map(r => ({ row: r.row, key: r.key })));
+        items.forEach(r => delete S.edits[`grading:${r.key}`]);
+        S.grading = result.data;
+        banner(`${result.deleted}개를 지웠어요.`, 'ok');
+      } catch (err) {
+        S.grading = await call('uiGetGrading');
+        throw err;
+      }
+    });
+  }
+
+  function findGrade(key) {
+    return ((S.grading && S.grading.rows) || []).find(r => r.key === key);
+  }
+
+  const GRADING_ACTIONS = {
+    async 'save-rubric'() {
+      const a = gradingAssignment();
+      const values = rubricValues(a);
+      await withBusy('채점 기준을 저장하는 중…', async () => {
+        S.grading = await call('uiSaveGradingRubric', a.key, values.maxScore, values.rubric);
+        delete S.rubricEdits[a.key];
+        banner('채점 기준을 저장했어요.', 'ok');
+      });
+    },
+    async 'copy-description'() {
+      const a = gradingAssignment();
+      const values = rubricValues(a);
+      if (values.rubric.trim() && !await confirmModal('과제 본문 복사해 오기', '지금 적힌 채점 기준을 지우고 과제 본문으로 바꿀까요?\n[채점 기준 저장]을 눌러야 실제로 쓰여요.', '바꾸기')) return;
+      S.rubricEdits[a.key] = { maxScore: values.maxScore, rubric: String(a.description || '') };
+      render();
+    },
+    'select-all-grades'(el) {
+      gradingRows().forEach(r => {
+        if (el.checked) S.selected.add(r.key); else S.selected.delete(r.key);
+      });
+      render();
+    },
+    'select-ungraded'() {
+      S.selected = new Set(gradingRows()
+        .filter(r => Number(r.textChars) > 0 && !['완료', '대기', '생성중'].includes(r.gradeStatus))
+        .map(r => r.key));
+      render();
+    },
+    async 'make-grades'() {
+      const keys = Array.from(S.selected);
+      const rows = keys.map(findGrade).filter(Boolean);
+      const graded = rows.filter(r => r.gradeStatus === '완료').length;
+      const checked = rows.filter(r => r.teacherChecked).length;
+      if (!await preparePrompt('GRADING_GUIDE')) return;
+      const notes = [
+        graded ? `이미 채점한 ${graded}개는 지금 점수를 지우고 새로 채점해요.` : '',
+        checked ? `그중 확인한 ${checked}개는 확인이 풀리고, 초안에 넘긴 점수도 지워져요.` : '',
+      ].filter(Boolean).join('\n');
+      if (!await confirmModal('채점하기', `선택한 제출물 ${keys.length}개를 AI로 채점할까요?${notes ? `\n${notes}` : ''}`, '채점하기')) return;
+      await withBusy('채점하는 중… 첫 묶음은 몇 분 걸릴 수 있어요. 창을 닫아도 계속 진행돼요.', async () => {
+        await call('uiQueueGrades', keys);
+        const result = await call('uiStartGrades');
+        keys.forEach(key => delete S.edits[`grading:${key}`]);
+        S.selected = new Set();
+        S.grading = result.data;
+        afterToolStart(result, '채점을 시작했어요. 남은 것은 자동으로 이어서 채점해요.');
+      });
+    },
+    async 'resume-grades'() {
+      if (!await preparePrompt('GRADING_GUIDE')) return;
+      await withBusy('남은 제출물을 이어서 채점하는 중…', async () => {
+        const result = await call('uiStartGrades');
+        S.grading = result.data;
+        afterToolStart(result, '이어서 채점을 시작했어요.');
+      });
+    },
+    async 'reload-grading'() {
+      await withBusy('불러오는 중…', async () => { S.grading = await call('uiGetGrading'); });
+    },
+    async 'save-grade'(el) {
+      const r = findGrade(el.dataset.key);
+      el.disabled = true;
+      try {
+        await saveGrade(r, S.edits[`grading:${r.key}`]);
+        banner('저장했어요.', 'ok');
+      } catch (err) {
+        showError(err);
+      }
+      render();
+    },
+    async 'check-grade'(el) {
+      const r = findGrade(el.dataset.key);
+      try {
+        await saveGrade(r, Object.assign({}, S.edits[`grading:${r.key}`], { teacherChecked: el.checked }));
+      } catch (err) {
+        el.checked = !el.checked;
+        showError(err);
+      }
+      render();
+    },
+    async 'delete-grade'(el) {
+      const r = findGrade(el.dataset.key);
+      const note = r.teacherChecked ? '\n초안에 넘긴 점수도 함께 지워져요.' : '';
+      if (!await confirmModal('결과 지우기', `${r.studentNo} ${r.studentName} 학생의 채점 결과를 지울까요?${note}\n시트에서도 지워지고 되돌릴 수 없어요.`, '지우기')) return;
+      await deleteGrades([r]);
+    },
+    async 'delete-grades-filtered'() {
+      const rows = gradingRows().filter(r => r.row);
+      if (!rows.length) return;
+      if (!await confirmModal('모두 지우기', `지금 목록에 있는 채점 결과 ${rows.length}개를 모두 지울까요?\n확인한 점수는 초안에 넘긴 값도 함께 지워져요. 시트에서도 지워지고 되돌릴 수 없어요.`, `${rows.length}개 지우기`)) return;
+      await deleteGrades(rows);
+    },
+  };
+
+  // 입력 중에는 다시 그리지 않고 저장 버튼만 바꾼다.
+  function handleGradingInput(el) {
+    if (el.id === 'grading-max' || el.id === 'grading-rubric') {
+      const a = gradingAssignment();
+      S.rubricEdits[a.key] = { maxScore: $('#grading-max').value, rubric: $('#grading-rubric').value };
+      syncRubricState(a);
+      return true;
+    }
+    if (el.dataset.action === 'edit-grade') {
+      const r = findGrade(el.dataset.key);
+      const editKey = `grading:${r.key}`;
+      const edit = S.edits[editKey] || {};
+      const field = el.dataset.field;
+      if (el.value === String(r[field])) delete edit[field]; else edit[field] = el.value;
+      if (Object.keys(edit).length) S.edits[editKey] = edit; else delete S.edits[editKey];
+      const btn = el.closest('.record').querySelector('[data-action="save-grade"]');
+      if (btn) btn.disabled = !S.edits[editKey];
+      return true;
+    }
+    return false;
+  }
+
+  const TOOL_VIEWS = { common: viewCommon, behavior: viewBehavior, manual: viewManual, grading: viewGrading };
 
   // ---- 동작 ---------------------------------------------------------------
   function afterToolStart(result, fallback) {
@@ -1108,10 +1440,13 @@
     },
   };
 
+  Object.assign(TOOL_ACTIONS, GRADING_ACTIONS);
+
   // 입력 중에는 다시 그리지 않고 글자수·저장 버튼만 바꾼다.
   function handleToolInput(el) {
     if (handlePromptInput(el)) return true;
     if (handleLengthInput(el)) return true;
+    if (handleGradingInput(el)) return true;
     if (el.dataset.bfield && S.bDraft) {
       S.bDraft.fields[el.dataset.bfield] = el.value;
       S.bDraft.dirty = true;
@@ -1146,6 +1481,11 @@
   }, true);
 
   function handleToolChange(el) {
+    if (el.id === 'grading-assignment') {
+      S.gradingKey = el.value;
+      S.selected = new Set();
+      render();
+    }
     if (el.classList.contains('manual-input-col')) {
       el.closest('.chip').classList.toggle('on', el.checked);
     }

@@ -1,4 +1,4 @@
-// 생기부 도우미의 '도구' 화면(공통문구 · 행발 추천 · 수동추가)용 서버 함수
+// 생기부 도우미의 '도구' 화면(공통문구 · 행발 추천 · 수동추가 · 채점)용 서버 함수
 // 생성 로직은 Code.js의 기존 함수를 그대로 쓰고, 여기서는 화면 입출력만 다룬다.
 
 const MANUAL_IMPORT_ROW_LIMIT = 2000;
@@ -625,4 +625,251 @@ function withDocumentLock_(fn) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// --- 채점 -----------------------------------------------------------------
+
+function listGradingSubmissions_() {
+  return readSheetRecords_(SHEET_NAMES.submissions, [
+    'submissionKey', 'studentNo', 'studentName', 'courseId', 'courseWorkId', 'courseName', 'assignmentTitle',
+    'state', 'late', 'textChars', 'maxPoints', 'assignmentDescription',
+  ], 'submissionKey');
+}
+
+function listGradingResults_() {
+  return readSheetRecords_(SHEET_NAMES.gradingResults, [
+    'submissionKey', 'gradeStatus', 'score', 'maxScore', 'reason', 'caution', 'teacherChecked', 'gradedAt', 'model',
+  ], 'submissionKey');
+}
+
+// 수집한 제출물이 있는 과제와 학생별 채점 상태를 돌려준다. 제출물 원문은 보내지 않는다.
+function uiGetGrading() {
+  const rubrics = getGradingRubricMap_();
+  const resultByKey = {};
+  listGradingResults_().forEach(r => { resultByKey[String(r.submissionKey)] = r; });
+
+  const assignments = new Map();
+  const rows = listGradingSubmissions_().map(s => {
+    const assignmentKey = `${s.courseId}|${s.courseWorkId}`;
+    const result = resultByKey[String(s.submissionKey)] || {};
+
+    if (!assignments.has(assignmentKey)) {
+      const rubric = rubrics[assignmentKey] || {};
+      assignments.set(assignmentKey, {
+        key: assignmentKey,
+        courseName: s.courseName,
+        assignmentTitle: s.assignmentTitle,
+        maxPoints: s.maxPoints,
+        description: s.assignmentDescription,
+        maxScore: rubric.maxScore || '',
+        rubric: rubric.rubric || '',
+      });
+    }
+
+    return {
+      key: String(s.submissionKey),
+      assignmentKey,
+      row: result.row || 0,
+      studentNo: s.studentNo,
+      studentName: s.studentName,
+      state: s.state,
+      late: s.late,
+      textChars: s.textChars,
+      gradeStatus: result.gradeStatus || '',
+      score: result.score === undefined ? '' : result.score,
+      maxScore: result.maxScore === undefined ? '' : result.maxScore,
+      reason: result.reason || '',
+      caution: result.caution || '',
+      teacherChecked: isChecked_(result.teacherChecked),
+      gradedAt: result.gradedAt || '',
+    };
+  });
+
+  return { assignments: Array.from(assignments.values()), rows };
+}
+
+function uiSaveGradingRubric(assignmentKey, maxScore, rubric) {
+  const max = normalizeGradingMaxScore_(maxScore);
+  const text = String(rubric || '').trim();
+
+  if (!max) throw new Error('만점은 0보다 큰 숫자로 적어 주세요.');
+  if (!text) throw new Error('채점 기준을 입력해 주세요.');
+
+  const submission = listGradingSubmissions_().find(s => `${s.courseId}|${s.courseWorkId}` === String(assignmentKey));
+  if (!submission) throw new Error('과제를 찾을 수 없습니다. 새로고침해 주세요.');
+
+  withDocumentLock_(() => {
+    ensureGradingSheets_();
+    upsertByKey_(SHEET_NAMES.gradingRubrics, 'assignmentKey', [[
+      String(assignmentKey),
+      submission.courseName,
+      submission.assignmentTitle,
+      max,
+      sheetSafeText_(text),
+      new Date(),
+    ]]);
+  });
+
+  return uiGetGrading();
+}
+
+function uiQueueGrades(submissionKeys) {
+  const keySet = new Set((submissionKeys || []).map(String));
+  if (keySet.size === 0) throw new Error('채점할 제출물을 선택하세요.');
+
+  return withDocumentLock_(() => {
+    ensureGradingSheets_();
+
+    const submissions = listGradingSubmissions_().filter(s => keySet.has(String(s.submissionKey)));
+    if (submissions.length === 0) throw new Error('선택한 제출물을 찾지 못했습니다. 새로고침해 주세요.');
+
+    const rubrics = getGradingRubricMap_();
+    if (submissions.some(s => !isGradingRubricReady_(rubrics[`${s.courseId}|${s.courseWorkId}`]))) {
+      throw new Error('채점 기준과 만점을 먼저 저장해 주세요.');
+    }
+
+    const resultByKey = {};
+    listGradingResults_().forEach(r => { resultByKey[String(r.submissionKey)] = r; });
+
+    // 확인한 점수를 다시 채점하면 확인을 풀고, 초안에 넘긴 점수도 거둔다.
+    const teacherGradeUpdates = [];
+    const rows = submissions.map(s => {
+      const key = String(s.submissionKey);
+      const before = resultByKey[key];
+
+      if (before && isChecked_(before.teacherChecked)) {
+        teacherGradeUpdates.push({ key, next: '', previous: formatGradingTeacherGrade_(before.score, before.maxScore) });
+      }
+
+      return [key, s.studentNo, s.studentName, s.courseId, s.courseWorkId, s.courseName, s.assignmentTitle,
+        '대기', '', '', '', '', false, '', '', ''];
+    });
+
+    upsertByKey_(SHEET_NAMES.gradingResults, 'submissionKey', rows);
+    updateTeacherGrades_(teacherGradeUpdates);
+
+    log_('uiQueueGrades', 'OK', `${rows.length}개 제출물을 채점 대기로 표시`);
+    return { queued: rows.length };
+  });
+}
+
+function uiStartGrades() {
+  // 실행이 끊겨 '생성중'으로 남은 제출물도 이어서 채점한다.
+  if (PropertiesService.getUserProperties().getProperty(AUTO_GRADING_TRIGGER_PROPERTY) !== 'ON') {
+    withDocumentLock_(() => resetStatusValues_(SHEET_NAMES.gradingResults, 'gradeStatus', ['생성중'], '대기'));
+  }
+
+  const result = runWithCollectedUi_(() => startAutoGradingTrigger_());
+  return Object.assign(result, { status: uiGetStatus(), data: uiGetGrading() });
+}
+
+// 점수·이유 수정과 [확인함]을 저장한다. 확인한 점수만 teacherGrade로 넘어간다.
+function uiUpdateGrade(row, key, patch) {
+  return withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.gradingResults);
+    const h = headerMap_(sh);
+    row = Number(row);
+
+    if (row < 2 || row > sh.getLastRow()) throw new Error('수정할 행을 찾을 수 없습니다. 새로고침해 주세요.');
+
+    const values = sh.getRange(row, 1, 1, sh.getLastColumn()).getValues()[0];
+    if (String(rowValueAt_(values, h.submissionKey)) !== String(key)) {
+      throw new Error('시트 내용이 바뀌어 저장하지 못했습니다. 새로고침한 뒤 다시 시도해 주세요.');
+    }
+
+    const maxScore = normalizeGradingMaxScore_(rowValueAt_(values, h.maxScore));
+    const beforeScore = rowValueAt_(values, h.score);
+    const beforeChecked = isChecked_(rowValueAt_(values, h.teacherChecked));
+    if (!maxScore) throw new Error('채점이 끝난 제출물만 수정할 수 있습니다.');
+
+    const fields = {};
+    let score = beforeScore;
+
+    if (patch && patch.score !== undefined) {
+      score = readGradingScore_(patch.score, maxScore);
+      if (score === null) throw new Error(`점수는 0~${maxScore} 사이의 숫자로 적어 주세요.`);
+      fields.score = score;
+    }
+
+    if (patch && patch.reason !== undefined) fields.reason = String(patch.reason);
+
+    const checked = patch && patch.teacherChecked !== undefined ? !!patch.teacherChecked : beforeChecked;
+    fields.teacherChecked = checked;
+
+    Object.keys(fields).forEach(field => {
+      sh.getRange(row, h[field]).setValue(sheetSafeText_(fields[field]));
+    });
+
+    if (checked || beforeChecked) {
+      updateTeacherGrades_([{
+        key,
+        next: checked ? formatGradingTeacherGrade_(score, maxScore) : '',
+        previous: beforeChecked ? formatGradingTeacherGrade_(beforeScore, maxScore) : '',
+      }]);
+    }
+
+    SpreadsheetApp.flush();
+
+    return {
+      score,
+      reason: fields.reason !== undefined ? fields.reason : String(rowValueAt_(values, h.reason) || ''),
+      teacherChecked: checked,
+    };
+  });
+}
+
+// items: [{row, key}] — 행 번호가 바뀌었을 수 있으므로 같은 행의 키가 일치할 때만 지운다.
+function uiDeleteGrades(items) {
+  const targets = (items || []).map(it => ({ row: Number(it.row), key: String(it.key) }));
+  if (targets.length === 0) throw new Error('지울 항목을 선택하세요.');
+
+  const deleted = withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.gradingResults);
+    const h = headerMap_(sh);
+    const lastRow = sh.getLastRow();
+    const lastCol = sh.getLastColumn();
+    const values = sh.getRange(1, 1, lastRow, lastCol).getValues();
+
+    const valid = targets.every(t => t.row >= 2 && t.row <= lastRow &&
+      String(rowValueAt_(values[t.row - 1], h.submissionKey)) === t.key);
+    if (!valid) throw new Error('시트 내용이 바뀌어 지우지 못했습니다. 새로고침한 뒤 다시 시도해 주세요.');
+
+    const teacherGradeUpdates = targets
+      .filter(t => isChecked_(rowValueAt_(values[t.row - 1], h.teacherChecked)))
+      .map(t => ({
+        key: t.key,
+        next: '',
+        previous: formatGradingTeacherGrade_(rowValueAt_(values[t.row - 1], h.score), rowValueAt_(values[t.row - 1], h.maxScore)),
+      }));
+
+    // 아래 행부터 지워야 위쪽 행 번호가 바뀌지 않는다.
+    const rows = Array.from(new Set(targets.map(t => t.row))).sort((a, b) => b - a);
+    rows.forEach(row => {
+      if (sh.getMaxRows() - sh.getFrozenRows() > 1) {
+        sh.deleteRow(row);
+      } else {
+        sh.getRange(row, 1, 1, lastCol).clearContent();
+      }
+    });
+
+    updateTeacherGrades_(teacherGradeUpdates);
+    SpreadsheetApp.flush();
+    return rows.length;
+  });
+
+  log_('uiDeleteGrades', 'OK', `채점 결과 ${deleted}개 삭제`);
+  return { deleted, data: uiGetGrading() };
+}
+
+function exportGradingResults_() {
+  const columns = [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentTitle', '과제'],
+    ['score', '점수'], ['maxScore', '만점'], ['reason', '이유'], ['caution', '확인할 점'],
+    ['teacherChecked', '확인함'], ['gradeStatus', '상태'], ['gradedAt', '채점 시각']];
+  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]), 'studentName');
+
+  return {
+    fileName: '채점결과',
+    headers: columns.map(c => c[1]),
+    rows: records.map(r => columns.map(c => c[0] === 'teacherChecked' ? (isChecked_(r[c[0]]) ? 'O' : '') : r[c[0]])),
+  };
 }
