@@ -836,7 +836,7 @@ function startAutoCommonPhraseTrigger_() {
   }
 
   try {
-    deleteAutoCommonPhraseTriggers_();
+    scheduleNextAutoCommonPhraseTrigger_(AUTO_BACKUP_DELAY_MS);
 
     const props = PropertiesService.getUserProperties();
     props.setProperty('AUTO_COMMON_PHRASE_TRIGGER', 'ON');
@@ -1233,7 +1233,8 @@ function generateBehaviorRecommendationsCore_() {
   }
 
   try {
-    deleteAutoBehaviorRecommendationTriggers_();
+    scheduleNextAutoBehaviorRecommendationTrigger_(AUTO_BACKUP_DELAY_MS);
+    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'ON');
 
     const config = getConfigMap_();
     const result = runFirstBatchQuickly_(() => processBehaviorRecommendationRows_(sh, h, target.startRow, target.rowCount, config));
@@ -1257,7 +1258,6 @@ function generateBehaviorRecommendationsCore_() {
     }
 
     const nextDelayMs = Number(config.AUTO_NEXT_DELAY_MS || 60000);
-    PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'ON');
     scheduleNextAutoBehaviorRecommendationTrigger_(nextDelayMs);
 
     ui.alert(
@@ -6297,6 +6297,7 @@ const START_LOCK_WAIT_MS = 45 * 1000;
 // 실행이 6분 제한으로 강제 종료되면 끝에서 만드는 다음 예약이 사라져 자동 작업이 그대로 멈춘다.
 // 그래서 시작할 때 6분보다 긴 시간 뒤의 예비 예약을 먼저 만들어 둔다. 정상으로 끝나면 이어서 할 때는 다음 예약으로 바뀌고,
 // 끝났거나 멈췄을 때는 endAutoRun_이 지운다. 강제 종료됐을 때만 이 예약이 남아 이어서 만든다.
+// [시작]의 첫 묶음도 창을 닫거나 실행이 끊길 수 있어서, 처리하기 전에 같은 예약을 먼저 만든다.
 const AUTO_BACKUP_DELAY_MS = 7 * 60 * 1000;
 
 // 자동 작업은 모두 스크립트 잠금을 잡고 돈다. 잠금을 잡은 지금 '생성중'인 행은 앞 실행이 강제 종료되며 남긴 것이라 '대기'로 돌린다.
@@ -6725,7 +6726,7 @@ function startAutoRecordDraftTrigger() {
   }
 
   try {
-    deleteAutoRecordDraftTriggers_();
+    scheduleNextAutoRecordDraftTrigger_(AUTO_BACKUP_DELAY_MS);
 
     const props = PropertiesService.getUserProperties();
     props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'ON');
@@ -6749,6 +6750,7 @@ function startAutoRecordDraftTrigger() {
 
     if (result.remaining === 0) {
       props.setProperty('AUTO_RECORD_DRAFT_TRIGGER', 'OFF');
+      deleteAutoRecordDraftTriggers_();
       saveAutoRecordDraftLastResult_('DONE', result);
 
       log_(
@@ -6940,7 +6942,7 @@ function generateManualAddedRecords() {
   }
 
   try {
-    deleteAutoManualRecordTriggers_();
+    scheduleNextAutoManualRecordTrigger_(AUTO_BACKUP_DELAY_MS);
     PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'ON');
 
     const result = runFirstBatchQuickly_(() => processManualAddedRecordsCore_());
@@ -7874,7 +7876,7 @@ function collectSubmissionsForIncludedAssignments() {
 
   try {
     queueIncludedAssignmentsForSubmissionCollection_(sh, h, lastRow);
-    deleteAutoSubmissionCollectionTriggers_();
+    scheduleNextAutoSubmissionCollectionTrigger_(AUTO_BACKUP_DELAY_MS);
     PropertiesService.getUserProperties().setProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY, 'ON');
 
     const result = processPendingSubmissionCollectionsCore_();
@@ -8891,7 +8893,7 @@ function startAutoStudentFinalRecordTrigger_() {
   }
 
   try {
-    deleteAutoStudentFinalRecordTriggers_();
+    scheduleNextAutoStudentFinalRecordTrigger_(AUTO_BACKUP_DELAY_MS);
 
     const props = PropertiesService.getUserProperties();
     props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'ON');
@@ -8915,6 +8917,7 @@ function startAutoStudentFinalRecordTrigger_() {
 
     if (result.remaining === 0) {
       props.setProperty('AUTO_STUDENT_FINAL_TRIGGER', 'OFF');
+      deleteAutoStudentFinalRecordTriggers_();
       saveAutoStudentFinalLastResult_('DONE', result);
       log_(
         'startAutoStudentFinalRecordTrigger_',
@@ -9964,7 +9967,7 @@ function startAutoGradingTrigger_() {
   }
 
   try {
-    deleteAutoGradingTriggers_();
+    scheduleNextAutoGradingTrigger_(AUTO_BACKUP_DELAY_MS);
     PropertiesService.getUserProperties().setProperty(AUTO_GRADING_TRIGGER_PROPERTY, 'ON');
 
     const result = runFirstBatchQuickly_(() => processPendingGradesCore_());
