@@ -341,6 +341,7 @@ function uiGetBootstrap() {
     status: isSetup ? uiGetStatus() : null,
     autoOpen: hasAutoOpenTrigger_(),
     hiddenCourses: getHiddenCourses_(),
+    spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
     spreadsheetUrl: SpreadsheetApp.getActiveSpreadsheet().getUrl(),
   };
 }
@@ -583,6 +584,14 @@ function uiSetAssignmentsHidden(changes) {
     hiddenRange.setValues(hidden);
     includeRange.setValues(included);
   });
+}
+
+// 과제 화면의 변경을 한 번의 요청으로 저장한다. 요청을 나누면 창을 닫을 때 뒤의 요청이 나가지 못한다.
+function uiSaveAssignmentChanges(changes) {
+  if (Object.keys(changes.includes).length) uiSetAssignmentsIncluded(changes.includes);
+  if (changes.clears.length) uiClearCollectStatus(changes.clears);
+  if (Object.keys(changes.assignmentHides).length) uiSetAssignmentsHidden(changes.assignmentHides);
+  if (Object.keys(changes.courseHides).length) uiHideCourses(changes.courseHides);
 }
 
 // 과제의 수집 표시만 지운다. 모은 제출물은 그대로 둔다.

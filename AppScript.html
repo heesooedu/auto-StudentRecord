@@ -30,7 +30,8 @@
     courseHides: {},
     assignmentHides: {},
     hiddenAssignmentsOpen: false,
-    includeSaves: Promise.resolve(),
+    assignmentSaving: null,
+    savingChanges: null,
     filters: { collectAssignment: 'included', draftAssignment: 'included', reviewAssignment: '', search: '', submissionSearch: '', uncheckedOnly: false },
     pageSize: { review: 30, final: 30, grading: 30 },
     busy: '',
@@ -353,7 +354,10 @@
         // 진행 중에도 남은 개수와 행 상태를 갱신해서 보여준다.
         S.submissions = await call('uiListSubmissions');
         // 아직 저장 전인 체크를 시트의 예전 값으로 되돌리지 않는다.
-        if (S.view === 'collect' && !hasAssignmentChanges()) S.assignments = await call('uiListAssignments');
+        if (S.view === 'collect' && !isSavingAssignments()) {
+          const assignments = await call('uiListAssignments');
+          if (!isSavingAssignments()) S.assignments = assignments;
+        }
       } else if (status[S.view] && status[S.view].state === 'ON' && !isEditing()) {
         // 도구 화면도 진행 중에는 결과를 바로바로 보여준다.
         await refreshToolData(S.view);
@@ -1086,7 +1090,7 @@
       S.boot.counts.includedAssignments = S.assignments.filter(a => a.includeInFinal).length;
       resetReviewList();
       render();
-      scheduleAssignmentSave();
+      flushAssignmentChanges();
     },
     async 'show-course'(el) {
       const id = el.dataset.course;
@@ -1337,37 +1341,102 @@
     S.boot.counts.includedAssignments = S.assignments.filter(a => a.includeInFinal).length;
     resetReviewList();
     render();
-    scheduleAssignmentSave();
+    flushAssignmentChanges();
+  }
+
+  function isSavingAssignments() {
+    return hasAssignmentChanges() || !!S.assignmentSaving;
+  }
+
+  function pendingAssignmentChanges() {
+    return {
+      includes: S.includePending,
+      clears: Array.from(S.collectClears),
+      assignmentHides: S.assignmentHides,
+      courseHides: S.courseHides,
+    };
+  }
+
+  function takeAssignmentChanges() {
+    const changes = pendingAssignmentChanges();
+    S.includePending = {};
+    S.collectClears = new Set();
+    S.assignmentHides = {};
+    S.courseHides = {};
+    return changes;
+  }
+
+  // 저장이 끝나기 전에 창을 닫아도 잃지 않도록 브라우저에 적어 두고, 다음에 열 때 마저 저장한다.
+  function unsavedAssignmentsKey() {
+    return `unsavedAssignmentChanges:${S.boot.spreadsheetId}`;
+  }
+
+  function rememberAssignmentChanges() {
+    const list = S.savingChanges ? [S.savingChanges] : [];
+    if (hasAssignmentChanges()) list.push(pendingAssignmentChanges());
+    try {
+      if (list.length) localStorage.setItem(unsavedAssignmentsKey(), JSON.stringify(list));
+      else localStorage.removeItem(unsavedAssignmentsKey());
+    } catch (err) {
+      // 브라우저 저장소를 못 써도 시트 저장은 그대로 한다.
+    }
+  }
+
+  function readUnsavedAssignments() {
+    try {
+      return JSON.parse(localStorage.getItem(unsavedAssignmentsKey()) || '[]');
+    } catch (err) {
+      return [];
+    }
+  }
+
+  async function saveUnsavedAssignments() {
+    const list = readUnsavedAssignments();
+    if (!list.length) return;
+    await withBusy('지난번에 저장하지 못한 변경을 저장하는 중…', async () => {
+      for (const changes of list) await call('uiSaveAssignmentChanges', changes);
+      rememberAssignmentChanges();
+      await refreshBoot();
+    });
   }
 
   function scheduleAssignmentSave() {
+    rememberAssignmentChanges();
     clearTimeout(includeTimer);
     includeTimer = setTimeout(flushAssignmentChanges, 300);
   }
 
   function flushAssignmentChanges() {
     clearTimeout(includeTimer);
-    const changes = S.includePending;
-    const clears = Array.from(S.collectClears);
-    const hides = S.courseHides;
-    const assignmentHides = S.assignmentHides;
-    if (!hasAssignmentChanges()) return S.includeSaves;
-    S.includePending = {};
-    S.collectClears = new Set();
-    S.courseHides = {};
-    S.assignmentHides = {};
-    S.includeSaves = S.includeSaves.then(async () => {
+    rememberAssignmentChanges();
+    if (!S.assignmentSaving && hasAssignmentChanges()) S.assignmentSaving = saveAssignmentChanges();
+    return S.assignmentSaving || Promise.resolve();
+  }
+
+  // 저장하는 동안 들어온 변경은 모아서 다음 요청 하나로 보낸다.
+  // 누를 때마다 줄을 세우면 뒤의 변경이 한참 뒤에야 나가서, 그 전에 창을 닫으면 사라진다.
+  async function saveAssignmentChanges() {
+    let countsChanged = false;
+
+    while (hasAssignmentChanges()) {
+      const changes = takeAssignmentChanges();
+      S.savingChanges = changes;
+      rememberAssignmentChanges();
+      // 숨기면 초안 개수가 바뀐다.
+      countsChanged = countsChanged || Object.keys(changes.assignmentHides).length > 0 || Object.keys(changes.courseHides).length > 0;
+
       try {
-        if (Object.keys(changes).length) await call('uiSetAssignmentsIncluded', changes);
-        if (clears.length) await call('uiClearCollectStatus', clears);
-        if (Object.keys(assignmentHides).length) await call('uiSetAssignmentsHidden', assignmentHides);
-        if (Object.keys(hides).length) await call('uiHideCourses', hides);
-        // 숨기면 초안 개수가 바뀐다.
-        if (Object.keys(assignmentHides).length || Object.keys(hides).length) {
+        await call('uiSaveAssignmentChanges', changes);
+        S.savingChanges = null;
+        rememberAssignmentChanges();
+        if (countsChanged && !hasAssignmentChanges()) {
+          countsChanged = false;
           const boot = await call('uiGetBootstrap');
           if (!hasAssignmentChanges()) S.boot = boot;
         }
       } catch (err) {
+        S.savingChanges = null;
+        rememberAssignmentChanges();
         showError(err);
         try {
           S.assignments = await call('uiListAssignments');
@@ -1377,8 +1446,9 @@
         }
         render();
       }
-    });
-    return S.includeSaves;
+    }
+
+    S.assignmentSaving = null;
   }
 
   // ---- 이벤트 연결 ------------------------------------------------------------
@@ -1468,6 +1538,7 @@
   // AppTools.html까지 읽은 뒤 시작한다.
   function startApp() {
     refreshBoot()
+    .then(saveUnsavedAssignments)
     .then(() => {
       if (!S.boot.isSetup || !S.boot.keys[S.boot.provider]) go('start');
     })
