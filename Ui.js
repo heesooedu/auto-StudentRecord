@@ -118,6 +118,12 @@ function runWithCollectedUi_(fn) {
 // --- 화면 열기 -----------------------------------------------------------
 
 function openAssistant() {
+  try {
+    hideWorkSheetsOnce_();
+  } catch (err) {
+    log_('openAssistant', 'ERROR', `시트 숨기기 실패: ${err.message}`);
+  }
+
   const html = HtmlService.createTemplateFromFile('App')
     .evaluate()
     .setWidth(ASSISTANT_DIALOG_WIDTH)

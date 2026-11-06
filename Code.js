@@ -106,6 +106,9 @@ const BEHAVIOR_NEGATIVE_TRAIT_KEYWORDS = [
 BEHAVIOR_TRAIT_KEYWORDS.push(...BEHAVIOR_NEGATIVE_TRAIT_KEYWORDS);
 
 const DASHBOARD_SHEET_NAME = '현황판';
+// 공백을 뺀 이름으로 비교한다.
+const ALWAYS_VISIBLE_SHEETS = ['설명서', '제미나이API발급(무료)', SHEET_NAMES.logs];
+const WORK_SHEETS_HIDDEN_PROPERTY = 'WORK_SHEETS_HIDDEN';
 
 const HEADERS = {
   '설정': ['key', 'value', 'description'],
@@ -264,6 +267,12 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(advancedMenu)
     .addToUi();
+
+  try {
+    hideWorkSheetsOnce_();
+  } catch (err) {
+    // 시트 숨기기에 실패해도 메뉴 표시는 유지
+  }
 
   try {
     syncConfigModelsOnOpen_();
@@ -3813,7 +3822,10 @@ function clearData_(sh) {
 function ensureSheetHeaders_(sheetName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(sheetName);
-  if (!sh) sh = ss.insertSheet(sheetName);
+  if (!sh) {
+    sh = ss.insertSheet(sheetName);
+    hideNewWorkSheet_(sh);
+  }
 
   const headers = HEADERS[sheetName];
   if (!headers || headers.length === 0) return sh;
@@ -5538,7 +5550,7 @@ function refreshDashboard() {
   });
 
   try {
-    if (activeSheet) {
+    if (activeSheet && !activeSheet.isSheetHidden()) {
       activeSheet.activate();
 
       if (activeRange) {
@@ -5709,6 +5721,7 @@ function getOrCreateSheet_(sheetName) {
 
   if (!sh) {
     sh = ss.insertSheet(sheetName, 0);
+    hideNewWorkSheet_(sh);
   }
 
   return sh;
@@ -5872,11 +5885,13 @@ function showRecordsSheetAfterSave_(targetRows) {
     });
   }
 
-  sh.activate();
+  // 숨긴 시트를 활성화하면 탭이 다시 나타날 수 있다.
+  if (!sh.isSheetHidden()) {
+    sh.activate();
 
-  if (targetRows && targetRows.length > 0) {
-    const row = targetRows[0];
-    sh.setActiveRange(sh.getRange(row, h.finalRecord || 1));
+    if (targetRows && targetRows.length > 0) {
+      sh.setActiveRange(sh.getRange(targetRows[0], h.finalRecord || 1));
+    }
   }
 
   try {
@@ -9355,28 +9370,62 @@ function organizeSheetTabs_() {
     ss.moveActiveSheet(index + 1);
   });
 
-  const studentsSheet = ss.getSheetByName(SHEET_NAMES.students);
-  if (studentsSheet) {
-    studentsSheet.hideSheet();
-  }
+  hideWorkSheets_();
 
   try {
-    if (activeSheetName && activeSheetName !== SHEET_NAMES.students) {
-      const restoreSheet = ss.getSheetByName(activeSheetName);
-      if (restoreSheet && !restoreSheet.isSheetHidden()) {
-        restoreSheet.activate();
+    const restoreSheet = activeSheetName ? ss.getSheetByName(activeSheetName) : null;
+    if (restoreSheet && !restoreSheet.isSheetHidden()) {
+      restoreSheet.activate();
 
-        if (activeRange) {
-          restoreSheet.setActiveRange(activeRange);
-        }
+      if (activeRange) {
+        restoreSheet.setActiveRange(activeRange);
       }
-    } else {
-      const dashboard = ss.getSheetByName(DASHBOARD_SHEET_NAME);
-      if (dashboard) dashboard.activate();
     }
   } catch (err) {
     // 시트 복귀 실패는 무시
   }
+}
+
+function isAlwaysVisibleSheet_(sh) {
+  return ALWAYS_VISIBLE_SHEETS.includes(sh.getName().replace(/\s+/g, ''));
+}
+
+// 교사는 도우미 화면으로 작업하므로 안내 시트와 로그만 탭에 남긴다.
+function hideWorkSheets_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ss.getSheets();
+  const kept = sheets.filter(isAlwaysVisibleSheet_);
+  if (kept.length === 0) return;
+
+  // 보이는 시트가 하나는 있어야 나머지를 숨길 수 있다.
+  let visible = kept.find(sh => !sh.isSheetHidden());
+  if (!visible) {
+    visible = kept[0];
+    visible.showSheet();
+  }
+
+  const active = ss.getActiveSheet();
+  if (!active || !isAlwaysVisibleSheet_(active)) visible.activate();
+
+  sheets.forEach(sh => {
+    if (!isAlwaysVisibleSheet_(sh) && !sh.isSheetHidden()) sh.hideSheet();
+  });
+}
+
+// 한 번만 숨겨서, 교사가 직접 다시 보이게 한 시트는 시트를 열 때마다 숨기지 않는다.
+function hideWorkSheetsOnce_() {
+  const props = PropertiesService.getDocumentProperties();
+  if (props.getProperty(WORK_SHEETS_HIDDEN_PROPERTY) === 'ON') return;
+
+  hideWorkSheets_();
+  props.setProperty(WORK_SHEETS_HIDDEN_PROPERTY, 'ON');
+}
+
+function hideNewWorkSheet_(sh) {
+  const hasOtherVisible = SpreadsheetApp.getActiveSpreadsheet().getSheets()
+    .some(other => other.getSheetId() !== sh.getSheetId() && !other.isSheetHidden());
+
+  if (hasOtherVisible && !isAlwaysVisibleSheet_(sh)) sh.hideSheet();
 }
 
 function formatRecordRows_(targetRows) {

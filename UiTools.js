@@ -431,6 +431,7 @@ function uiImportManualCsv(data) {
     }
 
     const sh = ss.insertSheet(MANUAL_SHEET_NAME, index);
+    hideNewWorkSheet_(sh);
     const width = headers.length + 2;
     if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
     if (sh.getMaxRows() < rows.length + 1) sh.insertRowsAfter(sh.getMaxRows(), rows.length + 1 - sh.getMaxRows());
