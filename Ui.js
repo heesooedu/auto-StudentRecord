@@ -767,6 +767,33 @@ function finalRecordRowKey_(r) {
   return String(r.finalQueueKey || `${r.studentNo}|${r.studentName}`);
 }
 
+// 붙어 있는 행은 한 번에 지운다. 아래 묶음부터 지워야 위쪽 행 번호가 바뀌지 않는다.
+// 시트는 고정 행 밖의 행을 모두 지울 수 없으므로 마지막 한 행은 내용만 비운다.
+function deleteSheetRows_(sh, rows, lastCol) {
+  const sorted = Array.from(new Set(rows)).sort((a, b) => a - b);
+  const runs = [];
+
+  sorted.forEach(row => {
+    const run = runs[runs.length - 1];
+    if (run && run.start + run.count === row) run.count++;
+    else runs.push({ start: row, count: 1 });
+  });
+
+  let remaining = sh.getMaxRows() - sh.getFrozenRows();
+
+  runs.reverse().forEach(run => {
+    if (run.count < remaining) {
+      sh.deleteRows(run.start, run.count);
+      remaining -= run.count;
+      return;
+    }
+
+    if (run.count > 1) sh.deleteRows(run.start + 1, run.count - 1);
+    sh.getRange(run.start, 1, 1, lastCol).clearContent();
+    remaining = 1;
+  });
+}
+
 // 화면에서 고른 초안(kind='review') 또는 합친 생기부(kind='final') 행을 지운다.
 // items: [{row, key}] — 행 번호가 바뀌었을 수 있으므로 같은 행의 키가 일치할 때만 지운다.
 function uiDeleteRecords(kind, items) {
@@ -780,15 +807,20 @@ function uiDeleteRecords(kind, items) {
     const sh = getSheet_(sheetName);
     const lastRow = sh.getLastRow();
     const lastCol = sh.getLastColumn();
-    const all = sh.getRange(1, 1, lastRow, lastCol).getValues();
-    const headers = all[0].map(v => String(v || '').trim());
+    const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(v => String(v || '').trim());
+
+    // 본문이 긴 시트라 전체를 읽지 않고 행을 확인할 열만 읽는다.
+    const keyColumns = {};
+    (isDraft ? ['submissionKey'] : ['finalQueueKey', 'studentNo', 'studentName']).forEach(header => {
+      const col = headers.indexOf(header) + 1;
+      if (col) keyColumns[header] = sh.getRange(1, col, lastRow, 1).getValues();
+    });
 
     const rows = targets.filter(t => {
       if (t.row < 2 || t.row > lastRow) return false;
-      const values = all[t.row - 1];
       const current = {};
-      headers.forEach((header, i) => {
-        if (header) current[header] = values[i];
+      Object.keys(keyColumns).forEach(header => {
+        current[header] = keyColumns[header][t.row - 1][0];
       });
       return keyOf(current) === t.key;
     }).map(t => t.row);
@@ -797,14 +829,7 @@ function uiDeleteRecords(kind, items) {
       throw new Error('시트 내용이 바뀌어 지우지 못했습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.');
     }
 
-    // 아래 행부터 지워야 위쪽 행 번호가 바뀌지 않는다.
-    Array.from(new Set(rows)).sort((a, b) => b - a).forEach(row => {
-      if (sh.getMaxRows() - sh.getFrozenRows() > 1) {
-        sh.deleteRow(row);
-      } else {
-        sh.getRange(row, 1, 1, lastCol).clearContent();
-      }
-    });
+    deleteSheetRows_(sh, rows, lastCol);
 
     if (isDraft) resetDeletedDraftStatus_(targets.map(t => t.key));
     SpreadsheetApp.flush();

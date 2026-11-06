@@ -9534,6 +9534,7 @@ function updateTeacherGrades_(updates) {
   const grades = sh.getRange(2, h.teacherGrade, lastRow - 1, 1).getValues();
   const indexByKey = {};
   keys.forEach((r, i) => { indexByKey[String(r[0])] = i; });
+  const clearCells = [];
 
   updates.forEach(update => {
     const index = indexByKey[String(update.key)];
@@ -9545,9 +9546,11 @@ function updateTeacherGrades_(updates) {
       // 글자 서식으로 두지 않으면 시트가 '12/20' 같은 값을 날짜로 바꾼다.
       cell.setNumberFormat('@').setValue(update.next);
     } else if (String(grades[index][0] ?? '').trim() === String(update.previous || '')) {
-      cell.setValue('');
+      clearCells.push(cell.getA1Notation());
     }
   });
+
+  if (clearCells.length) sh.getRangeList(clearCells).clearContent();
 }
 
 // 실행 도중 행이 지워져 다른 학생 행에 쓰는 일이 없게 키가 같을 때만 쓴다.

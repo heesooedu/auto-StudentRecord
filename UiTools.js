@@ -842,19 +842,12 @@ function uiDeleteGrades(items) {
         previous: formatGradingTeacherGrade_(rowValueAt_(values[t.row - 1], h.score), rowValueAt_(values[t.row - 1], h.maxScore)),
       }));
 
-    // 아래 행부터 지워야 위쪽 행 번호가 바뀌지 않는다.
-    const rows = Array.from(new Set(targets.map(t => t.row))).sort((a, b) => b - a);
-    rows.forEach(row => {
-      if (sh.getMaxRows() - sh.getFrozenRows() > 1) {
-        sh.deleteRow(row);
-      } else {
-        sh.getRange(row, 1, 1, lastCol).clearContent();
-      }
-    });
+    const rows = targets.map(t => t.row);
+    deleteSheetRows_(sh, rows, lastCol);
 
     updateTeacherGrades_(teacherGradeUpdates);
     SpreadsheetApp.flush();
-    return rows.length;
+    return new Set(rows).size;
   });
 
   log_('uiDeleteGrades', 'OK', `채점 결과 ${deleted}개 삭제`);
