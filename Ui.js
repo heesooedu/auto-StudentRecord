@@ -472,8 +472,8 @@ function uiListAssignments() {
   });
 }
 
-function uiSetAssignmentsIncluded(keys, value) {
-  const keySet = new Set(keys || []);
+// changes: {'courseId|courseWorkId': true/false}. 화면은 체크를 이미 반영했으므로 목록을 돌려주지 않는다.
+function uiSetAssignmentsIncluded(changes) {
   const lock = LockService.getDocumentLock();
   lock.waitLock(10000);
 
@@ -486,22 +486,22 @@ function uiSetAssignmentsIncluded(keys, value) {
       throw new Error('과제목록 시트의 열 구성이 올바르지 않습니다. 시작하기에서 시트 초기 설정을 실행하세요.');
     }
 
-    if (lastRow < 2) return uiListAssignments();
+    if (lastRow < 2) return;
 
     const courseIds = sh.getRange(2, h.courseId, lastRow - 1, 1).getValues();
     const courseWorkIds = sh.getRange(2, h.courseWorkId, lastRow - 1, 1).getValues();
+    const includeRange = sh.getRange(2, h.includeInFinal, lastRow - 1, 1);
+    const included = includeRange.getValues();
 
     for (let i = 0; i < courseIds.length; i++) {
       const key = `${courseIds[i][0]}|${courseWorkIds[i][0]}`;
-      if (keySet.has(key)) {
-        sh.getRange(i + 2, h.includeInFinal).setValue(!!value);
-      }
+      if (Object.prototype.hasOwnProperty.call(changes || {}, key)) included[i][0] = !!changes[key];
     }
+
+    includeRange.setValues(included);
   } finally {
     lock.releaseLock();
   }
-
-  return uiListAssignments();
 }
 
 // --- 제출물 수집 ---------------------------------------------------------

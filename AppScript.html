@@ -24,7 +24,10 @@
     selected: new Set(),
     edits: {},
     collectedKeys: new Set(),
-    filters: { collectAssignment: 'included', draftAssignment: 'included', reviewAssignment: '', search: '', uncheckedOnly: false },
+    submissionsOpen: false,
+    includePending: {},
+    includeSaves: Promise.resolve(),
+    filters: { collectAssignment: 'included', draftAssignment: 'included', reviewAssignment: '', search: '', submissionSearch: '', uncheckedOnly: false },
     pageSize: { review: 30, final: 30, grading: 30 },
     busy: '',
     pollTimer: null,
@@ -33,11 +36,10 @@
   const STEPS = [
     { id: 'home', label: '홈', num: '⌂' },
     { id: 'start', label: '시작하기', num: 1 },
-    { id: 'assignments', label: '과제 고르기', num: 2 },
-    { id: 'collect', label: '제출물 수집', num: 3 },
-    { id: 'drafts', label: '초안 만들기', num: 4 },
-    { id: 'review', label: '초안 확인', num: 5 },
-    { id: 'final', label: '초안 합치기', num: 6 },
+    { id: 'collect', label: '과제·제출물 수집', num: 2 },
+    { id: 'drafts', label: '초안 만들기', num: 3 },
+    { id: 'review', label: '초안 확인', num: 4 },
+    { id: 'final', label: '초안 합치기', num: 5 },
   ];
 
   // 기본 흐름과 따로 필요할 때 쓰는 도구 (화면은 AppTools.html)
@@ -51,8 +53,7 @@
 
   const NEXT_GUIDE = {
     start: { title: 'AI 연결부터 시작해요', desc: '사용할 AI(Claude·GPT·Gemini)를 고르고 API 키를 저장하면 준비가 끝나요.', button: '시작하기' },
-    assignments: { title: '생기부에 쓸 과제를 골라요', desc: 'Google Classroom에서 과제 목록을 가져온 뒤, 생기부에 반영할 과제에 체크하세요.', button: '과제 고르기' },
-    collect: { title: '학생 제출물을 가져와요', desc: '체크한 과제의 학생 제출물(문서 내용 포함)을 한 번에 모아요.', button: '제출물 수집하기' },
+    collect: { title: '과제를 고르고 제출물을 가져와요', desc: 'Google Classroom에서 과제 목록을 가져와 생기부에 반영할 과제에 체크하고, 학생 제출물(문서 내용 포함)을 한 번에 모아요.', button: '과제·제출물 수집하기' },
     drafts: { title: 'AI로 과제별 초안을 만들어요', desc: '제출물을 골라 AI에게 생기부 초안을 맡겨요. 창을 닫아도 자동으로 이어서 만들어요.', button: '초안 만들기' },
     review: { title: '초안을 확인하고 다듬어요', desc: '만들어진 초안을 읽고 고친 뒤 \'확인함\'에 체크하세요.', button: '초안 확인하기' },
     final: { title: '필요하면 학생별로 초안을 합쳐요', desc: '과제가 여러 개일 때 한 학생의 초안들을 하나의 생기부로 합쳐요. 과제 하나만 기록한다면 여기서 끝내도 돼요.', button: '초안 합치기' },
@@ -220,7 +221,6 @@
 
     switch (id) {
       case 'start': return b.isSetup && b.keys[b.provider] ? 'done' : '';
-      case 'assignments': return c.includedAssignments > 0 ? 'done' : '';
       case 'collect': return on('collect') ? 'running' : c.submissions > 0 ? 'done' : '';
       case 'drafts': return on('drafts') ? 'running' : c.drafts > 0 ? 'done' : '';
       case 'review': return c.drafts > 0 && c.draftsChecked >= c.drafts ? 'done' : '';
@@ -230,7 +230,7 @@
   }
 
   function nextStep() {
-    const order = ['start', 'assignments', 'collect', 'drafts', 'review', 'final'];
+    const order = ['start', 'collect', 'drafts', 'review', 'final'];
     return order.find(id => stepState(id) !== 'done') || 'final';
   }
 
@@ -265,7 +265,6 @@
 
   async function ensureData(view) {
     const loaders = {
-      assignments: async () => { if (!S.assignments) S.assignments = await call('uiListAssignments'); },
       collect: async () => {
         if (!S.assignments) S.assignments = await call('uiListAssignments');
         if (!S.submissions) S.submissions = await call('uiListSubmissions');
@@ -349,6 +348,8 @@
       } else if (S.view === 'drafts' || S.view === 'collect') {
         // 진행 중에도 남은 개수와 행 상태를 갱신해서 보여준다.
         S.submissions = await call('uiListSubmissions');
+        // 아직 저장 전인 체크를 시트의 예전 값으로 되돌리지 않는다.
+        if (S.view === 'collect' && !Object.keys(S.includePending).length) S.assignments = await call('uiListAssignments');
       } else if (status[S.view] && status[S.view].state === 'ON' && !isEditing()) {
         // 도구 화면도 진행 중에는 결과를 바로바로 보여준다.
         await refreshToolData(S.view);
@@ -365,7 +366,7 @@
 
   function isEditing() {
     const el = document.activeElement;
-    return el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT');
+    return el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type !== 'checkbox'));
   }
 
   // ---- 화면 렌더링 -----------------------------------------------------------
@@ -373,7 +374,7 @@
 
   function render() {
     renderNav();
-    const views = Object.assign({ home: viewHome, start: viewStart, assignments: viewAssignments, collect: viewCollect, drafts: viewDrafts, review: viewReview, final: viewFinal, settings: viewSettings }, TOOL_VIEWS);
+    const views = Object.assign({ home: viewHome, start: viewStart, collect: viewCollect, drafts: viewDrafts, review: viewReview, final: viewFinal, settings: viewSettings }, TOOL_VIEWS);
     const scroll = $('#view').scrollTop;
     if (!S.boot) {
       $('#view').innerHTML = '<div class="loading">불러오는 중…</div>';
@@ -533,7 +534,7 @@
           시트를 열면 이 화면이 바로 뜨게 해요.</label>
       </div>` : ''}
 
-      ${stepState('start') === 'done' ? '<button class="btn primary lg" data-go="assignments">다음: 과제 고르기 →</button>' : ''}`;
+      ${stepState('start') === 'done' ? '<button class="btn primary lg" data-go="collect">다음: 과제·제출물 수집 →</button>' : ''}`;
   }
 
   function assignmentGroups(assignments, filterText) {
@@ -547,12 +548,15 @@
     return groups;
   }
 
-  function viewAssignments() {
-    const list = S.assignments || [];
+  function assignmentListHtml(list) {
     const groups = assignmentGroups(list, S.filters.search);
-    const included = list.filter(a => a.includeInFinal).length;
+    const counts = {};
+    (S.submissions || []).forEach(s => {
+      const key = `${s.courseId}|${s.courseWorkId}`;
+      counts[key] = (counts[key] || 0) + 1;
+    });
 
-    const groupHtml = Object.keys(groups).map(name => {
+    return Object.keys(groups).map(name => {
       const items = groups[name];
       const allChecked = items.every(a => a.includeInFinal);
       return `
@@ -565,24 +569,11 @@
           <input type="checkbox" data-action="toggle-assignment" data-key="${esc(a.key)}" ${a.includeInFinal ? 'checked' : ''}>
           <span class="grow">${esc(a.assignmentTitle)}
             ${a.dueAt ? `<span class="muted small"> · 마감 ${esc(a.dueAt)}</span>` : ''}</span>
+          ${counts[a.key] ? `<span class="muted small">제출물 ${counts[a.key]}개</span>` : ''}
           ${a.collectStatus ? `<span class="pill">${esc(a.collectStatus)}</span>` : ''}
           ${a.alternateLink ? `<a href="${esc(a.alternateLink)}" target="_blank" rel="noopener" class="small">열기 ↗</a>` : ''}
         </label>`).join('')}`;
     }).join('');
-
-    return `
-      <h1>과제 고르기</h1>
-      <p class="lead">생기부에 반영할 과제에 체크하세요. 체크한 과제만 제출물을 모으고 초안을 만들어요.</p>
-      ${busyNote()}
-      <div class="toolbar">
-        <button class="btn primary" data-action="import-assignments" ${S.busy ? 'disabled' : ''}>Classroom에서 과제 가져오기</button>
-        <input type="search" id="search" class="grow" placeholder="수업명이나 과제명으로 찾기" value="${esc(S.filters.search)}">
-        <span class="muted">체크한 과제 <b>${included}</b>개</span>
-      </div>
-      ${list.length === 0
-        ? '<div class="card empty">아직 가져온 과제가 없어요.<br>위의 [Classroom에서 과제 가져오기]를 눌러 주세요.</div>'
-        : `<div class="list">${groupHtml || '<div class="empty">검색 결과가 없어요.</div>'}</div>`}
-      ${list.length > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-action="go-collect">다음: 제출물 수집 →</button></div>' : ''}`;
   }
 
   function statusPanel(job, unit) {
@@ -619,9 +610,9 @@
       ${list.map(a => `<option value="${esc(a.key)}" ${selected === a.key ? 'selected' : ''}>${esc(a.courseName)} · ${esc(a.assignmentTitle)}</option>`).join('')}`;
   }
 
-  function filterSubmissions(assignmentFilter) {
+  function filterSubmissions(assignmentFilter, search = S.filters.search) {
     const included = includedAssignmentKeys();
-    const text = S.filters.search.trim().toLowerCase();
+    const text = search.trim().toLowerCase();
     return (S.submissions || []).filter(s => {
       const key = `${s.courseId}|${s.courseWorkId}`;
       if (assignmentFilter === 'included' && !included.has(key)) return false;
@@ -644,11 +635,12 @@
 
   function viewCollect() {
     const c = S.boot.counts;
+    const list = S.assignments || [];
     const running = S.boot.status.collect.state === 'ON';
-    const rows = filterSubmissions(S.filters.collectAssignment);
+    const rows = filterSubmissions(S.filters.collectAssignment, S.filters.submissionSearch);
     // 수집상태의 '수집완료'는 예전에 모은 기록이 남은 것일 수 있다. 그래서 이 창에서 수집을 누른 과제가 모두 '수집완료'일 때만
     // 다 모은 것으로 보고 다음 단계로 이끌고, 그 전에는 수집 버튼으로 이끈다.
-    const included = (S.assignments || []).filter(a => a.includeInFinal);
+    const included = list.filter(a => a.includeInFinal);
     const isDone = a => /^수집완료/.test(String(a.collectStatus || ''));
     const uncollected = included.filter(a => !isDone(a)).length;
     const collected = included.length > 0 && included.every(a => isDone(a) && S.collectedKeys.has(a.key));
@@ -657,47 +649,59 @@
     const collectLabel = S.collecting ? '<span class="spinner"></span> 가져오는 중…'
       : running ? '<span class="spinner"></span> 자동으로 이어서 가져오는 중…'
       : collected ? '다시 수집하기'
-      : '제출물 수집 시작 →';
+      : `체크한 ${c.includedAssignments}개 수집 시작 →`;
+
+    const head = `
+      <h1>과제·제출물 수집</h1>
+      <p class="lead">생기부에 반영할 과제에 체크하고 수집을 시작하세요. 체크한 과제의 학생 제출물과 첨부 문서 내용을 가져와요.</p>
+      ${busyNote()}
+      <div class="toolbar">
+        <button class="btn ${list.length ? '' : 'primary'}" data-action="import-assignments" ${S.busy ? 'disabled' : ''}>Classroom에서 과제 가져오기</button>
+        <input type="search" id="search" class="grow" placeholder="수업명이나 과제명으로 찾기" value="${esc(S.filters.search)}">
+      </div>`;
+    if (!list.length) return `${head}<div class="card empty">아직 가져온 과제가 없어요.<br>위의 [Classroom에서 과제 가져오기]를 눌러 주세요.</div>`;
 
     return `
-      <h1>제출물 수집</h1>
-      <p class="lead">체크한 과제의 학생 제출물과 첨부 문서 내용을 가져와요. 과제가 많으면 나누어 자동으로 이어서 가져와요.</p>
-      ${busyNote()}
-      <div class="card ${needsCollect ? 'hero' : ''}">
+      ${head}
+      <div class="list">${assignmentListHtml(list) || '<div class="empty">검색 결과가 없어요.</div>'}</div>
+      ${statusPanel('collect', '개 과제')}
+      <details class="card" id="submissions-details" ${S.submissionsOpen ? 'open' : ''}>
+        <summary>수집한 제출물 보기 (${c.submissions || 0}개)</summary>
+        <div class="toolbar">
+          <select id="collect-assignment">${assignmentOptions(S.filters.collectAssignment)}</select>
+          <input type="search" id="submission-search" class="grow" placeholder="학생 이름·번호·수업으로 찾기" value="${esc(S.filters.submissionSearch)}">
+          <span class="muted">${rows.length}개</span>
+        </div>
+        ${rows.length === 0 ? '<div class="empty">수집한 제출물이 없어요.</div>' : `
+        <div class="table-wrap"><table>
+          <thead><tr><th>번호</th><th>이름</th><th>수업</th><th>과제</th><th>제출</th><th>글자수</th><th>초안</th></tr></thead>
+          <tbody>${rows.map(s => `
+            <tr class="clickable" data-action="show-text" data-key="${esc(s.submissionKey)}">
+              <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td>
+              <td class="muted">${esc(s.courseName)}</td><td>${esc(s.assignmentTitle)}</td>
+              <td>${esc(s.state)}${s.late === true || s.late === 'TRUE' ? ' <span class="pill warn">지각</span>' : ''}</td>
+              <td>${Number(s.textChars) > 0 ? esc(s.textChars) : '<span class="pill warn">내용 없음</span>'}</td>
+              <td>${draftStatusPill(s)}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        <div class="help">행을 누르면 제출물 원문을 볼 수 있어요.</div>`}
+      </details>
+      <div class="card collect-bar ${needsCollect ? 'hero' : ''}">
         <div class="row between">
           <div>
-            <div>체크한 과제 <b>${c.includedAssignments}</b>개의 제출물을 가져와요.</div>
-            ${needsCollect ? `<div class="help"><b>오른쪽 [제출물 수집 시작] 버튼을 눌러야</b> 제출물을 가져오기 시작해요.${collectedBefore
-              ? '<br>전에 모은 적 있는 과제예요. 그 뒤에 낸 제출물까지 가져오려면 눌러 주세요. 그대로 쓰려면 아래 [다음: 초안 만들기]로 넘어가도 돼요.'
+            <div>체크한 과제 <b>${c.includedAssignments}</b>개</div>
+            ${!c.includedAssignments ? '<div class="help">수집할 과제에 체크하세요.</div>' : ''}
+            ${needsCollect ? `<div class="help"><b>[수집 시작] 버튼을 눌러야</b> 제출물을 가져오기 시작해요.${collectedBefore
+              ? '<br>전에 모은 적 있는 과제예요. 그 뒤에 낸 제출물까지 가져오려면 눌러 주세요. 그대로 쓰려면 [다음: 초안 만들기]로 넘어가도 돼요.'
               : uncollected < included.length ? ` (아직 안 모은 과제 ${uncollected}개)` : ''}</div>` : ''}
-            ${collected && !running ? '<div class="help">체크한 과제의 제출물을 모두 가져왔어요. 아래 [다음: 초안 만들기]로 넘어가세요. 점수를 매기려면 왼쪽 도구의 [채점]으로 가세요.</div>' : ''}
+            ${collected && !running ? '<div class="help">체크한 과제의 제출물을 모두 가져왔어요. [다음: 초안 만들기]로 넘어가세요. 점수를 매기려면 왼쪽 도구의 [채점]으로 가세요.</div>' : ''}
           </div>
-          <button class="btn ${collected ? '' : 'primary'} ${needsCollect ? 'lg' : ''}" data-action="collect" ${S.busy || running || !c.includedAssignments ? 'disabled' : ''}>${collectLabel}</button>
+          <div class="row">
+            <button class="btn ${collected ? '' : 'primary'} ${needsCollect ? 'lg' : ''}" data-action="collect" ${S.busy || running || !c.includedAssignments ? 'disabled' : ''}>${collectLabel}</button>
+            ${c.submissions > 0 ? `<button class="btn ${needsCollect ? '' : 'primary lg'}" data-go="drafts">다음: 초안 만들기 →</button>` : ''}
+          </div>
         </div>
-        ${!c.includedAssignments ? '<div class="help">먼저 [과제 고르기]에서 과제를 체크하세요.</div>' : ''}
-      </div>
-      ${statusPanel('collect', '개 과제')}
-
-      <h2>수집한 제출물</h2>
-      <div class="toolbar">
-        <select id="collect-assignment">${assignmentOptions(S.filters.collectAssignment)}</select>
-        <input type="search" id="search" class="grow" placeholder="학생 이름·번호·수업으로 찾기" value="${esc(S.filters.search)}">
-        <span class="muted">${rows.length}개</span>
-      </div>
-      ${rows.length === 0 ? '<div class="card empty">수집한 제출물이 없어요.</div>' : `
-      <div class="table-wrap"><table>
-        <thead><tr><th>번호</th><th>이름</th><th>수업</th><th>과제</th><th>제출</th><th>글자수</th><th>초안</th></tr></thead>
-        <tbody>${rows.map(s => `
-          <tr class="clickable" data-action="show-text" data-key="${esc(s.submissionKey)}">
-            <td>${esc(s.studentNo)}</td><td>${esc(s.studentName)}</td>
-            <td class="muted">${esc(s.courseName)}</td><td>${esc(s.assignmentTitle)}</td>
-            <td>${esc(s.state)}${s.late === true || s.late === 'TRUE' ? ' <span class="pill warn">지각</span>' : ''}</td>
-            <td>${Number(s.textChars) > 0 ? esc(s.textChars) : '<span class="pill warn">내용 없음</span>'}</td>
-            <td>${draftStatusPill(s)}</td>
-          </tr>`).join('')}</tbody>
-      </table></div>
-      <div class="help">행을 누르면 제출물 원문을 볼 수 있어요.</div>`}
-      ${c.submissions > 0 ? '<div style="margin-top:16px"><button class="btn primary lg" data-go="drafts">다음: 초안 만들기 →</button></div>' : ''}`;
+      </div>`;
   }
 
   function viewDrafts() {
@@ -728,7 +732,7 @@
         <span class="muted">선택 <b>${S.selected.size}</b>개</span>
         <button class="btn primary" data-action="make-drafts" ${S.busy || running || !S.selected.size ? 'disabled' : ''}>선택한 ${S.selected.size}개 초안 만들기</button>
       </div>
-      ${rows.length === 0 ? '<div class="card empty">제출물이 없어요. 먼저 [제출물 수집]을 진행하세요.</div>' : `
+      ${rows.length === 0 ? '<div class="card empty">제출물이 없어요. 먼저 [과제·제출물 수집]을 진행하세요.</div>' : `
       <div class="table-wrap"><table>
         <thead><tr><th><input type="checkbox" data-action="select-all" ${allSelected ? 'checked' : ''}></th>
           <th>번호</th><th>이름</th><th>수업</th><th>과제</th><th>글자수</th><th>상태</th></tr></thead>
@@ -979,6 +983,7 @@
     },
     async 'import-assignments'() {
       await withBusy('Classroom에서 과제를 가져오는 중…', async () => {
+        await flushIncluded();
         const result = await call('uiImportAssignments');
         S.assignments = result.assignments;
         S.boot = await call('uiGetBootstrap');
@@ -986,13 +991,16 @@
       });
     },
     async 'toggle-assignment'(el) {
-      await setIncluded([el.dataset.key], el.checked);
+      setIncluded([el.dataset.key], el.checked);
     },
     async 'toggle-group'(el) {
-      await setIncluded(el.dataset.keys.split(','), el.checked);
+      setIncluded(el.dataset.keys.split(','), el.checked);
     },
     async collect() {
+      // 방금 누른 체크가 저장된 뒤에 수집해야 그 과제도 들어간다.
+      await flushIncluded();
       const count = S.boot.counts.includedAssignments;
+      if (!count) return;
       if (!await confirmModal('제출물 수집', `체크한 과제 ${count}개의 제출물을 가져올까요?\n과제가 많으면 나누어 자동으로 이어서 가져와요.`, '수집 시작')) return;
       S.collecting = true;
       (S.assignments || []).filter(a => a.includeInFinal).forEach(a => S.collectedKeys.add(a.key));
@@ -1172,13 +1180,6 @@
         showError(err);
       }
     },
-    // 체크 저장이 서버에서 돌아오기 전에 누를 수도 있어 화면의 체크박스도 함께 본다.
-    async 'go-collect'() {
-      const checked = (S.assignments || []).some(a => a.includeInFinal) ||
-        !!document.querySelector('[data-action="toggle-assignment"]:checked');
-      if (!checked && !await confirmModal('체크한 과제 없음', '아직 체크한 과제가 없어요.\n체크한 과제만 제출물을 모을 수 있어요. 그래도 다음으로 갈까요?', '그래도 이동')) return;
-      go('collect');
-    },
     async 'save-settings'() {
       const patch = {};
       document.querySelectorAll('[data-setting]').forEach(input => {
@@ -1196,14 +1197,40 @@
     },
   };
 
-  async function setIncluded(keys, value) {
-    try {
-      S.assignments = await call('uiSetAssignmentsIncluded', keys, value);
-      S.boot = await call('uiGetBootstrap');
-    } catch (err) {
-      showError(err);
-    }
+  // 체크는 화면에 바로 반영하고, 시트 저장은 잠시 모았다가 한 번에 한다.
+  let includeTimer = null;
+
+  function setIncluded(keys, value) {
+    const keySet = new Set(keys);
+    const list = S.assignments || [];
+    list.forEach(a => { if (keySet.has(a.key)) a.includeInFinal = value; });
+    keys.forEach(key => { S.includePending[key] = value; });
+    S.boot.counts.includedAssignments = list.filter(a => a.includeInFinal).length;
     render();
+    clearTimeout(includeTimer);
+    includeTimer = setTimeout(flushIncluded, 300);
+  }
+
+  function flushIncluded() {
+    clearTimeout(includeTimer);
+    const changes = S.includePending;
+    if (!Object.keys(changes).length) return S.includeSaves;
+    S.includePending = {};
+    S.includeSaves = S.includeSaves.then(async () => {
+      try {
+        await call('uiSetAssignmentsIncluded', changes);
+      } catch (err) {
+        showError(err);
+        try {
+          S.assignments = await call('uiListAssignments');
+          S.boot = await call('uiGetBootstrap');
+        } catch (reloadErr) {
+          // 다시 읽지 못해도 다음 저장은 이어서 할 수 있게 둔다.
+        }
+        render();
+      }
+    });
+    return S.includeSaves;
   }
 
   // ---- 이벤트 연결 ------------------------------------------------------------
@@ -1249,13 +1276,13 @@
     const el = event.target;
     if (el.tagName === 'TEXTAREA' && el.closest('.record')) autoGrow(el);
 
-    if (el.id === 'search') {
-      S.filters.search = el.value;
+    if (el.id === 'search' || el.id === 'submission-search') {
+      S.filters[el.id === 'search' ? 'search' : 'submissionSearch'] = el.value;
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         const pos = el.selectionStart;
         render();
-        const again = $('#search');
+        const again = $('#' + el.id);
         if (again) { again.focus(); again.setSelectionRange(pos, pos); }
       }, 250);
       return;

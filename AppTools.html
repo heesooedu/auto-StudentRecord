@@ -905,10 +905,10 @@
 
     const head = `
       <h1>채점</h1>
-      <p class="lead">[제출물 수집]을 마친 과제를 채점할 수 있어요. 입력한 채점 기준으로 AI가 학생별 점수와 이유를 매기고, 점수를 확인해 [확인함]을 체크하면 초안 만들 때 참고돼요.</p>
+      <p class="lead">[과제·제출물 수집]을 마친 과제를 채점할 수 있어요. 입력한 채점 기준으로 AI가 학생별 점수와 이유를 매기고, 점수를 확인해 [확인함]을 체크하면 초안 만들 때 참고돼요.</p>
       ${busyNote()}`;
     if (!d.assignments.length) return `${head}<div class="card empty">아직 채점할 수 있는 과제가 없어요. 먼저 제출물을 수집해 주세요.
-      <div style="margin-top:12px"><button class="btn primary" data-go="collect">제출물 수집으로 이동</button></div></div>`;
+      <div style="margin-top:12px"><button class="btn primary" data-go="collect">과제·제출물 수집으로 이동</button></div></div>`;
 
     const a = gradingAssignment();
     const st = S.boot.status.grading;
@@ -924,7 +924,7 @@
       <div class="toolbar">
         <select id="grading-assignment" class="grow">${d.assignments.map(x => `<option value="${esc(x.key)}" ${x.key === a.key ? 'selected' : ''}>${esc(x.courseName)} · ${esc(x.assignmentTitle)}${gradingRubricSaved(x) ? '' : ' (기준 입력 필요)'}</option>`).join('')}</select>
       </div>
-      <div class="help" style="margin-bottom:12px">수집을 마친 과제 <b>${d.assignments.length}</b>개가 위 목록에 있어요. 목록에 없는 과제는 [제출물 수집]을 먼저 해 주세요.</div>
+      <div class="help" style="margin-bottom:12px">수집을 마친 과제 <b>${d.assignments.length}</b>개가 위 목록에 있어요. 목록에 없는 과제는 [과제·제출물 수집]을 먼저 해 주세요.</div>
       ${gradingRubricCard(a)}
       ${promptCard('GRADING_GUIDE', '채점 공통 지침 확인')}
       ${statusPanel('grading', '개')}
@@ -1476,6 +1476,7 @@
   document.addEventListener('toggle', event => {
     const key = event.target.dataset && event.target.dataset.promptCard;
     if (key) S.promptOpen[key] = event.target.open;
+    if (event.target.id === 'submissions-details') S.submissionsOpen = event.target.open;
     const exampleKey = event.target.dataset && event.target.dataset.promptExample;
     if (exampleKey) S.promptExampleOpen[exampleKey] = event.target.open;
   }, true);
