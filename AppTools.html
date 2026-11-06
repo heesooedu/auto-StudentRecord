@@ -1477,6 +1477,7 @@
     const key = event.target.dataset && event.target.dataset.promptCard;
     if (key) S.promptOpen[key] = event.target.open;
     if (event.target.id === 'submissions-details') S.submissionsOpen = event.target.open;
+    if (event.target.id === 'hidden-assignments') S.hiddenAssignmentsOpen = event.target.open;
     const exampleKey = event.target.dataset && event.target.dataset.promptExample;
     if (exampleKey) S.promptExampleOpen[exampleKey] = event.target.open;
   }, true);

@@ -17,6 +17,7 @@ const MANUAL_SHEET_NAME = '수동추가';
 const MANUAL_RESET_ROWS = 1000;
 const AUTO_MANUAL_RECORD_TRIGGER_PROPERTY = 'AUTO_MANUAL_RECORD_TRIGGER';
 const AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY = 'AUTO_SUBMISSION_COLLECTION_TRIGGER';
+const HIDDEN_COURSES_PROPERTY = 'HIDDEN_COURSES';
 const AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY = 'AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER';
 const AUTO_BUSY_RETRY_DELAY_MS = 60000;
 
@@ -126,7 +127,8 @@ const HEADERS = {
     'weight',
     'category',
     'collectStatus',
-    'memo'
+    'memo',
+    'hidden'
   ],
   '학생명단': ['studentNo', 'name', 'email', 'classroomUserId', 'memo'],
   '제출물': [
@@ -2153,15 +2155,27 @@ function saveClaudeApiKey() {
 function importClassroomAssignments() {
   const result = importClassroomAssignmentsCore_();
 
-  getUi_().alert(`${result.assignmentCount}개 과제를 가져왔습니다.`);
+  getUi_().alert(buildAssignmentImportMessages_(result).join('\n\n'));
+}
+
+function buildAssignmentImportMessages_(result) {
+  const messages = [`${result.assignmentCount}개 과제를 가져왔습니다.`];
+
+  if (result.failedCourses.length) {
+    messages.push(`이 수업은 가져오지 못해 기존 과제를 그대로 두었습니다. 잠시 뒤 다시 가져와 주세요.\n${result.failedCourses.join(', ')}`);
+  }
+
+  return messages;
 }
 
 function importClassroomAssignmentsCore_() {
   const sh = ensureAssignmentsSheetForImport_();
 
   const existingOptions = getAssignmentOptionMap_();
-  const courses = listAllCourses_();
+  const hiddenCourses = getHiddenCourses_();
+  const courses = listAllCourses_().filter(course => !hiddenCourses[course.id]);
   const rows = [];
+  const failedCourses = [];
 
   courses.forEach(course => {
     try {
@@ -2191,11 +2205,15 @@ function importClassroomAssignmentsCore_() {
         option.category || '',
         option.collectStatus || '',
         option.memo || '',
+        option.hidden === true ? true : '',
       ]);
 
       });
     } catch (err) {
       log_('importClassroomAssignments', 'ERROR', `${course.name}: ${err.message}`);
+      // 잠깐의 오류로 체크와 수집 표시를 잃지 않도록 시트의 기존 행을 그대로 쓴다.
+      failedCourses.push(course.name || course.id);
+      rows.push(...getExistingAssignmentRows_(sh, course.id));
     }
   });
 
@@ -2211,7 +2229,27 @@ function importClassroomAssignmentsCore_() {
 
   return {
     assignmentCount: rows.length,
+    failedCourses,
   };
+}
+
+function getExistingAssignmentRows_(sh, courseId) {
+  const values = sh.getDataRange().getValues();
+  const idx = headerIndex_(values[0].map(h => String(h || '').trim()));
+  if (idx.courseId === undefined) return [];
+
+  return values.slice(1)
+    .filter(row => String(row[idx.courseId]) === String(courseId))
+    .map(row => HEADERS[SHEET_NAMES.assignments].map(header => (idx[header] === undefined ? '' : row[idx[header]])));
+}
+
+// 숨긴 수업: {courseId: 화면에 보일 이름}
+function getHiddenCourses_() {
+  return JSON.parse(PropertiesService.getDocumentProperties().getProperty(HIDDEN_COURSES_PROPERTY) || '{}');
+}
+
+function saveHiddenCourses_(courses) {
+  PropertiesService.getDocumentProperties().setProperty(HIDDEN_COURSES_PROPERTY, JSON.stringify(courses));
 }
 
 function ensureAssignmentsSheetForImport_() {
@@ -2246,6 +2284,7 @@ function getAssignmentOptionMap_() {
       category: idx.category !== undefined ? row[idx.category] : '',
       collectStatus: idx.collectStatus !== undefined ? row[idx.collectStatus] : '',
       memo: idx.memo !== undefined ? row[idx.memo] : '',
+      hidden: idx.hidden !== undefined && row[idx.hidden] === true,
     };
   }
 
@@ -5015,6 +5054,7 @@ function styleAssignmentsSheet_() {
     category: 120,
     collectStatus: 130,
     memo: 220,
+    hidden: 70,
   });
 
   const h = headerMap_(sh);

@@ -257,16 +257,58 @@ function countColumnValues_(sheetName, header, predicate) {
     .length;
 }
 
+// 과제목록에 보이는 과제의 키. 비활성화되거나 숨긴 수업·과제의 자료는 시트에 남아도 채점과 초안 확인에서 뺀다.
+function listedAssignmentKeys_() {
+  const keys = new Set();
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.assignments);
+  if (!sh || sh.getLastRow() < 2) return keys;
+
+  const h = headerMap_(sh);
+  if (!h.courseId || !h.courseWorkId) return keys;
+
+  const rowCount = sh.getLastRow() - 1;
+  const courseWorkIds = sh.getRange(2, h.courseWorkId, rowCount, 1).getValues();
+  const hidden = h.hidden ? sh.getRange(2, h.hidden, rowCount, 1).getValues() : [];
+  sh.getRange(2, h.courseId, rowCount, 1).getValues().forEach((r, i) => {
+    if (!hidden[i] || !isChecked_(hidden[i][0])) keys.add(`${r[0]}|${courseWorkIds[i][0]}`);
+  });
+
+  return keys;
+}
+
+// 초안 시트는 본문이 길어서 필요한 열만 읽는다.
+function countListedDrafts_() {
+  const counts = { drafts: 0, draftsChecked: 0 };
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.records);
+  if (!sh || sh.getLastRow() < 2) return counts;
+
+  const h = headerMap_(sh);
+  if (!h.submissionKey) return counts;
+
+  const rowCount = sh.getLastRow() - 1;
+  const listed = listedAssignmentKeys_();
+  const checks = h.teacherChecked ? sh.getRange(2, h.teacherChecked, rowCount, 1).getValues() : [];
+
+  sh.getRange(2, h.submissionKey, rowCount, 1).getValues().forEach((r, i) => {
+    if (!isSubmissionFromIncludedAssignment_(r[0], listed)) return;
+    counts.drafts++;
+    if (checks[i] && isChecked_(checks[i][0])) counts.draftsChecked++;
+  });
+
+  return counts;
+}
+
 function getAssistantCounts_() {
   const notBlank = v => String(v || '').trim() !== '';
+  const draftCounts = countListedDrafts_();
 
   return {
     assignments: countColumnValues_(SHEET_NAMES.assignments, 'courseWorkId', notBlank),
     includedAssignments: countColumnValues_(SHEET_NAMES.assignments, 'includeInFinal', isChecked_),
     submissions: countColumnValues_(SHEET_NAMES.submissions, 'submissionKey', notBlank),
     draftPending: countPendingRecordDrafts_(),
-    drafts: countColumnValues_(SHEET_NAMES.records, 'submissionKey', notBlank),
-    draftsChecked: countColumnValues_(SHEET_NAMES.records, 'teacherChecked', isChecked_),
+    drafts: draftCounts.drafts,
+    draftsChecked: draftCounts.draftsChecked,
     finalRecords: countColumnValues_(SHEET_NAMES.studentFinalRecords, 'finalRecord', notBlank),
   };
 }
@@ -292,6 +334,7 @@ function uiGetBootstrap() {
     counts: isSetup ? getAssistantCounts_() : null,
     status: isSetup ? uiGetStatus() : null,
     autoOpen: hasAutoOpenTrigger_(),
+    hiddenCourses: getHiddenCourses_(),
     spreadsheetUrl: SpreadsheetApp.getActiveSpreadsheet().getUrl(),
   };
 }
@@ -447,7 +490,7 @@ function uiImportAssignments() {
   const result = importClassroomAssignmentsCore_();
 
   return {
-    messages: [`${result.assignmentCount}개 과제를 가져왔습니다.`],
+    messages: buildAssignmentImportMessages_(result),
     assignments: uiListAssignments(),
   };
 }
@@ -465,9 +508,11 @@ function uiListAssignments() {
     'alternateLink',
     'includeInFinal',
     'collectStatus',
+    'hidden',
   ], 'courseWorkId').map(a => {
     a.key = `${a.courseId}|${a.courseWorkId}`;
     a.includeInFinal = isChecked_(a.includeInFinal);
+    a.hidden = isChecked_(a.hidden);
     return a;
   });
 }
@@ -502,6 +547,95 @@ function uiSetAssignmentsIncluded(changes) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// changes: {'courseId|courseWorkId': true/false}. 행을 지우지 않고 표시만 해서 바로 되돌릴 수 있다.
+// 숨긴 과제가 수집과 합치기에 들어가지 않도록 체크를 함께 푼다.
+function uiSetAssignmentsHidden(changes) {
+  withDocumentLock_(() => {
+    let sh = getSheet_(SHEET_NAMES.assignments);
+    if (!headerMap_(sh).hidden) sh = ensureSheetHeaders_(SHEET_NAMES.assignments);
+
+    const h = headerMap_(sh);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+
+    const courseIds = sh.getRange(2, h.courseId, lastRow - 1, 1).getValues();
+    const courseWorkIds = sh.getRange(2, h.courseWorkId, lastRow - 1, 1).getValues();
+    const hiddenRange = sh.getRange(2, h.hidden, lastRow - 1, 1);
+    const includeRange = sh.getRange(2, h.includeInFinal, lastRow - 1, 1);
+    const hidden = hiddenRange.getValues();
+    const included = includeRange.getValues();
+
+    courseIds.forEach((r, i) => {
+      const key = `${r[0]}|${courseWorkIds[i][0]}`;
+      if (!Object.prototype.hasOwnProperty.call(changes, key)) return;
+      hidden[i][0] = changes[key] ? true : '';
+      if (changes[key]) included[i][0] = false;
+    });
+
+    hiddenRange.setValues(hidden);
+    includeRange.setValues(included);
+  });
+}
+
+// 과제의 수집 표시만 지운다. 모은 제출물은 그대로 둔다.
+function uiClearCollectStatus(keys) {
+  const keySet = new Set(keys || []);
+
+  withDocumentLock_(() => {
+    const sh = getSheet_(SHEET_NAMES.assignments);
+    const h = headerMap_(sh);
+    const lastRow = sh.getLastRow();
+
+    if (!h.collectStatus || !h.courseId || !h.courseWorkId) {
+      throw new Error('과제목록 시트의 열 구성이 올바르지 않습니다. 시작하기에서 시트 초기 설정을 실행하세요.');
+    }
+
+    if (lastRow < 2) return;
+
+    const courseIds = sh.getRange(2, h.courseId, lastRow - 1, 1).getValues();
+    const courseWorkIds = sh.getRange(2, h.courseWorkId, lastRow - 1, 1).getValues();
+    const cells = [];
+
+    courseIds.forEach((r, i) => {
+      if (keySet.has(`${r[0]}|${courseWorkIds[i][0]}`)) cells.push(sh.getRange(i + 2, h.collectStatus).getA1Notation());
+    });
+
+    if (cells.length) sh.getRangeList(cells).clearContent().clearNote();
+  });
+}
+
+// courses: {courseId: 이름}. 과제목록에서 빼고, 다음에 과제를 가져올 때도 건너뛴다. 모은 제출물은 그대로 둔다.
+function uiHideCourses(courses) {
+  // 수집은 시작할 때 읽은 행 번호로 상태를 쓰므로, 그동안 행을 지우면 다른 과제에 상태가 적힌다.
+  if (PropertiesService.getUserProperties().getProperty(AUTO_SUBMISSION_COLLECTION_TRIGGER_PROPERTY) === 'ON') {
+    throw new Error('수집이 끝난 뒤에 수업을 숨겨 주세요.');
+  }
+
+  withDocumentLock_(() => {
+    saveHiddenCourses_(Object.assign(getHiddenCourses_(), courses));
+
+    const sh = getSheet_(SHEET_NAMES.assignments);
+    const h = headerMap_(sh);
+    const lastRow = sh.getLastRow();
+    if (!h.courseId || lastRow < 2) return;
+
+    const rows = [];
+    sh.getRange(2, h.courseId, lastRow - 1, 1).getValues().forEach((r, i) => {
+      if (Object.prototype.hasOwnProperty.call(courses, String(r[0]))) rows.push(i + 2);
+    });
+
+    deleteSheetRows_(sh, rows, sh.getLastColumn());
+  });
+}
+
+function uiShowCourse(courseId) {
+  withDocumentLock_(() => {
+    const hidden = getHiddenCourses_();
+    delete hidden[courseId];
+    saveHiddenCourses_(hidden);
+  });
 }
 
 // --- 제출물 수집 ---------------------------------------------------------
@@ -709,6 +843,8 @@ function uiGetStatus() {
 // --- 초안 확인 / 초안 합치기 ----------------------------------------------
 
 function uiListDrafts() {
+  const listed = listedAssignmentKeys_();
+
   return readSheetRecords_(SHEET_NAMES.records, [
     'submissionKey',
     'studentNo',
@@ -721,7 +857,7 @@ function uiListDrafts() {
     'teacherChecked',
     'createdAt',
     'model',
-  ], 'submissionKey').map(r => {
+  ], 'submissionKey').filter(r => isSubmissionFromIncludedAssignment_(r.submissionKey, listed)).map(r => {
     r.key = String(r.submissionKey);
     r.teacherChecked = isChecked_(r.teacherChecked);
     return r;
@@ -936,7 +1072,12 @@ function exportRecordSheet_(kind) {
       ['sourceAssignments', '반영 과제'], ['finalRecord', '합친 생기부'], ['caution', '확인할 점'],
       ['teacherChecked', '확인함'], ['finalStatus', '상태'], ['createdAt', '만든 시각']];
   const sheetName = kind === 'review' ? SHEET_NAMES.records : SHEET_NAMES.studentFinalRecords;
-  const records = readSheetRecords_(sheetName, columns.map(c => c[0]), kind === 'review' ? 'submissionKey' : 'studentName');
+  let records = readSheetRecords_(sheetName, columns.map(c => c[0]).concat('submissionKey'), kind === 'review' ? 'submissionKey' : 'studentName');
+
+  if (kind === 'review') {
+    const listed = listedAssignmentKeys_();
+    records = records.filter(r => isSubmissionFromIncludedAssignment_(r.submissionKey, listed));
+  }
 
   return {
     fileName: kind === 'review' ? '초안' : '합친 생기부',

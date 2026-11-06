@@ -648,8 +648,9 @@ function uiGetGrading() {
   const resultByKey = {};
   listGradingResults_().forEach(r => { resultByKey[String(r.submissionKey)] = r; });
 
+  const listed = listedAssignmentKeys_();
   const assignments = new Map();
-  const rows = listGradingSubmissions_().map(s => {
+  const rows = listGradingSubmissions_().filter(s => listed.has(`${s.courseId}|${s.courseWorkId}`)).map(s => {
     const assignmentKey = `${s.courseId}|${s.courseWorkId}`;
     const result = resultByKey[String(s.submissionKey)] || {};
 
@@ -858,7 +859,9 @@ function exportGradingResults_() {
   const columns = [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentTitle', '과제'],
     ['score', '점수'], ['maxScore', '만점'], ['reason', '이유'], ['caution', '확인할 점'],
     ['teacherChecked', '확인함'], ['gradeStatus', '상태'], ['gradedAt', '채점 시각']];
-  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]), 'studentName');
+  const listed = listedAssignmentKeys_();
+  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]).concat('submissionKey'), 'studentName')
+    .filter(r => isSubmissionFromIncludedAssignment_(r.submissionKey, listed));
 
   return {
     fileName: '채점결과',

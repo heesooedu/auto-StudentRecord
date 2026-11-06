@@ -179,6 +179,10 @@
 
   /* 상태 표시 */
   .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--bg); color: var(--muted); }
+  .group-hide { padding: 0 4px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; }
+  .group-hide:hover { color: var(--err); }
+  .pill-clear { margin-left: 4px; padding: 0 2px; border: 0; background: none; color: inherit; font: inherit; line-height: 1; cursor: pointer; }
+  .pill-clear:hover { color: var(--err); }
   .pill.ok { background: var(--ok-soft); color: var(--ok); }
   .pill.warn { background: var(--warn-soft); color: var(--warn); }
   .pill.err { background: var(--err-soft); color: var(--err); }

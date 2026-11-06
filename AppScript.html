@@ -26,6 +26,10 @@
     collectedKeys: new Set(),
     submissionsOpen: false,
     includePending: {},
+    collectClears: new Set(),
+    courseHides: {},
+    assignmentHides: {},
+    hiddenAssignmentsOpen: false,
     includeSaves: Promise.resolve(),
     filters: { collectAssignment: 'included', draftAssignment: 'included', reviewAssignment: '', search: '', submissionSearch: '', uncheckedOnly: false },
     pageSize: { review: 30, final: 30, grading: 30 },
@@ -349,7 +353,7 @@
         // 진행 중에도 남은 개수와 행 상태를 갱신해서 보여준다.
         S.submissions = await call('uiListSubmissions');
         // 아직 저장 전인 체크를 시트의 예전 값으로 되돌리지 않는다.
-        if (S.view === 'collect' && !Object.keys(S.includePending).length) S.assignments = await call('uiListAssignments');
+        if (S.view === 'collect' && !hasAssignmentChanges()) S.assignments = await call('uiListAssignments');
       } else if (status[S.view] && status[S.view].state === 'ON' && !isEditing()) {
         // 도구 화면도 진행 중에는 결과를 바로바로 보여준다.
         await refreshToolData(S.view);
@@ -548,6 +552,15 @@
     return groups;
   }
 
+  function collectStatusPill(a) {
+    if (!a.collectStatus) return '';
+    const status = String(a.collectStatus);
+    const clearable = !['수집대기', '수집중'].includes(status) && S.boot.status.collect.state !== 'ON' && !S.collecting;
+    return `<span class="pill">${esc(status)}${clearable
+      ? `<button type="button" class="pill-clear" data-action="clear-collect-status" data-key="${esc(a.key)}" title="표시 지우기 (제출물은 남아요)" aria-label="${esc(status)} 표시 지우기">×</button>`
+      : ''}</span>`;
+  }
+
   function assignmentListHtml(list) {
     const groups = assignmentGroups(list, S.filters.search);
     const counts = {};
@@ -559,10 +572,14 @@
     return Object.keys(groups).map(name => {
       const items = groups[name];
       const allChecked = items.every(a => a.includeInFinal);
+      const canHide = S.boot.status.collect.state !== 'ON' && !S.collecting;
+      const unchecked = items.filter(a => !a.includeInFinal);
       return `
         <div class="group-head">
           <input type="checkbox" data-action="toggle-group" data-keys="${esc(items.map(a => a.key).join(','))}" ${allChecked ? 'checked' : ''}>
           <span class="grow">${esc(name)}</span><span class="muted small">${items.filter(a => a.includeInFinal).length} / ${items.length}</span>
+          ${canHide && unchecked.length ? `<button type="button" class="group-hide" data-action="hide-assignments" data-keys="${esc(unchecked.map(a => a.key).join(','))}">안 고른 과제 숨기기</button>` : ''}
+          ${canHide ? `<button type="button" class="group-hide" data-action="hide-course" data-name="${esc(name)}" data-courses="${esc(Array.from(new Set(items.map(a => a.courseId))).join(','))}">수업 숨기기</button>` : ''}
         </div>
         ${items.map(a => `
         <label class="item">
@@ -570,10 +587,43 @@
           <span class="grow">${esc(a.assignmentTitle)}
             ${a.dueAt ? `<span class="muted small"> · 마감 ${esc(a.dueAt)}</span>` : ''}</span>
           ${counts[a.key] ? `<span class="muted small">제출물 ${counts[a.key]}개</span>` : ''}
-          ${a.collectStatus ? `<span class="pill">${esc(a.collectStatus)}</span>` : ''}
+          ${collectStatusPill(a)}
+          ${canHide ? `<button type="button" class="group-hide" data-action="hide-assignments" data-keys="${esc(a.key)}">숨기기</button>` : ''}
           ${a.alternateLink ? `<a href="${esc(a.alternateLink)}" target="_blank" rel="noopener" class="small">열기 ↗</a>` : ''}
         </label>`).join('')}`;
     }).join('');
+  }
+
+  function visibleAssignments() {
+    return (S.assignments || []).filter(a => !a.hidden);
+  }
+
+  function hiddenAssignmentsHtml() {
+    const hidden = (S.assignments || []).filter(a => a.hidden);
+    if (!hidden.length) return '';
+    return `
+      <details class="card" id="hidden-assignments" ${S.hiddenAssignmentsOpen ? 'open' : ''}>
+        <summary>숨긴 과제 ${hidden.length}개</summary>
+        <div class="row between" style="margin-top:8px">
+          <span class="muted small">숨길 때 체크는 풀려요. 다시 보이게 한 뒤 필요하면 체크해 주세요.</span>
+          <button class="btn" data-action="show-assignments" data-keys="${esc(hidden.map(a => a.key).join(','))}">모두 다시 보이기</button>
+        </div>
+        ${hidden.map(a => `<div class="row between" style="margin-top:8px">
+          <span>${esc(a.assignmentTitle)} <span class="muted small">${esc(a.courseName)}${a.section ? ` · ${esc(a.section)}` : ''}</span></span>
+          <button class="btn" data-action="show-assignments" data-keys="${esc(a.key)}">다시 보이기</button></div>`).join('')}
+      </details>`;
+  }
+
+  function hiddenCoursesHtml() {
+    const hidden = S.boot.hiddenCourses || {};
+    const ids = Object.keys(hidden);
+    if (!ids.length) return '';
+    return `
+      <details class="card" id="hidden-courses">
+        <summary>숨긴 수업 ${ids.length}개</summary>
+        ${ids.map(id => `<div class="row between" style="margin-top:8px"><span>${esc(hidden[id])}</span>
+          <button class="btn" data-action="show-course" data-course="${esc(id)}" ${S.busy ? 'disabled' : ''}>다시 보이기</button></div>`).join('')}
+      </details>`;
   }
 
   function statusPanel(job, unit) {
@@ -604,7 +654,7 @@
   }
 
   function assignmentOptions(selected) {
-    const list = S.assignments || [];
+    const list = visibleAssignments();
     return `<option value="included" ${selected === 'included' ? 'selected' : ''}>체크한 과제 전체</option>
       <option value="" ${selected === '' ? 'selected' : ''}>모든 과제</option>
       ${list.map(a => `<option value="${esc(a.key)}" ${selected === a.key ? 'selected' : ''}>${esc(a.courseName)} · ${esc(a.assignmentTitle)}</option>`).join('')}`;
@@ -635,7 +685,7 @@
 
   function viewCollect() {
     const c = S.boot.counts;
-    const list = S.assignments || [];
+    const list = visibleAssignments();
     const running = S.boot.status.collect.state === 'ON';
     const rows = filterSubmissions(S.filters.collectAssignment, S.filters.submissionSearch);
     // 수집상태의 '수집완료'는 예전에 모은 기록이 남은 것일 수 있다. 그래서 이 창에서 수집을 누른 과제가 모두 '수집완료'일 때만
@@ -659,11 +709,13 @@
         <button class="btn ${list.length ? '' : 'primary'}" data-action="import-assignments" ${S.busy ? 'disabled' : ''}>Classroom에서 과제 가져오기</button>
         <input type="search" id="search" class="grow" placeholder="수업명이나 과제명으로 찾기" value="${esc(S.filters.search)}">
       </div>`;
-    if (!list.length) return `${head}<div class="card empty">아직 가져온 과제가 없어요.<br>위의 [Classroom에서 과제 가져오기]를 눌러 주세요.</div>`;
+    if (!list.length) return `${head}<div class="card empty">아직 가져온 과제가 없어요.<br>위의 [Classroom에서 과제 가져오기]를 눌러 주세요.</div>${hiddenAssignmentsHtml()}${hiddenCoursesHtml()}`;
 
     return `
       ${head}
       <div class="list">${assignmentListHtml(list) || '<div class="empty">검색 결과가 없어요.</div>'}</div>
+      ${hiddenAssignmentsHtml()}
+      ${hiddenCoursesHtml()}
       ${statusPanel('collect', '개 과제')}
       <details class="card" id="submissions-details" ${S.submissionsOpen ? 'open' : ''}>
         <summary>수집한 제출물 보기 (${c.submissions || 0}개)</summary>
@@ -984,9 +1036,10 @@
     },
     async 'import-assignments'() {
       await withBusy('Classroom에서 과제를 가져오는 중…', async () => {
-        await flushIncluded();
+        await flushAssignmentChanges();
         const result = await call('uiImportAssignments');
         S.assignments = result.assignments;
+        resetReviewList();
         S.boot = await call('uiGetBootstrap');
         showMessages(result);
       });
@@ -997,9 +1050,56 @@
     async 'toggle-group'(el) {
       setIncluded(el.dataset.keys.split(','), el.checked);
     },
+    'clear-collect-status'(el) {
+      const key = el.dataset.key;
+      const assignment = (S.assignments || []).find(a => a.key === key);
+      if (!assignment) return;
+      assignment.collectStatus = '';
+      S.collectedKeys.delete(key);
+      S.collectClears.add(key);
+      render();
+      scheduleAssignmentSave();
+    },
+    'hide-assignments'(el) {
+      setAssignmentsHidden(el.dataset.keys.split(','), true);
+    },
+    'show-assignments'(el) {
+      setAssignmentsHidden(el.dataset.keys.split(','), false);
+    },
+    async 'hide-course'(el) {
+      const name = el.dataset.name;
+      if (!await confirmModal('수업 숨기기', `${name} 수업을 과제 목록에서 숨길까요?\n이 수업의 과제 체크와 수집 표시는 지워지고, 과제를 다시 가져와도 나오지 않아요. 모은 제출물과 초안은 남아요.`, '숨기기')) return;
+      const ids = new Set(el.dataset.courses.split(','));
+      const removed = (S.assignments || []).filter(a => ids.has(String(a.courseId)));
+      S.assignments = S.assignments.filter(a => !ids.has(String(a.courseId)));
+      removed.forEach(a => {
+        delete S.includePending[a.key];
+        S.collectClears.delete(a.key);
+        S.collectedKeys.delete(a.key);
+        if (S.filters.collectAssignment === a.key) S.filters.collectAssignment = 'included';
+        if (S.filters.draftAssignment === a.key) S.filters.draftAssignment = 'included';
+      });
+      ids.forEach(id => {
+        S.courseHides[id] = name;
+        S.boot.hiddenCourses[id] = name;
+      });
+      S.boot.counts.includedAssignments = S.assignments.filter(a => a.includeInFinal).length;
+      resetReviewList();
+      render();
+      scheduleAssignmentSave();
+    },
+    async 'show-course'(el) {
+      const id = el.dataset.course;
+      await withBusy('수업을 되돌리는 중…', async () => {
+        await flushAssignmentChanges();
+        await call('uiShowCourse', id);
+        delete S.boot.hiddenCourses[id];
+        banner('[Classroom에서 과제 가져오기]를 누르면 이 수업의 과제가 다시 나와요.', 'ok');
+      });
+    },
     async collect() {
       // 방금 누른 체크가 저장된 뒤에 수집해야 그 과제도 들어간다.
-      await flushIncluded();
+      await flushAssignmentChanges();
       const count = S.boot.counts.includedAssignments;
       if (!count) return;
       if (!await confirmModal('제출물 수집', `체크한 과제 ${count}개의 제출물을 가져올까요?\n과제가 많으면 나누어 자동으로 이어서 가져와요.`, '수집 시작')) return;
@@ -1198,7 +1298,7 @@
     },
   };
 
-  // 체크는 화면에 바로 반영하고, 시트 저장은 잠시 모았다가 한 번에 한다.
+  // 체크와 수집 표시 지우기는 화면에 바로 반영하고, 시트 저장은 잠시 모았다가 한 번에 한다.
   let includeTimer = null;
 
   function setIncluded(keys, value) {
@@ -1208,18 +1308,65 @@
     keys.forEach(key => { S.includePending[key] = value; });
     S.boot.counts.includedAssignments = list.filter(a => a.includeInFinal).length;
     render();
-    clearTimeout(includeTimer);
-    includeTimer = setTimeout(flushIncluded, 300);
+    scheduleAssignmentSave();
   }
 
-  function flushIncluded() {
+  // 과제 목록이 바뀌면 초안 확인에 보일 초안도 바뀐다.
+  function resetReviewList() {
+    S.drafts = null;
+    S.filters.reviewAssignment = '';
+  }
+
+  function hasAssignmentChanges() {
+    return Object.keys(S.includePending).length > 0 || S.collectClears.size > 0
+      || Object.keys(S.courseHides).length > 0 || Object.keys(S.assignmentHides).length > 0;
+  }
+
+  function setAssignmentsHidden(keys, value) {
+    const keySet = new Set(keys);
+    (S.assignments || []).filter(a => keySet.has(a.key)).forEach(a => {
+      a.hidden = value;
+      S.assignmentHides[a.key] = value;
+      if (!value) return;
+      a.includeInFinal = false;
+      delete S.includePending[a.key];
+      S.collectedKeys.delete(a.key);
+      if (S.filters.collectAssignment === a.key) S.filters.collectAssignment = 'included';
+      if (S.filters.draftAssignment === a.key) S.filters.draftAssignment = 'included';
+    });
+    S.boot.counts.includedAssignments = S.assignments.filter(a => a.includeInFinal).length;
+    resetReviewList();
+    render();
+    scheduleAssignmentSave();
+  }
+
+  function scheduleAssignmentSave() {
+    clearTimeout(includeTimer);
+    includeTimer = setTimeout(flushAssignmentChanges, 300);
+  }
+
+  function flushAssignmentChanges() {
     clearTimeout(includeTimer);
     const changes = S.includePending;
-    if (!Object.keys(changes).length) return S.includeSaves;
+    const clears = Array.from(S.collectClears);
+    const hides = S.courseHides;
+    const assignmentHides = S.assignmentHides;
+    if (!hasAssignmentChanges()) return S.includeSaves;
     S.includePending = {};
+    S.collectClears = new Set();
+    S.courseHides = {};
+    S.assignmentHides = {};
     S.includeSaves = S.includeSaves.then(async () => {
       try {
-        await call('uiSetAssignmentsIncluded', changes);
+        if (Object.keys(changes).length) await call('uiSetAssignmentsIncluded', changes);
+        if (clears.length) await call('uiClearCollectStatus', clears);
+        if (Object.keys(assignmentHides).length) await call('uiSetAssignmentsHidden', assignmentHides);
+        if (Object.keys(hides).length) await call('uiHideCourses', hides);
+        // 숨기면 초안 개수가 바뀐다.
+        if (Object.keys(assignmentHides).length || Object.keys(hides).length) {
+          const boot = await call('uiGetBootstrap');
+          if (!hasAssignmentChanges()) S.boot = boot;
+        }
       } catch (err) {
         showError(err);
         try {
