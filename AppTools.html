@@ -225,8 +225,8 @@
         <summary><b>열 설정</b> <span class="muted small">${d.configured
           ? `AI에 보낼 열 ${d.inputCols.map(columnLetter).join(', ')} → 생기부 열 ${columnLetter(d.outputCol)} (오른쪽 열에 바이트)`
           : '아직 설정하지 않았어요'}</span></summary>
-        <p class="muted small">'수동추가' 시트의 어느 열을 AI에게 보내고, 결과를 어느 열에 적을지 골라요.
-          이름·학번·이메일처럼 개인정보가 담긴 열은 고르지 마세요.</p>
+        <p class="muted small">'수동추가' 시트의 어느 열을 AI에게 보내고, 결과를 어느 열에 적을지 골라요.</p>
+        <div class="save-warn" style="margin:8px 0 12px">⚠️ 이름·학번·이메일처럼 개인정보가 담긴 열은 AI에게 보내지 마세요.</div>
         <div class="field"><span>AI에게 보낼 열 (여러 개 가능)</span>
           <div class="chips">${d.headers.filter(c => c.name && (!d.outputCol || (c.col !== d.outputCol && c.col !== d.outputCol + 1))).map(c => `
             <label class="chip ${d.inputCols.includes(c.col) ? 'on' : ''}"><input type="checkbox" class="manual-input-col" value="${c.col}" ${d.inputCols.includes(c.col) ? 'checked' : ''}> ${esc(label(c))}</label>`).join('')}</div></div>
@@ -289,7 +289,8 @@
       <div class="field" style="margin-top:14px"><span>AI에게 보낼 열 (여러 개 가능)</span>
         <div class="chips">${c.headers.map((h, i) => `
           <label class="chip ${c.inputCols.includes(i + 1) ? 'on' : ''}"><input type="checkbox" class="csv-input-col" value="${i + 1}" ${c.inputCols.includes(i + 1) ? 'checked' : ''}> ${esc(h || `${columnLetter(i + 1)}열`)}</label>`).join('')}</div>
-        <div class="help">활동 내용이 담긴 열을 고르세요. 이름·학번·이메일처럼 개인정보가 담긴 열은 고르지 마세요.</div></div>
+        <div class="help">활동 내용이 담긴 열을 고르세요.</div>
+        <div class="save-warn" style="margin-top:8px">⚠️ 이름·학번·이메일처럼 개인정보가 담긴 열은 AI에게 보내지 마세요.</div></div>
       <div class="table-wrap" style="max-height:200px;margin-bottom:12px"><table>
         <tr>${c.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr>
         ${preview.map(r => `<tr>${c.headers.map((_, i) => `<td class="small">${esc(cut(r[i]))}</td>`).join('')}</tr>`).join('')}
