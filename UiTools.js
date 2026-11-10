@@ -12,13 +12,17 @@ function uiGetCommonPhrases() {
 
   const input = sh.getRange(2, 1, 1, 4).getValues()[0];
   const count = Number(input[3] || 0);
-  const rowCount = Math.max(sh.getLastRow() - 2, getCommonPhraseTotal_(), count, 0);
+  const total = getCommonPhraseTotal_();
+  const rowCount = Math.max(sh.getLastRow() - 2, total, count, 0);
   const phrases = [];
+  let pending = 0;
 
   if (rowCount > 0) {
     const range = sh.getRange(3, 2, rowCount, 1);
     const values = range.getValues();
     const notes = range.getNotes();
+    // countPendingCommonPhrases_와 같은 값: 만들 개수 안에서 아직 빈 칸
+    pending = values.slice(0, total).filter(r => !String(r[0] || '').trim()).length;
 
     values.forEach((r, i) => {
       const text = String(r[0] || '').trim();
@@ -34,7 +38,7 @@ function uiGetCommonPhrases() {
     sourceText: String(input[1] || ''),
     count: count || 10,
     phrases,
-    pending: countPendingCommonPhrases_(),
+    pending,
   };
 }
 
@@ -185,6 +189,8 @@ function uiSaveBehaviorRow(row, expectedName, data) {
     const sh = getSheet_(SHEET_NAMES.behaviorRecommendations);
     const h = assertBehaviorRow_(sh, row, expectedName);
     const values = Object.assign({}, data);
+    // 쓰기 전에 행을 읽어 두고, 쓴 칸만 바꿔 돌려준다. 쓴 뒤에 다시 읽으면 시트 반영(flush)을 기다려야 해서 느리다.
+    const saved = readBehaviorRow_(sh, h, row, true);
 
     // 드롭다운에 없는 특성은 '목록에 없는 특성' 칸으로 옮긴다.
     if (values.selectedTraits !== undefined) {
@@ -220,7 +226,8 @@ function uiSaveBehaviorRow(row, expectedName, data) {
       throw err;
     }
 
-    return readBehaviorRow_(sh, h, row);
+    fields.forEach(field => { saved[field] = String(values[field]).trim(); });
+    return saved;
   });
 }
 
@@ -306,8 +313,9 @@ function assertBehaviorRow_(sh, row, expectedName) {
   return h;
 }
 
-function readBehaviorRow_(sh, h, row) {
-  SpreadsheetApp.flush();
+// skipFlush: 아직 아무것도 쓰지 않았으면 반영을 기다릴 필요가 없다.
+function readBehaviorRow_(sh, h, row, skipFlush) {
+  if (!skipFlush) SpreadsheetApp.flush();
   const lastCol = Math.max(sh.getLastColumn(), BEHAVIOR_RECOMMENDATION_HEADERS.length);
   const values = sh.getRange(row, 1, 1, lastCol).getValues()[0];
   const item = { row };
@@ -361,8 +369,8 @@ function uiGetManual() {
   if (lastRow < manualConfig.startRow) return result;
 
   const rowCount = Math.min(lastRow - manualConfig.startRow + 1, MANUAL_ROW_LIMIT);
-  const readCols = Math.max(sh.getLastColumn(), manualConfig.byteCol);
-  const fullHeaders = sh.getRange(1, 1, 1, readCols).getValues()[0];
+  const readCols = Math.max(lastCol, manualConfig.byteCol);
+  const fullHeaders = readCols === lastCol ? headerValues : sh.getRange(1, 1, 1, readCols).getValues()[0];
   const values = sh.getRange(manualConfig.startRow, 1, rowCount, readCols).getValues();
   const notes = sh.getRange(manualConfig.startRow, manualConfig.outputCol, rowCount, 1).getNotes();
   // 입력·출력 열이 아닌 앞쪽 열(번호, 이름 등)을 행 구분용으로 보여준다.

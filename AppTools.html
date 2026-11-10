@@ -577,7 +577,11 @@
         ${promptExample(key)}
         <textarea data-prompt-key="${key}" rows="12">${esc(text)}</textarea>
         <div class="row" style="justify-content:flex-end;margin-top:8px">
-          <button class="btn" data-action="reset-prompt" data-key="${key}">기본 프롬프트로 바꾸기</button>
+          <span class="save-warn inline${dirty ? '' : ' hidden'}" data-prompt-warn="${key}">저장하지 않았어요. [프롬프트 저장]을 눌러야 반영돼요.</span>
+          ${key === 'BEHAVIOR_RECORD_PROMPT'
+            ? `<button class="btn" data-action="reset-prompt" data-key="${key}" data-variant="light">기본 프롬프트로 바꾸기(가벼운 말투)</button>
+          <button class="btn" data-action="reset-prompt" data-key="${key}">기본 프롬프트로 바꾸기(진지한 말투)</button>`
+            : `<button class="btn" data-action="reset-prompt" data-key="${key}">기본 프롬프트로 바꾸기</button>`}
           <button class="btn primary" data-action="save-prompt" data-key="${key}" ${dirty ? '' : 'disabled'}>프롬프트 저장</button>
         </div>
       </details>
@@ -653,16 +657,46 @@
       </div>`;
   }
 
-  async function saveLength(promptKey) {
+  // 프롬프트·분량 저장은 화면에 먼저 반영하고 서버 저장은 뒤에서 한다. 실패하면 입력한 내용을 되살린다.
+  // 만들기를 누르면 preparePrompt가 진행 중인 저장을 기다린 뒤 시작하므로 예전 프롬프트로 만들지 않는다.
+  let settingSave = Promise.resolve();
+
+  function applySettingValues(patch) {
+    const before = {};
+    Object.keys(patch).forEach(key => {
+      for (const group of Object.values(S.settings.groups)) {
+        const item = group.find(x => x.key === key);
+        if (item) { before[key] = item.value; item.value = String(patch[key]); }
+      }
+    });
+    return before;
+  }
+
+  function saveSettingValues(patch, edits, editKeys) {
+    const before = applySettingValues(patch);
+    const kept = {};
+    editKeys.forEach(key => { kept[key] = edits[key]; delete edits[key]; });
+    const saving = settingSave.catch(() => {}).then(() => call('uiSaveSettingValues', patch)).catch(err => {
+      applySettingValues(before);
+      // 그사이 다시 고친 내용이 없을 때만 되살린다.
+      editKeys.forEach(key => { if (edits[key] === undefined && kept[key] !== undefined) edits[key] = kept[key]; });
+      throw err;
+    });
+    settingSave = saving;
+    // 저장이 끝나기 전에 창을 닫으려 하면 beforeunload에서 묻는다.
+    S.settingSaving = (S.settingSaving || 0) + 1;
+    saving.catch(() => {}).then(() => { S.settingSaving--; });
+    return saving;
+  }
+
+  function saveLength(promptKey) {
     const l = LENGTH_SETTINGS[promptKey];
     const error = lengthError(promptKey);
-    if (error) throw new Error(error);
-    S.settings = await call('uiSaveSettings', {
+    if (error) return Promise.reject(new Error(error));
+    return saveSettingValues({
       [l[0]]: String(currentLength(l[0], l[2])).trim(),
       [l[1]]: String(currentLength(l[1], l[3])).trim(),
-    });
-    delete S.lengthEdits[l[0]];
-    delete S.lengthEdits[l[1]];
+    }, S.lengthEdits, [l[0], l[1]]);
   }
 
   function handleLengthInput(el) {
@@ -677,14 +711,25 @@
     return true;
   }
 
-  async function savePrompt(key) {
-    S.settings = await call('uiSaveSettings', { [key]: S.promptEdits[key] });
-    delete S.promptEdits[key];
+  function savePrompt(key) {
+    return saveSettingValues({ [key]: S.promptEdits[key] }, S.promptEdits, [key]);
+  }
+
+  // 뒤에서 저장하다 실패하면 입력 내용을 되살리고 알린다.
+  function saveInBackground(saving, message) {
+    render();
+    banner(message, 'ok');
+    saving.catch(err => {
+      if (!isEditing()) render();
+      showError(err);
+    });
   }
 
   // 만들기 전에: 안내가 비어 있으면 한 번 묻고, 저장하지 않은 프롬프트는 저장한다.
   async function preparePrompt(key) {
     if (!S.settings) S.settings = await call('uiGetSettings');
+    // 뒤에서 저장 중인 프롬프트가 있으면 끝난 뒤에 확인한다. 실패했으면 아래에서 다시 저장한다.
+    await settingSave.catch(() => render());
     if (lengthDirty(key) && lengthError(key)) {
       banner(lengthError(key), 'err');
       return false;
@@ -702,6 +747,8 @@
     S.promptEdits[key] = el.value;
     const btn = document.querySelector(`[data-action="save-prompt"][data-key="${key}"]`);
     if (btn) btn.disabled = !promptDirty(key);
+    const warn = document.querySelector(`[data-prompt-warn="${key}"]`);
+    if (warn) warn.classList.toggle('hidden', !promptDirty(key));
     return true;
   }
 
@@ -952,6 +999,7 @@
   }
 
   async function saveGrade(r, patch) {
+    gradingChanges++;
     Object.assign(r, await call('uiUpdateGrade', r.row, r.key, patch));
     delete S.edits[`grading:${r.key}`];
   }
@@ -1164,7 +1212,14 @@
       render();
     },
     async 'close-behavior'() {
-      if (S.bDraft.dirty && !await confirmModal('저장하지 않은 내용', '입력 내용을 저장하지 않고 닫을까요?', '닫기')) return;
+      if (S.bDraft.dirty) {
+        const choice = await choiceModal('저장하지 않은 내용', '입력한 내용을 저장하지 않았어요.', [
+          { value: 'discard', label: '저장하지 않고 닫기' },
+          { value: 'save', label: '저장하고 닫기', kind: 'primary' },
+        ]);
+        if (!choice || !S.bDraft) return;
+        if (choice === 'save') return TOOL_ACTIONS['save-behavior']();
+      }
       S.bDraft = null;
       render();
     },
@@ -1175,7 +1230,12 @@
       const next = list.includes(t) ? list.filter(x => x !== t) : t === '없음' ? [t] : list.filter(x => x !== '없음').concat(t);
       S.bDraft.fields.selectedTraits = next.join(', ');
       S.bDraft.dirty = true;
-      render();
+      // 화면 전체를 다시 그리지 않고 칩 표시와 저장 버튼만 바꾼다.
+      document.querySelectorAll('[data-action="toggle-trait"]').forEach(chip => {
+        chip.classList.toggle('on', next.includes(chip.dataset.trait));
+      });
+      const btn = document.querySelector('[data-action="save-behavior"]');
+      if (btn) btn.disabled = false;
     },
     // 입력 칸은 바로 닫고 저장은 뒤에서 한다. 실패하면 입력 칸을 다시 연다.
     async 'save-behavior'() {
@@ -1313,19 +1373,13 @@
         banner('한 줄을 추가했어요.', 'ok');
       });
     },
-    async 'save-prompt'(el) {
-      await withBusy('프롬프트를 저장하는 중…', async () => {
-        await savePrompt(el.dataset.key);
-        banner('프롬프트를 저장했어요.', 'ok');
-      });
+    'save-prompt'(el) {
+      saveInBackground(savePrompt(el.dataset.key), '프롬프트를 저장했어요.');
     },
-    async 'save-length'(el) {
+    'save-length'(el) {
       const error = lengthError(el.dataset.key);
       if (error) return banner(error, 'err');
-      await withBusy('분량을 저장하는 중…', async () => {
-        await saveLength(el.dataset.key);
-        banner('분량을 저장했어요.', 'ok');
-      });
+      saveInBackground(saveLength(el.dataset.key), '분량을 저장했어요.');
     },
     async 'use-prompt-example'(el) {
       const key = el.dataset.key;
@@ -1338,8 +1392,11 @@
     },
     async 'reset-prompt'(el) {
       const key = el.dataset.key;
-      if (!await confirmModal('기본 프롬프트로 바꾸기', '지금 프롬프트를 지우고 기본 프롬프트로 바꿀까요?\n[프롬프트 저장]을 눌러야 실제로 바뀌어요.', '바꾸기')) return;
-      S.promptEdits[key] = S.settings.defaults[key];
+      const light = el.dataset.variant === 'light';
+      const label = key !== 'BEHAVIOR_RECORD_PROMPT' ? '기본 프롬프트' : light ? '기본 프롬프트(가벼운 말투)' : '기본 프롬프트(진지한 말투)';
+      if (!await confirmModal('기본 프롬프트로 바꾸기', `지금 프롬프트를 지우고 ${label}로 바꿀까요?`, '바꾸기',
+        '⚠ 바꾼 뒤 아래 [프롬프트 저장]을 꼭 눌러 주세요. 누르지 않으면 실제로 바뀌지 않아요.')) return;
+      S.promptEdits[key] = S.settings.defaults[light ? key + '_LIGHT' : key];
       S.promptOpen[key] = true;
       render();
     },

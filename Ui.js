@@ -208,6 +208,7 @@ function isAssistantSheetsReady_() {
 }
 
 // 지정한 열만 읽어 {row, ...} 객체 배열로 돌려준다. 빈 행은 keyField 기준으로 건너뛴다.
+// 제출물 원문(extractedText)처럼 긴 열이 있는 시트가 많아서, 시트 전체가 아니라 필요한 열 묶음만 읽는다.
 function readSheetRecords_(sheetName, fields, keyField) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sh) return [];
@@ -216,24 +217,44 @@ function readSheetRecords_(sheetName, fields, keyField) {
   const lastCol = sh.getLastColumn();
   if (lastRow < 2 || lastCol < 1) return [];
 
-  const values = sh.getRange(1, 1, lastRow, lastCol).getValues();
-  const h = headerIndex_(values[0].map(v => String(v || '').trim()));
+  const h = headerIndex_(sh.getRange(1, 1, 1, lastCol).getValues()[0].map(v => String(v || '').trim()));
+  const columns = readColumnValues_(sh, 2, lastRow - 1, fields.concat(keyField ? [keyField] : []).map(field => h[field]));
+  const valueAt = (field, i) => (h[field] === undefined ? '' : columns[h[field]][i]);
   const records = [];
 
-  for (let i = 1; i < values.length; i++) {
-    const rowValues = values[i];
-    if (keyField && h[keyField] !== undefined && String(rowValues[h[keyField]] || '').trim() === '') continue;
+  for (let i = 0; i < lastRow - 1; i++) {
+    if (keyField && h[keyField] !== undefined && String(valueAt(keyField, i) || '').trim() === '') continue;
 
-    const record = { row: i + 1 };
+    const record = { row: i + 2 };
 
     fields.forEach(field => {
-      record[field] = h[field] === undefined ? '' : toClientValue_(rowValues[h[field]]);
+      record[field] = toClientValue_(valueAt(field, i));
     });
 
     records.push(record);
   }
 
   return records;
+}
+
+// 0부터 센 열 번호 목록을 받아, 붙어 있는 열은 한 번에 읽고 {열 번호: [값, ...]}로 돌려준다.
+function readColumnValues_(sh, startRow, rowCount, indexes) {
+  const sorted = Array.from(new Set(indexes.filter(i => i !== undefined))).sort((a, b) => a - b);
+  const columns = {};
+  let i = 0;
+
+  while (i < sorted.length) {
+    let end = i;
+    while (end + 1 < sorted.length && sorted[end + 1] === sorted[end] + 1) end++;
+
+    const values = sh.getRange(startRow, sorted[i] + 1, rowCount, end - i + 1).getValues();
+    for (let k = i; k <= end; k++) {
+      columns[sorted[k]] = values.map(r => r[k - i]);
+    }
+    i = end + 1;
+  }
+
+  return columns;
 }
 
 // google.script.run은 Date를 돌려줄 수 없으므로 문자열로 바꾼다.
@@ -263,27 +284,43 @@ function countColumnValues_(sheetName, header, predicate) {
     .length;
 }
 
-// 과제목록에 보이는 과제의 키. 비활성화되거나 숨긴 수업·과제의 자료는 시트에 남아도 채점과 초안 확인에서 뺀다.
-function listedAssignmentKeys_() {
-  const keys = new Set();
+// 과제목록 시트를 한 번만 읽어 과제 수, 체크한 과제 수, 목록에 보이는 과제 키를 함께 센다.
+function readAssignmentSummary_() {
+  const summary = { assignments: 0, includedAssignments: 0, listed: new Set() };
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.assignments);
-  if (!sh || sh.getLastRow() < 2) return keys;
+  if (!sh) return summary;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return summary;
 
   const h = headerMap_(sh);
-  if (!h.courseId || !h.courseWorkId) return keys;
+  const col = header => (h[header] ? h[header] - 1 : undefined);
+  const columns = readColumnValues_(sh, 2, lastRow - 1, ['courseId', 'courseWorkId', 'includeInFinal', 'hidden'].map(col));
+  const valuesOf = header => (h[header] ? columns[h[header] - 1] : null);
+  const courseIds = valuesOf('courseId');
+  const courseWorkIds = valuesOf('courseWorkId');
+  const included = valuesOf('includeInFinal');
+  const hidden = valuesOf('hidden');
 
-  const rowCount = sh.getLastRow() - 1;
-  const courseWorkIds = sh.getRange(2, h.courseWorkId, rowCount, 1).getValues();
-  const hidden = h.hidden ? sh.getRange(2, h.hidden, rowCount, 1).getValues() : [];
-  sh.getRange(2, h.courseId, rowCount, 1).getValues().forEach((r, i) => {
-    if (!hidden[i] || !isChecked_(hidden[i][0])) keys.add(`${r[0]}|${courseWorkIds[i][0]}`);
-  });
+  for (let i = 0; i < lastRow - 1; i++) {
+    if (courseWorkIds && String(courseWorkIds[i] || '').trim() !== '') summary.assignments++;
+    if (included && isChecked_(included[i])) summary.includedAssignments++;
+    // 비활성화되거나 숨긴 수업·과제의 자료는 시트에 남아도 채점과 초안 확인에서 뺀다.
+    if (courseIds && courseWorkIds && !(hidden && isChecked_(hidden[i]))) {
+      summary.listed.add(`${courseIds[i]}|${courseWorkIds[i]}`);
+    }
+  }
 
-  return keys;
+  return summary;
+}
+
+// 과제목록에 보이는 과제의 키
+function listedAssignmentKeys_() {
+  return readAssignmentSummary_().listed;
 }
 
 // 초안 시트는 본문이 길어서 필요한 열만 읽는다.
-function countListedDrafts_() {
+function countListedDrafts_(listed) {
   const counts = { drafts: 0, draftsChecked: 0 };
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.records);
   if (!sh || sh.getLastRow() < 2) return counts;
@@ -292,58 +329,68 @@ function countListedDrafts_() {
   if (!h.submissionKey) return counts;
 
   const rowCount = sh.getLastRow() - 1;
-  const listed = listedAssignmentKeys_();
-  const checks = h.teacherChecked ? sh.getRange(2, h.teacherChecked, rowCount, 1).getValues() : [];
+  const listedKeys = listed || listedAssignmentKeys_();
+  const columns = readColumnValues_(sh, 2, rowCount, [h.submissionKey - 1, h.teacherChecked ? h.teacherChecked - 1 : undefined]);
+  const checks = h.teacherChecked ? columns[h.teacherChecked - 1] : [];
 
-  sh.getRange(2, h.submissionKey, rowCount, 1).getValues().forEach((r, i) => {
-    if (!isSubmissionFromIncludedAssignment_(r[0], listed)) return;
+  columns[h.submissionKey - 1].forEach((key, i) => {
+    if (!isSubmissionFromIncludedAssignment_(key, listedKeys)) return;
     counts.drafts++;
-    if (checks[i] && isChecked_(checks[i][0])) counts.draftsChecked++;
+    if (isChecked_(checks[i])) counts.draftsChecked++;
   });
 
   return counts;
 }
 
-function getAssistantCounts_() {
+// draftPending은 진행 상태(status.drafts.remaining)에서 이미 센 값을 받아 다시 세지 않는다.
+function getAssistantCounts_(draftPending) {
   const notBlank = v => String(v || '').trim() !== '';
-  const draftCounts = countListedDrafts_();
+  const assignmentSummary = readAssignmentSummary_();
+  const draftCounts = countListedDrafts_(assignmentSummary.listed);
 
   return {
-    assignments: countColumnValues_(SHEET_NAMES.assignments, 'courseWorkId', notBlank),
-    includedAssignments: countColumnValues_(SHEET_NAMES.assignments, 'includeInFinal', isChecked_),
+    assignments: assignmentSummary.assignments,
+    includedAssignments: assignmentSummary.includedAssignments,
     submissions: countColumnValues_(SHEET_NAMES.submissions, 'submissionKey', notBlank),
-    draftPending: countPendingRecordDrafts_(),
+    draftPending: draftPending === undefined ? countPendingRecordDrafts_() : draftPending,
     drafts: draftCounts.drafts,
     draftsChecked: draftCounts.draftsChecked,
     finalRecords: countColumnValues_(SHEET_NAMES.studentFinalRecords, 'finalRecord', notBlank),
   };
 }
 
-function uiGetBootstrap() {
+// withSettings가 true면 설정 화면 값도 함께 돌려줘서, 화면을 처음 열 때 요청을 한 번 줄인다.
+function uiGetBootstrap(withSettings) {
   const props = PropertiesService.getUserProperties();
   const isSetup = isAssistantSheetsReady_();
   const config = isSetup ? getConfigMap_() : {};
   const ai = getAiProviderAndModel_(config);
   const keys = {};
+  const triggers = ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
+  const status = isSetup ? getStatus_(triggers) : null;
 
   Object.keys(API_KEY_PROPERTY_BY_PROVIDER).forEach(provider => {
     // 키 값은 절대 화면으로 보내지 않고 저장 여부만 보낸다.
     keys[provider] = !!props.getProperty(API_KEY_PROPERTY_BY_PROVIDER[provider]);
   });
 
-  return {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const boot = {
     isSetup,
     keys,
     provider: ai.provider,
     model: ai.model,
     reasoning: ai.reasoning,
-    counts: isSetup ? getAssistantCounts_() : null,
-    status: isSetup ? uiGetStatus() : null,
-    autoOpen: hasAutoOpenTrigger_(),
+    counts: isSetup ? getAssistantCounts_(status.drafts.remaining) : null,
+    status,
+    autoOpen: triggers.includes('openAssistantOnOpen'),
     hiddenCourses: getHiddenCourses_(),
-    spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
-    spreadsheetUrl: SpreadsheetApp.getActiveSpreadsheet().getUrl(),
+    spreadsheetId: ss.getId(),
+    spreadsheetUrl: ss.getUrl(),
   };
+
+  if (withSettings === true && isSetup) boot.settings = uiGetSettings();
+  return boot;
 }
 
 // --- 시작하기 ------------------------------------------------------------
@@ -413,11 +460,24 @@ function uiGetSettings() {
       // 기본값이 없는 키는 건너뛴다.
     }
   });
+  // 행발 기본 프롬프트는 진지한 버전(기본값) 외에 가벼운 버전도 고를 수 있다.
+  defaults.BEHAVIOR_RECORD_PROMPT_LIGHT = defaultBehaviorRecordPrompt_('light');
 
   return { groups, defaults };
 }
 
 function uiSaveSettings(patch) {
+  saveSettingsPatch_(patch);
+  return uiGetSettings();
+}
+
+// 프롬프트·분량처럼 화면이 값을 이미 알고 있을 때 쓴다. 설정 전체를 다시 읽어 보내지 않아 빠르다.
+function uiSaveSettingValues(patch) {
+  return { saved: saveSettingsPatch_(patch) };
+}
+
+// 허용한 설정만 검사해서 저장하고, 저장한 키 목록을 돌려준다.
+function saveSettingsPatch_(patch) {
   const allowed = {};
   Object.keys(ASSISTANT_SETTING_GROUPS).forEach(group => {
     ASSISTANT_SETTING_GROUPS[group].forEach(key => {
@@ -426,7 +486,7 @@ function uiSaveSettings(patch) {
   });
 
   const entries = Object.keys(patch || {}).filter(key => allowed[key]);
-  if (entries.length === 0) return uiGetSettings();
+  if (entries.length === 0) return [];
 
   entries.forEach(key => {
     const options = CONFIG_VALIDATION_OPTIONS[key];
@@ -448,7 +508,7 @@ function uiSaveSettings(patch) {
   writeConfigValues_(values);
 
   log_('uiSaveSettings', 'OK', `도우미 화면에서 설정 저장: ${entries.join(', ')}`);
-  return uiGetSettings();
+  return entries;
 }
 
 // 설정 시트에 key → value를 쓴다. 없는 키는 맨 아래에 추가한다.
@@ -457,8 +517,9 @@ function writeConfigValues_(patch) {
   lock.waitLock(10000);
 
   try {
+    // 행을 찾을 key 열만 읽는다. 값 열에는 긴 프롬프트가 들어 있다.
     const sh = getSheet_(SHEET_NAMES.config);
-    const values = sh.getDataRange().getValues();
+    const values = sh.getRange(1, 1, Math.max(sh.getLastRow(), 1), 1).getValues();
     const rowByKey = {};
 
     for (let i = 1; i < values.length; i++) {
@@ -686,19 +747,28 @@ function uiListSubmissions() {
   });
 }
 
+// 제출물 하나의 원문만 본다. 키 열로 행을 찾은 뒤 그 행만 읽는다.
 function uiGetSubmissionText(submissionKey) {
-  const records = readSheetRecords_(SHEET_NAMES.submissions, [
-    'submissionKey',
-    'studentName',
-    'assignmentTitle',
-    'extractedText',
-    'fileTitles',
-    'fileLinks',
-    'submissionLink',
-  ], 'submissionKey');
+  const notFound = () => new Error('제출물을 찾을 수 없습니다. 목록을 새로고침해 주세요.');
+  const sh = getSheet_(SHEET_NAMES.submissions);
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow < 2) throw notFound();
 
-  const found = records.find(r => String(r.submissionKey) === String(submissionKey));
-  if (!found) throw new Error('제출물을 찾을 수 없습니다. 목록을 새로고침해 주세요.');
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(v => String(v || '').trim());
+  const keyCol = headers.indexOf('submissionKey') + 1;
+  if (!keyCol) throw notFound();
+
+  const index = sh.getRange(2, keyCol, lastRow - 1, 1).getValues()
+    .findIndex(r => String(r[0]) === String(submissionKey));
+  if (index < 0) throw notFound();
+
+  const values = sh.getRange(index + 2, 1, 1, lastCol).getValues()[0];
+  const found = { row: index + 2 };
+  ['submissionKey', 'studentName', 'assignmentTitle', 'extractedText', 'fileTitles', 'fileLinks', 'submissionLink'].forEach(field => {
+    const i = headers.indexOf(field);
+    found[field] = i < 0 ? '' : toClientValue_(values[i]);
+  });
 
   return found;
 }
@@ -783,8 +853,13 @@ function uiStopAll() {
 // --- 진행 상태 -----------------------------------------------------------
 
 function uiGetStatus() {
+  return getStatus_();
+}
+
+// triggers: 이미 읽은 트리거 핸들러 이름 목록. 없으면 여기서 읽는다.
+function getStatus_(triggerNames) {
   const props = PropertiesService.getUserProperties();
-  const triggers = ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
+  const triggers = triggerNames || ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
   const triggerCount = name => triggers.filter(n => n === name).length;
 
   // 자동 작업은 실행 중에 스크립트 잠금을 잡고, 끝날 때 다음 트리거를 만든다.

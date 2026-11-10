@@ -170,10 +170,12 @@
     $('#modal-body').innerHTML = '';
   }
 
-  function confirmModal(title, message, okLabel) {
+  // warning: 놓치면 안 되는 안내. 본문 아래에 눈에 띄는 상자로 보여 준다.
+  function confirmModal(title, message, okLabel, warning) {
     return new Promise(resolve => {
       openModal(title, `
         <div style="white-space:pre-line">${esc(message)}</div>
+        ${warning ? `<div class="save-warn" style="margin-top:12px">${esc(warning)}</div>` : ''}
         <div class="row" style="justify-content:flex-end;margin-top:18px">
           <button class="btn" id="confirm-cancel">취소</button>
           <button class="btn primary" id="confirm-ok">${esc(okLabel || '확인')}</button>
@@ -261,35 +263,90 @@
   }
 
   // ---- 데이터 불러오기 ------------------------------------------------------
+  // 설정을 아직 안 읽었으면 상태와 함께 한 번에 받아 요청을 하나 줄인다.
   async function refreshBoot() {
-    S.boot = await call('uiGetBootstrap');
-    if (S.boot.isSetup && !S.settings) S.settings = await call('uiGetSettings');
+    const boot = await call('uiGetBootstrap', !S.settings);
+    if (boot.settings) S.settings = boot.settings;
+    delete boot.settings;
+    S.boot = boot;
     updatePolling();
     render();
   }
 
+  // ---- 도구 화면 데이터 -------------------------------------------------------
+  // 처음 열 때 기다리지 않도록 앱을 연 뒤 미리 읽어 둔다.
+  // 읽는 중인 요청은 함께 쓰고, 그사이 dropTool로 버려진 결과는 쓰지 않고 다시 읽는다.
+  const TOOL_LOADERS = { common: 'uiGetCommonPhrases', behavior: 'uiListBehaviorRows', manual: 'uiGetManual', grading: 'uiGetGrading' };
+  const toolLoads = {};
+  const toolLoadedAt = {};
+
+  function loadTool(key) {
+    if (S[key]) return Promise.resolve();
+    if (!toolLoads[key]) {
+      const p = call(TOOL_LOADERS[key]).then(data => {
+        if (toolLoads[key] !== p) return loadTool(key);
+        delete toolLoads[key];
+        if (!S[key]) { S[key] = data; toolLoadedAt[key] = Date.now(); }
+      }, err => {
+        if (toolLoads[key] === p) delete toolLoads[key];
+        throw err;
+      });
+      toolLoads[key] = p;
+    }
+    return toolLoads[key];
+  }
+
+  function dropTool(key) {
+    S[key] = null;
+    delete toolLoads[key];
+  }
+
+  function prefetchTools() {
+    if (!S.boot || !S.boot.isSetup) return;
+    Object.keys(TOOL_LOADERS).forEach(key => {
+      loadTool(key).then(() => { if (S.view === key && !S.busy && !isEditing()) render(); }).catch(() => {});
+    });
+  }
+
+  // 채점 화면은 수집이 다른 곳에서 끝날 수 있어 들어올 때마다 새로 읽는다.
+  // 읽어 둔 목록을 먼저 보여 주고, 새 목록이 오면 바꾼다. 그사이 화면에서 바꾼 것이 있으면 버린다.
+  let gradingChanges = 0;
+  function refreshGrading() {
+    if (Date.now() - (toolLoadedAt.grading || 0) < 5000) return;
+    const old = S.grading;
+    const changes = gradingChanges;
+    call('uiGetGrading').then(data => {
+      if (S.grading !== old || gradingChanges !== changes) return;
+      S.grading = data;
+      toolLoadedAt.grading = Date.now();
+      if (S.view === 'grading' && !S.busy && !isEditing()) render();
+    }).catch(() => {});
+  }
+
   async function ensureData(view) {
+    // 서로 기다릴 필요가 없는 요청은 함께 보낸다.
+    const assignmentsAndSubmissions = () => Promise.all([
+      S.assignments ? null : call('uiListAssignments').then(list => { S.assignments = list; }),
+      S.submissions ? null : call('uiListSubmissions').then(list => { S.submissions = list; }),
+    ]);
     const loaders = {
-      collect: async () => {
-        if (!S.assignments) S.assignments = await call('uiListAssignments');
-        if (!S.submissions) S.submissions = await call('uiListSubmissions');
-      },
-      drafts: async () => {
-        if (!S.assignments) S.assignments = await call('uiListAssignments');
-        if (!S.submissions) S.submissions = await call('uiListSubmissions');
-      },
+      collect: assignmentsAndSubmissions,
+      drafts: assignmentsAndSubmissions,
       review: async () => { if (!S.drafts) S.drafts = await call('uiListDrafts'); },
       final: async () => { if (!S.finals) S.finals = await call('uiListFinalRecords'); },
       settings: async () => { if (!S.settings) S.settings = await call('uiGetSettings'); },
-      common: async () => { if (!S.common) S.common = await call('uiGetCommonPhrases'); },
-      behavior: async () => { if (!S.behavior) S.behavior = await call('uiListBehaviorRows'); },
-      manual: async () => { if (!S.manual) S.manual = await call('uiGetManual'); },
-      grading: async () => { if (!S.grading) S.grading = await call('uiGetGrading'); },
+      common: () => loadTool('common'),
+      behavior: () => loadTool('behavior'),
+      manual: () => loadTool('manual'),
+      grading: () => loadTool('grading'),
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
     // 프롬프트 확인 칸에 설정 값이 필요하다.
-    if (['drafts', 'final', 'manual', 'behavior', 'grading'].includes(view) && !S.settings) S.settings = await call('uiGetSettings');
-    await loaders[view]();
+    const needsSettings = ['drafts', 'final', 'manual', 'behavior', 'grading'].includes(view) && !S.settings;
+    await Promise.all([
+      needsSettings ? call('uiGetSettings').then(settings => { S.settings = settings; }) : null,
+      loaders[view](),
+    ]);
   }
 
   async function go(view) {
@@ -298,8 +355,7 @@
       !await confirmModal('저장하지 않은 내용', '프롬프트를 저장하지 않았어요. 그래도 이동할까요?', '이동')) return;
     const unsavedRubrics = gradingUnsavedRubrics();
     if (unsavedRubrics.length && !await confirmModal('저장하지 않은 내용', `아래 과제의 채점 기준을 바꾸고 저장하지 않았어요. 그래도 이동할까요?\n${unsavedRubrics.map(a => a.assignmentTitle).join('\n')}`, '이동')) return;
-    // 수집은 다른 화면이나 자동 실행에서 끝나므로, 채점 화면에 들어올 때마다 과제 목록을 새로 읽는다.
-    if (view === 'grading') S.grading = null;
+    if (view === 'grading' && S.grading) refreshGrading();
     S.view = view;
     S.selected = new Set();
     S.bDraft = null;
@@ -341,23 +397,23 @@
 
       const finished = JOBS.filter(job => before[job] && before[job].state === 'ON' && status[job].state !== 'ON');
       if (finished.length) {
-        if (finished.includes('collect')) { S.submissions = null; S.assignments = null; S.grading = null; }
+        if (finished.includes('collect')) { S.submissions = null; S.assignments = null; dropTool('grading'); }
         if (finished.includes('drafts')) { S.submissions = null; S.drafts = null; }
         if (finished.includes('final')) S.finals = null;
-        if (finished.includes('common')) S.common = null;
-        if (finished.includes('behavior') && !S.bDraft) S.behavior = null;
-        if (finished.includes('manual')) S.manual = null;
-        if (finished.includes('grading')) S.grading = null;
-        await refreshBoot();
-        await ensureData(S.view);
+        if (finished.includes('common')) dropTool('common');
+        if (finished.includes('behavior') && !S.bDraft) dropTool('behavior');
+        if (finished.includes('manual')) dropTool('manual');
+        if (finished.includes('grading')) dropTool('grading');
+        await Promise.all([refreshBoot(), ensureData(S.view)]);
       } else if (S.view === 'drafts' || S.view === 'collect') {
         // 진행 중에도 남은 개수와 행 상태를 갱신해서 보여준다.
-        S.submissions = await call('uiListSubmissions');
         // 아직 저장 전인 체크를 시트의 예전 값으로 되돌리지 않는다.
-        if (S.view === 'collect' && !isSavingAssignments()) {
-          const assignments = await call('uiListAssignments');
-          if (!isSavingAssignments()) S.assignments = assignments;
-        }
+        const [submissions, assignments] = await Promise.all([
+          call('uiListSubmissions'),
+          S.view === 'collect' && !isSavingAssignments() ? call('uiListAssignments') : null,
+        ]);
+        S.submissions = submissions;
+        if (assignments && !isSavingAssignments()) S.assignments = assignments;
       } else if (status[S.view] && status[S.view].state === 'ON' && !isEditing()) {
         // 도구 화면도 진행 중에는 결과를 바로바로 보여준다.
         await refreshToolData(S.view);
@@ -1027,7 +1083,7 @@
       if ($('#reasoning-select')) patch.REASONING = $('#reasoning-select').value;
       await withBusy('모델을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
-        S.manual = null;
+        dropTool('manual');
         if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
         banner('모델을 저장했어요.', 'ok');
       });
@@ -1113,9 +1169,9 @@
         await withBusy('제출물을 가져오는 중… 첫 묶음은 몇 분 걸릴 수 있어요.', async () => {
           const result = await call('uiStartCollect');
           S.boot.status = result.status;
-          S.submissions = await call('uiListSubmissions');
-          S.assignments = await call('uiListAssignments');
-          S.boot = await call('uiGetBootstrap');
+          [S.submissions, S.assignments, S.boot] = await Promise.all([
+            call('uiListSubmissions'), call('uiListAssignments'), call('uiGetBootstrap'),
+          ]);
           showMessages(result);
           updatePolling();
         });
@@ -1165,9 +1221,8 @@
         await call('uiQueueDrafts', keys);
         const result = await call('uiStartDrafts');
         S.selected = new Set();
-        S.submissions = await call('uiListSubmissions');
+        [S.submissions, S.boot] = await Promise.all([call('uiListSubmissions'), call('uiGetBootstrap')]);
         S.drafts = null;
-        S.boot = await call('uiGetBootstrap');
         showMessages(result, '초안 만들기를 시작했어요. 남은 것은 자동으로 이어서 만들어요.');
         updatePolling();
       });
@@ -1176,9 +1231,8 @@
       if (!await preparePrompt('PROMPT_1')) return;
       await withBusy('남은 초안을 이어서 만드는 중…', async () => {
         const result = await call('uiStartDrafts');
-        S.submissions = await call('uiListSubmissions');
+        [S.submissions, S.boot] = await Promise.all([call('uiListSubmissions'), call('uiGetBootstrap')]);
         S.drafts = null;
-        S.boot = await call('uiGetBootstrap');
         showMessages(result, '이어서 만들기를 시작했어요.');
         updatePolling();
       });
@@ -1196,8 +1250,7 @@
       if (!await preparePrompt('PROMPT_2')) return;
       await withBusy('남은 학생을 이어서 합치는 중…', async () => {
         const result = await call('uiResumeFinalRecords');
-        S.finals = await call('uiListFinalRecords');
-        S.boot = await call('uiGetBootstrap');
+        [S.finals, S.boot] = await Promise.all([call('uiListFinalRecords'), call('uiGetBootstrap')]);
         showMessages(result, '이어서 만들기를 시작했어요.');
         updatePolling();
       });
@@ -1211,8 +1264,7 @@
       if (!await confirmModal('초안 합치기', message, '합치기')) return;
       await withBusy('학생별로 초안을 합치는 중… 몇 분 걸릴 수 있어요.', async () => {
         const result = await call('uiStartFinalRecords');
-        S.finals = await call('uiListFinalRecords');
-        S.boot = await call('uiGetBootstrap');
+        [S.finals, S.boot] = await Promise.all([call('uiListFinalRecords'), call('uiGetBootstrap')]);
         showMessages(result, '초안 합치기를 시작했어요.');
         updatePolling();
       });
@@ -1220,8 +1272,12 @@
     async 'check-record'(el) {
       const { kind, row, key } = el.dataset;
       try {
+        // 체크로 바뀌는 건 홈의 '확인함' 개수뿐이라 전체 상태를 다시 읽지 않고 화면에서 고친다.
+        const record = findRecord(kind, key);
+        const before = !!(record && record.teacherChecked);
         await saveRecord(kind, row, key, { teacherChecked: el.checked });
-        S.boot = await call('uiGetBootstrap');
+        const after = !!(record && record.teacherChecked);
+        if (kind === 'review' && S.boot.counts && before !== after) S.boot.counts.draftsChecked += after ? 1 : -1;
       } catch (err) {
         el.checked = !el.checked;
         showError(err);
@@ -1295,8 +1351,9 @@
       if (!Object.keys(patch).length) return banner('바뀐 항목이 없어요.', 'info');
       await withBusy('설정을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
-        S.manual = null;
-        S.boot = await call('uiGetBootstrap');
+        dropTool('manual');
+        // AI·모델 표시만 바뀌므로 화면에서 고치고, 모델 칸이 비었을 때만 전체 상태를 다시 읽는다.
+        if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
         banner('설정을 저장했어요.', 'ok');
       });
     },
@@ -1439,8 +1496,7 @@
         rememberAssignmentChanges();
         showError(err);
         try {
-          S.assignments = await call('uiListAssignments');
-          S.boot = await call('uiGetBootstrap');
+          [S.assignments, S.boot] = await Promise.all([call('uiListAssignments'), call('uiGetBootstrap')]);
         } catch (reloadErr) {
           // 다시 읽지 못해도 다음 저장은 이어서 할 수 있게 둔다.
         }
@@ -1529,7 +1585,7 @@
   $('#modal').addEventListener('click', event => { if (event.target.id === 'modal') closeModal(); });
 
   window.addEventListener('beforeunload', event => {
-    if (Object.keys(S.edits).length || (S.bDraft && S.bDraft.dirty)) {
+    if (Object.keys(S.edits).length || (S.bDraft && S.bDraft.dirty) || S.settingSaving > 0) {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -1541,6 +1597,7 @@
     .then(saveUnsavedAssignments)
     .then(() => {
       if (!S.boot.isSetup || !S.boot.keys[S.boot.provider]) go('start');
+      prefetchTools();
     })
     .catch(err => {
       S.boot = { isSetup: false, keys: {}, provider: 'claude', model: '', counts: null, status: null };
