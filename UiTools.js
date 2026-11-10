@@ -330,7 +330,7 @@ function readBehaviorRow_(sh, h, row, skipFlush) {
 
 // --- 수동추가 -------------------------------------------------------------
 
-function uiGetManual() {
+function getManualData_() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MANUAL_SHEET_NAME);
   if (!sh) return { exists: false };
 
@@ -552,6 +552,27 @@ function uiDeleteManualRow(row, expectedInput) {
 }
 
 // 원본 데이터는 두고 생기부 열과 바이트 열, 메모만 모두 지운다.
+// 수동추가를 처음 상태로 되돌린다. '수동추가' 시트와 '수동추가_백업_…' 시트를 모두 지운다. 프롬프트는 그대로 둔다.
+function uiResetManualAll() {
+  const deleted = withDocumentLock_(() => {
+    if ((PropertiesService.getUserProperties().getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF') === 'ON') {
+      throw new Error('수동추가 생기부를 만드는 중이라 초기화할 수 없습니다. 끝난 뒤 다시 시도하세요.');
+    }
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const targets = ss.getSheets().filter(sh => {
+      const name = sh.getName();
+      return name === MANUAL_SHEET_NAME || name.indexOf(`${MANUAL_SHEET_NAME}_백업_`) === 0;
+    });
+    if (targets.length >= ss.getSheets().length) throw new Error('스프레드시트에 시트가 하나는 남아 있어야 해서 지울 수 없습니다.');
+    const names = targets.map(sh => sh.getName());
+    targets.forEach(sh => ss.deleteSheet(sh));
+    PropertiesService.getDocumentProperties().deleteProperty(MANUAL_FORM_URL_PROPERTY);
+    return names;
+  });
+  log_('uiResetManualAll', 'OK', `수동추가 초기화: ${deleted.length ? deleted.join(', ') : '지울 시트 없음'}`);
+  return Object.assign(uiGetManual(), { deletedSheets: deleted });
+}
+
 function uiClearManualOutputs() {
   withDocumentLock_(() => {
     const sh = getSheet_(MANUAL_SHEET_NAME);
@@ -877,4 +898,131 @@ function exportGradingResults_() {
     headers: columns.map(c => c[1]),
     rows: records.map(r => columns.map(c => c[0] === 'teacherChecked' ? (isChecked_(r[c[0]]) ? 'O' : '') : r[c[0]])),
   };
+}
+
+function uiGetManual() {
+  return Object.assign(getManualData_(), {
+    formUrl: PropertiesService.getDocumentProperties().getProperty(MANUAL_FORM_URL_PROPERTY) || '',
+  });
+}
+
+// --- 구글 설문 응답 시트 링크로 가져오기 ----------------------------------------
+// 시트 권한(spreadsheets.currentonly)으로는 다른 시트를 열 수 없어서, 이미 있는 drive.readonly 권한으로
+// Drive API에서 엑셀 파일로 받아 화면에 넘긴다. 화면은 파일을 올렸을 때와 똑같이 읽는다.
+const MANUAL_FORM_URL_PROPERTY = 'MANUAL_FORM_URL';
+const DRIVE_EXPORT_LIMIT = 10 * 1024 * 1024;
+
+function driveFetch_(path) {
+  return UrlFetchApp.fetch(`https://www.googleapis.com/drive/v3/${path}`, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` },
+  });
+}
+
+function driveError_(res) {
+  const code = res.getResponseCode();
+  if (code === 403 || code === 404) {
+    return new Error('이 계정으로 열 수 없는 시트예요. 시트 주인에게 이 계정으로 공유를 받은 뒤 다시 넣어 주세요.');
+  }
+  return new Error(`시트를 가져오지 못했어요. (Drive 오류 ${code}) 잠시 뒤 다시 시도해 주세요.`);
+}
+
+function uiFetchSheetFromUrl(url) {
+  const text = String(url || '').trim();
+  if (!text) throw new Error('구글 설문 응답 시트의 링크를 넣어 주세요.');
+  if (/docs\.google\.com\/forms\/|forms\.gle\//.test(text)) {
+    throw new Error('설문지 링크가 아니라 응답 시트 링크가 필요해요. 설문지 편집 화면의 [응답] 탭에서 [스프레드시트에서 보기]를 눌러 열린 시트의 주소를 넣어 주세요.');
+  }
+  const m = text.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]{20,})/) || text.match(/[?&]id=([a-zA-Z0-9_-]{20,})/) || text.match(/\/file\/d\/([a-zA-Z0-9_-]{20,})/);
+  if (!m) throw new Error('구글 시트 링크가 아니에요. 응답 시트를 연 뒤 주소창의 주소(docs.google.com/spreadsheets/d/… 로 시작)를 그대로 붙여 넣어 주세요.');
+  const id = m[1];
+
+  const metaRes = driveFetch_(`files/${id}?fields=name,mimeType,size&supportsAllDrives=true`);
+  if (metaRes.getResponseCode() !== 200) throw driveError_(metaRes);
+  const meta = JSON.parse(metaRes.getContentText());
+
+  let res;
+  let kind = 'xlsx';
+  if (meta.mimeType === 'application/vnd.google-apps.spreadsheet') {
+    res = driveFetch_(`files/${id}/export?mimeType=${encodeURIComponent('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}`);
+  } else if (/spreadsheetml|ms-excel/.test(meta.mimeType)) {
+    res = driveFetch_(`files/${id}?alt=media&supportsAllDrives=true`);
+  } else if (/csv|tab-separated|text\/plain/.test(meta.mimeType)) {
+    res = driveFetch_(`files/${id}?alt=media&supportsAllDrives=true`);
+    kind = 'csv';
+  } else {
+    throw new Error(`'${meta.name}'은 시트 파일이 아니에요. 구글 시트 링크를 넣어 주세요.`);
+  }
+  if (res.getResponseCode() !== 200) {
+    if (res.getResponseCode() === 403 && /exportSizeLimitExceeded/.test(res.getContentText())) {
+      throw new Error('시트가 너무 커서 가져올 수 없어요. 필요한 시트만 남긴 사본을 만들어 그 링크를 넣거나, 파일로 내려받아 올려 주세요.');
+    }
+    throw driveError_(res);
+  }
+  const bytes = res.getContent();
+  if (bytes.length > DRIVE_EXPORT_LIMIT) throw new Error('시트가 너무 커서 가져올 수 없어요. 파일로 내려받아 올려 주세요.');
+
+  PropertiesService.getDocumentProperties().setProperty(MANUAL_FORM_URL_PROPERTY, text);
+  log_('uiFetchSheetFromUrl', 'OK', `링크로 '${meta.name}' 시트를 가져옴`);
+  return { name: meta.name, kind, base64: Utilities.base64Encode(bytes) };
+}
+
+// 링크로 다시 가져온 응답 중 '수동추가' 시트에 없는 행만 뒤에 붙인다.
+// 타임스탬프 열이 있으면 타임스탬프로, 없으면 모든 열 값을 이어서 같은 행인지 본다.
+function uiAppendManualRows(data) {
+  const headers = ((data && data.headers) || []).map(h => String(h || '').trim());
+  const rows = ((data && data.rows) || []).map(r => headers.map((_, i) => String((r || [])[i] == null ? '' : r[i])));
+  if (!headers.length || !rows.length) throw new Error('가져온 시트에 데이터 행이 없어요.');
+  if ((PropertiesService.getUserProperties().getProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY) || 'OFF') === 'ON') {
+    throw new Error('수동추가 생기부를 만드는 중이라 행을 붙일 수 없어요. 끝난 뒤 다시 시도해 주세요.');
+  }
+
+  const added = withDocumentLock_(() => {
+    const sh = getSheet_(MANUAL_SHEET_NAME);
+    const config = getManualRecordConfig_(getConfigMap_());
+    const lastCol = Math.max(sh.getLastColumn(), 1);
+    const existing = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || '').trim());
+    const named = headers.map((h, i) => ({ h, i })).filter(x => x.h);
+    const cols = named.map(x => existing.indexOf(x.h) + 1);
+    const missing = named.filter((_, k) => cols[k] < 1).map(x => x.h);
+    if (missing.length) {
+      throw new Error(`지금 '수동추가' 시트에 ${missing.join('·')} 열이 없어 이어 붙일 수 없어요. 설문 문항이 바뀌었다면 [이 내용으로 시트 만들기]로 새로 만들어 주세요.`);
+    }
+
+    const tsAt = named.findIndex(x => /^(타임스탬프|timestamp)$/i.test(x.h));
+    const keyOf = values => (tsAt >= 0 ? [values[tsAt]] : values).map(v => String(v == null ? '' : v).trim()).join('\u0001');
+    const lastRow = sh.getLastRow();
+    const seen = {};
+    if (lastRow >= config.startRow) {
+      const width = Math.max.apply(null, cols);
+      const old = sh.getRange(config.startRow, 1, lastRow - config.startRow + 1, width).getDisplayValues();
+      old.forEach(r => { seen[keyOf(cols.map(c => r[c - 1]))] = true; });
+    }
+
+    const fresh = rows
+      .map(r => named.map(x => r[x.i]))
+      .filter(v => v.some(x => String(x).trim()))
+      .filter(v => {
+        const key = keyOf(v);
+        if (seen[key]) return false;
+        seen[key] = true;
+        return true;
+      });
+    if (!fresh.length) return 0;
+
+    const width = Math.max.apply(null, cols);
+    const block = fresh.map(v => {
+      const line = Array(width).fill('');
+      cols.forEach((col, k) => { line[col - 1] = v[k]; });
+      return line;
+    });
+    const start = Math.max(lastRow + 1, config.startRow);
+    sh.getRange(start, 1, block.length, width).setNumberFormat('@').setValues(block);
+    sh.getRange(start, 1, block.length, Math.max(sh.getLastColumn(), width)).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP).setVerticalAlignment('top');
+    return block.length;
+  });
+
+  log_('uiAppendManualRows', 'OK', `설문 새 응답 ${added}행을 수동추가 시트 뒤에 붙임`);
+  return Object.assign(uiGetManual(), { appended: added });
 }

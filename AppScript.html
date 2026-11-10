@@ -13,6 +13,13 @@
     behavior: null,
     manual: null,
     grading: null,
+    ocr: null,
+    ocrPdf: null,
+    ocrRun: null,
+    ocrEdits: {},
+    ocrEven: 1,
+    ocrStarts: null,
+    ocrDetected: {},
     gradingKey: '',
     rubricEdits: {},
     bDraft: null,
@@ -51,6 +58,7 @@
   const TOOLS = [
     { id: 'common', label: '공통문구', icon: '✎', desc: '바탕 문구 하나로 표현이 다른 문구를 여러 개 만들어요.' },
     { id: 'behavior', label: '행발 추천', icon: '☺', desc: '학생별 관찰 내용으로 행동특성 및 종합의견 문구를 추천받아요.' },
+    { id: 'ocr', label: '손글씨 추출', icon: '✍', desc: '종이 과제를 스캔한 PDF에서 학생별 손글씨를 추출해 수동추가로 넘겨요.' },
     { id: 'manual', label: '수동추가', icon: '＋', desc: 'Classroom 밖의 활동 내용을 직접 넣어 생기부를 만들어요.' },
     { id: 'grading', label: '채점', icon: '✓', desc: '입력한 채점 기준으로 학생별 점수와 이유를 받아요.' },
   ];
@@ -276,7 +284,7 @@
   // ---- 도구 화면 데이터 -------------------------------------------------------
   // 처음 열 때 기다리지 않도록 앱을 연 뒤 미리 읽어 둔다.
   // 읽는 중인 요청은 함께 쓰고, 그사이 dropTool로 버려진 결과는 쓰지 않고 다시 읽는다.
-  const TOOL_LOADERS = { common: 'uiGetCommonPhrases', behavior: 'uiListBehaviorRows', manual: 'uiGetManual', grading: 'uiGetGrading' };
+  const TOOL_LOADERS = { common: 'uiGetCommonPhrases', behavior: 'uiListBehaviorRows', manual: 'uiGetManual', grading: 'uiGetGrading', ocr: 'uiOcrGet' };
   const toolLoads = {};
   const toolLoadedAt = {};
 
@@ -339,10 +347,11 @@
       behavior: () => loadTool('behavior'),
       manual: () => loadTool('manual'),
       grading: () => loadTool('grading'),
+      ocr: () => loadTool('ocr'),
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
     // 프롬프트 확인 칸에 설정 값이 필요하다.
-    const needsSettings = ['drafts', 'final', 'manual', 'behavior', 'grading'].includes(view) && !S.settings;
+    const needsSettings = ['drafts', 'final', 'manual', 'behavior', 'grading', 'ocr'].includes(view) && !S.settings;
     await Promise.all([
       needsSettings ? call('uiGetSettings').then(settings => { S.settings = settings; }) : null,
       loaders[view](),
@@ -1056,6 +1065,8 @@
     async provider(el) {
       await withBusy('AI 서비스를 바꾸는 중…', async () => {
         S.settings = await call('uiSaveSettings', { AI_PROVIDER: el.dataset.id });
+        dropTool('manual');
+        dropTool('ocr');
         if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
       });
     },
@@ -1084,6 +1095,7 @@
       await withBusy('모델을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
         dropTool('manual');
+        dropTool('ocr');
         if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
         banner('모델을 저장했어요.', 'ok');
       });
@@ -1352,6 +1364,7 @@
       await withBusy('설정을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
         dropTool('manual');
+        dropTool('ocr');
         // AI·모델 표시만 바뀌므로 화면에서 고치고, 모델 칸이 비었을 때만 전체 상태를 다시 읽는다.
         if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
         banner('설정을 저장했어요.', 'ok');
@@ -1549,6 +1562,7 @@
   document.addEventListener('input', event => {
     const el = event.target;
     if (el.tagName === 'TEXTAREA' && el.closest('.record')) autoGrow(el);
+    if (el.id === 'manual-url') S.manualUrl = el.value;
 
     if (el.id === 'search' || el.id === 'submission-search') {
       S.filters[el.id === 'search' ? 'search' : 'submissionSearch'] = el.value;
@@ -1585,7 +1599,7 @@
   $('#modal').addEventListener('click', event => { if (event.target.id === 'modal') closeModal(); });
 
   window.addEventListener('beforeunload', event => {
-    if (Object.keys(S.edits).length || (S.bDraft && S.bDraft.dirty) || S.settingSaving > 0) {
+    if (Object.keys(S.edits).length || (S.bDraft && S.bDraft.dirty) || S.settingSaving > 0 || (S.ocrRun && S.ocrRun.running) || Object.keys(S.ocrEdits).length) {
       event.preventDefault();
       event.returnValue = '';
     }

@@ -2141,6 +2141,7 @@ function setupSheets() {
     ['MANUAL_INPUT_COLS', '', '수동추가를 위한 설정\n인공지능에게 줄 학생 데이터가 적힌 열(ex. B,C) /  콤마로 구분하여 입력 가능\n이름과 같은 개인정보를 포함하지 않게 주의해주세요'],
     ['MANUAL_OUTPUT_COL', '', '수동추가를 위한 설정\n인공지능에게 받아올 생기부를 적을 열(ex. C)'],
     ['MANUAL_PROMPT', defaultManualRecordPrompt_(), '수동추가를 위한 생기부 작성 지침\n\n\n인공지능에게 채점도 시켜보고 싶으시면 채점하라고 지시하시면 됩니다.\n그리고 "evidence_summary에 점수를 입력하여 보낸다" 라는 프롬프트를 \n작업에 넣어주시면 메모로 받아보실 수 있습니다.'],
+    ['OCR_PROMPT', defaultOcrPrompt_(), '손글씨 추출 도구에서 스캔한 PDF의 글을 옮겨 적을 때 따르는 지침'],
     ['BEHAVIOR_RECORD_MIN_BYTES', '750', '행발 최소 바이트(나이스 기준)\n도우미의 [행발 추천] 화면에서 바꿀 수 있습니다.'],
     ['BEHAVIOR_RECORD_MAX_BYTES', '1200', '행발 최대 바이트(나이스 기준)'],
     ['BEHAVIOR_RECORD_PROMPT', defaultBehaviorRecordPrompt_(), '작성하시는 스타일에 맞게 수정하시면 됩니다.'],
@@ -2503,16 +2504,20 @@ function extractSubmissionText_(sub) {
   };
 }
 
-function buildClaudePayload_(model, systemGuide, userPrompt, reasoning) {
+function buildClaudePayload_(model, systemGuide, userPrompt, reasoning, options) {
+  const attachments = aiAttachments_(options);
   // temperature는 보내지 않는다. Claude Haiku 5.5·Sonnet 5.5는 기본값이 아닌 temperature를 400으로 거절한다.
   const payload = {
     model,
-    max_tokens: getClaudeMaxTokens_(reasoning),
+    max_tokens: aiMaxTokens_(options) || getClaudeMaxTokens_(reasoning),
     system: systemGuide,
     messages: [
       {
         role: 'user',
-        content: userPrompt,
+        content: attachments.length === 0 ? userPrompt : attachments.map(file => ({
+          type: 'document',
+          source: { type: 'base64', media_type: file.mimeType, data: file.data },
+        })).concat([{ type: 'text', text: userPrompt }]),
       },
     ],
   };
@@ -2521,14 +2526,14 @@ function buildClaudePayload_(model, systemGuide, userPrompt, reasoning) {
   return payload;
 }
 
-function callClaude_(model, systemGuide, userPrompt, reasoning) {
+function callClaude_(model, systemGuide, userPrompt, reasoning, options) {
   const apiKey = PropertiesService.getUserProperties().getProperty('CLAUDE_API_KEY');
 
   if (!apiKey) {
     throw new Error('Claude API 키가 없습니다. 메뉴에서 본인 Claude API 키를 먼저 저장하세요.');
   }
 
-  const payload = buildClaudePayload_(model, systemGuide, userPrompt, reasoning);
+  const payload = buildClaudePayload_(model, systemGuide, userPrompt, reasoning, options);
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
@@ -2667,10 +2672,21 @@ function buildAiFetchOptions_(provider, apiKey, payload) {
   };
 }
 
-function buildAiPayload_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
-  if (provider === 'gpt') return buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
-  if (provider === 'gemini') return buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
-  return buildClaudePayload_(model, systemGuide, userPrompt, reasoning);
+function buildAiPayload_(provider, model, systemGuide, userPrompt, reasoning, responseSchema, options) {
+  if (provider === 'gpt') return buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
+  if (provider === 'gemini') return buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
+  return buildClaudePayload_(model, systemGuide, userPrompt, reasoning, options);
+}
+
+// options.attachments: [{ mimeType: 'application/pdf', data: base64, name }]. 손글씨 추출처럼 파일을 함께 보낼 때만 쓴다.
+// options.maxTokens: 이 요청의 출력 한도를 따로 정할 때 쓴다. 둘 다 없으면 지금까지와 같은 요청이 나간다.
+function aiAttachments_(options) {
+  return (options && Array.isArray(options.attachments)) ? options.attachments.filter(file => file && file.data) : [];
+}
+
+function aiMaxTokens_(options) {
+  const value = Number(options && options.maxTokens);
+  return value > 0 ? value : 0;
 }
 
 // 성공 응답에서 글을 꺼낸다. 출력 한도로 잘린 답이면 null을 돌려준다(그 요청은 하나씩 보내는 경로로 다시 받는다).
@@ -2898,23 +2914,26 @@ function createAiPrefetcher_(config, label) {
 
 // responseSchema를 주지 않으면 GPT·Gemini는 생기부 초안 형식(evidence_summary, record_draft, caution)으로 답하게 한다.
 // Claude는 형식을 강제하지 않고 프롬프트의 JSON 예시를 따른다.
-function callAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema) {
+function callAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema, options) {
   provider = normalizeAiProvider_(provider);
   reasoning = normalizeReasoning_(reasoning);
 
-  const prefetched = takePrefetchedAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema);
-  if (prefetched) return prefetched;
+  // 파일을 함께 보내는 요청은 미리 받아 둔 답(같은 글 요청)과 섞이지 않게 바로 보낸다.
+  if (aiAttachments_(options).length === 0) {
+    const prefetched = takePrefetchedAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema);
+    if (prefetched) return prefetched;
+  }
 
   if (provider === 'gpt') {
-    return callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema);
+    return callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
   }
 
   if (provider === 'gemini') {
-    return callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema);
+    return callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
   }
 
   if (provider === 'claude') {
-    return callClaude_(model, systemGuide, userPrompt, reasoning);
+    return callClaude_(model, systemGuide, userPrompt, reasoning, options);
   }
 
   throw new Error(`지원하지 않는 AI_PROVIDER입니다. claude, gpt, gemini 중 하나로 설정해주세요: ${provider}`);
@@ -3048,9 +3067,14 @@ function stripAdditionalProperties_(schema) {
   return result;
 }
 
-function buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema) {
+function buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema, options) {
   reasoning = normalizeReasoning_(reasoning);
-  const baseMaxOutputTokens = getOpenAiMaxOutputTokens_(reasoning);
+  const baseMaxOutputTokens = aiMaxTokens_(options) || getOpenAiMaxOutputTokens_(reasoning);
+  const files = aiAttachments_(options).map((file, i) => ({
+    type: 'input_file',
+    filename: file.name || `file${i + 1}.pdf`,
+    file_data: `data:${file.mimeType};base64,${file.data}`,
+  }));
 
   return {
     model: model || 'gpt-6-luna',
@@ -3063,12 +3087,12 @@ function buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, response
     input: [
       {
         role: 'user',
-        content: [
+        content: files.concat([
           {
             type: 'input_text',
             text: userPrompt,
           },
-        ],
+        ]),
       },
     ],
     max_output_tokens: baseMaxOutputTokens,
@@ -3083,7 +3107,7 @@ function buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, response
   };
 }
 
-function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) {
+function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, options) {
   const apiKey = PropertiesService.getUserProperties().getProperty('OPENAI_API_KEY');
 
   if (!apiKey) {
@@ -3091,8 +3115,8 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema) 
   }
 
   reasoning = normalizeReasoning_(reasoning);
-  const baseMaxOutputTokens = getOpenAiMaxOutputTokens_(reasoning);
-  const payload = buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
+  const payload = buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
+  const baseMaxOutputTokens = payload.max_output_tokens;
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
@@ -3191,19 +3215,24 @@ function formatUsageNumber_(snakeValue, camelValue) {
   return '';
 }
 
-function buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema) {
+function buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema, options) {
   reasoning = normalizeReasoning_(reasoning);
+  const attachments = aiAttachments_(options);
 
   return {
     model: model || 'gemini-3.8-flash',
     // 요청을 Gemini 서버에 대화 기록으로 남기지 않는다(기본값은 보관).
     store: false,
     system_instruction: systemGuide,
-    input: userPrompt,
+    input: attachments.length === 0 ? userPrompt : attachments.map(file => ({
+      type: 'document',
+      data: file.data,
+      mime_type: file.mimeType,
+    })).concat([{ type: 'text', text: userPrompt }]),
     generation_config: {
       temperature: 0.2,
       // 생각에 쓴 토큰도 이 한도에 들어가므로 추론 수준에 맞춰 늘린다.
-      max_output_tokens: getClaudeMaxTokens_(reasoning),
+      max_output_tokens: aiMaxTokens_(options) || getClaudeMaxTokens_(reasoning),
       thinking_level: getGeminiThinkingLevel_(reasoning, model || 'gemini-3.8-flash'),
     },
     response_format: {
@@ -3214,7 +3243,7 @@ function buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, response
   };
 }
 
-function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) {
+function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, options) {
   const apiKey = PropertiesService.getUserProperties().getProperty('GEMINI_API_KEY');
 
   if (!apiKey) {
@@ -3222,7 +3251,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema) 
   }
 
   reasoning = normalizeReasoning_(reasoning);
-  const payload = buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema);
+  const payload = buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;

@@ -19,7 +19,7 @@ const ASSISTANT_SETTING_GROUPS = {
     'NEIS_WARNING_BYTES',
   ],
   ai: ['AI_PROVIDER', 'CLAUDE_MODEL', 'GPT_MODEL', 'GEMINI_MODEL', 'REASONING'],
-  prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE', 'GRADING_GUIDE', 'BEHAVIOR_RECORD_PROMPT', 'MANUAL_PROMPT'],
+  prompts: ['PROMPT_1', 'PROMPT_2', 'SYSTEM_GUIDE', 'GRADING_GUIDE', 'BEHAVIOR_RECORD_PROMPT', 'MANUAL_PROMPT', 'OCR_PROMPT'],
   tools: ['COMMON_PHRASE_PREVIOUS_LIMIT'],
   // 분량 기준은 설정 화면이 아니라 각 화면의 프롬프트 카드 아래에서 바꾼다.
   lengths: [
@@ -57,6 +57,7 @@ const ASSISTANT_SETTING_LABELS = {
   GRADING_GUIDE: '채점 공통 지침',
   BEHAVIOR_RECORD_PROMPT: '행발 추천 문구 작성 지침',
   MANUAL_PROMPT: '수동추가 생기부 작성 지침',
+  OCR_PROMPT: '손글씨 추출 지침',
   COMMON_PHRASE_PREVIOUS_LIMIT: '공통문구 중복 방지용 참고 문구 수',
   MAX_RECORD_CHARS: '초안 최대 글자수(구버전 설정)',
   MAX_INPUT_CHARS: 'AI에 보낼 과제 원문 최대 글자수',
@@ -548,6 +549,7 @@ function uiGetDefaultPrompt(key) {
   if (key === 'GRADING_GUIDE') return defaultGradingGuide_();
   if (key === 'BEHAVIOR_RECORD_PROMPT') return defaultBehaviorRecordPrompt_();
   if (key === 'MANUAL_PROMPT') return defaultManualRecordPrompt_();
+  if (key === 'OCR_PROMPT') return defaultOcrPrompt_();
 
   throw new Error(`기본값이 없는 설정입니다: ${key}`);
 }

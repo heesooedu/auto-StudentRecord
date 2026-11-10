@@ -1,5 +1,5 @@
 <script>
-  // ---- 도구 화면: 공통문구 · 행발 추천 · 수동추가 · 채점 --------------------------
+  // ---- 도구 화면: 공통문구 · 행발 추천 · 수동추가 · 채점 · 손글씨 추출 ---------------
   // AppScript.html의 S, call, esc, withBusy 등을 함께 쓴다.
 
   const BEHAVIOR_FIELDS = [
@@ -13,6 +13,7 @@
     if (view === 'behavior' && !S.bDraft) S.behavior = await call('uiListBehaviorRows');
     if (view === 'manual') S.manual = await call('uiGetManual');
     if (view === 'grading') S.grading = await call('uiGetGrading');
+    if (view === 'ocr') S.ocr = await call('uiOcrGet');
   }
 
   // 결과 문구를 고치고 저장하는 공통 블록
@@ -50,6 +51,10 @@
 
   function toolDeleteButton(action, label, id) {
     return `<button class="btn danger" data-action="${action}" ${id !== undefined ? `data-id="${id}"` : ''} ${S.busy ? 'disabled' : ''}>${esc(label)}</button>`;
+  }
+
+  function resetAllButton(action) {
+    return `<button class="btn danger fill" data-action="${action}" ${S.busy ? 'disabled' : ''}>모두 초기화</button>`;
   }
 
   function toolStartButton(job, label, disabled) {
@@ -267,16 +272,43 @@
   }
 
   // ---- CSV 올리기 -----------------------------------------------------------
-  const PERSONAL_COL = /번호|이름|성명|학번|이메일|e-?mail|성별|^반$|학년/i;
+  const PERSONAL_COL = /번호|이름|성명|학번|이메일|e-?mail|성별|^반$|학년|타임스탬프|timestamp/i;
 
   function manualUploadCard(d) {
     const c = S.csv;
     if (!c) {
       return `
-        <h2>파일 올리기</h2>
-        <p class="muted" style="margin:0 0 12px">첫 줄이 열 이름인 엑셀(.xlsx, .xls) 또는 CSV 파일을 고르면, 그 내용으로 '수동추가' 시트를 만들어요.</p>
-        <input type="file" id="manual-csv" accept="${UPLOAD_ACCEPT}" ${S.busy ? 'disabled' : ''}>
-        ${S.csvLoading ? '<div class="help"><span class="spinner"></span> 파일을 읽는 중…</div>' : ''}`;
+        <p class="source-intro">데이터를 가져올 방법을 하나 고르세요. 어느 쪽이든 '수동추가' 시트가 만들어져요.</p>
+        <div class="source-pick">
+          <section class="source source-file">
+            <div class="source-head">
+              <span class="source-badge">1</span>
+              <div><h3>파일 올리기</h3><p>엑셀(.xlsx, .xls) · CSV · TSV</p></div>
+            </div>
+            <label class="dropzone ${S.busy ? 'disabled' : ''}" id="manual-drop">
+              <input type="file" id="manual-csv" accept="${UPLOAD_ACCEPT}" ${S.busy ? 'disabled' : ''}>
+              ${S.csvLoading
+                ? '<span class="drop-icon"><span class="spinner"></span></span><b>파일을 읽는 중…</b>'
+                : '<span class="drop-icon">⬆</span><b>파일을 끌어다 놓거나 눌러서 고르기</b><span class="small muted">첫 줄이 열 이름인 표여야 해요</span>'}
+            </label>
+          </section>
+          <div class="source-or" aria-hidden="true"><span>또는</span></div>
+          <section class="source source-form">
+            <div class="source-head">
+              <span class="source-badge">2</span>
+              <div><h3>구글 설문 응답 시트</h3><p>링크만 붙여 넣으면 내려받지 않고 바로 가져와요</p></div>
+            </div>
+            <div class="url-field">
+              <input type="text" id="manual-url" placeholder="docs.google.com/spreadsheets/d/… 주소" value="${esc(S.manualUrl !== undefined ? S.manualUrl : (d.formUrl || ''))}" ${S.busy ? 'disabled' : ''}>
+              <button class="btn primary" data-action="fetch-manual-url" ${S.busy ? 'disabled' : ''}>가져오기</button>
+            </div>
+            <ol class="source-steps">
+              <li>설문지 편집 화면의 <b>[응답]</b> 탭 → <b>[스프레드시트에서 보기]</b></li>
+              <li>열린 시트의 주소를 복사해 위에 붙여 넣기 <span class="muted">(이 계정으로 열 수 있는 시트)</span></li>
+            </ol>
+            <div class="help">나중에 들어온 응답은 <b>[설문 새 응답 가져오기]</b>로 이어 붙여요. 이미 가져온 응답을 설문에서 고친 것은 반영되지 않아요.</div>
+          </section>
+        </div>`;
     }
 
     const preview = c.rows.slice(0, 3);
@@ -290,14 +322,15 @@
         <div class="chips">${c.headers.map((h, i) => `
           <label class="chip ${c.inputCols.includes(i + 1) ? 'on' : ''}"><input type="checkbox" class="csv-input-col" value="${i + 1}" ${c.inputCols.includes(i + 1) ? 'checked' : ''}> ${esc(h || `${columnLetter(i + 1)}열`)}</label>`).join('')}</div>
         <div class="help">활동 내용이 담긴 열을 고르세요.</div>
-        <div class="save-warn" style="margin-top:8px">⚠️ 이름·학번·이메일처럼 개인정보가 담긴 열은 AI에게 보내지 마세요.</div></div>
+        <div class="save-warn" style="margin-top:8px">⚠️ 이름·학번·이메일처럼 개인정보가 담긴 열은 AI에게 보내지 마세요.${c.fromUrl ? ' 구글 설문의 <b>이메일 주소</b> 열도 마찬가지예요.' : ''}</div></div>
       <div class="table-wrap" style="max-height:200px;margin-bottom:12px"><table>
         <tr>${c.headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr>
         ${preview.map(r => `<tr>${c.headers.map((_, i) => `<td class="small">${esc(cut(r[i]))}</td>`).join('')}</tr>`).join('')}
       </table></div>
-      ${d.exists ? `<div class="help" style="margin-bottom:10px">이미 '수동추가' 시트가 있어요. 만들 때 덮어쓸지, 지금 시트를 백업으로 남길지 물어볼게요.</div>` : ''}
+      ${d.exists ? `<div class="help" style="margin-bottom:10px">이미 '수동추가' 시트가 있어요. 만들 때 덮어쓸지, 지금 시트를 백업으로 남길지 물어볼게요.${c.fromUrl ? ' 지금 시트에 없는 새 응답만 붙이려면 <b>[새 응답만 이어 붙이기]</b>를 누르세요.' : ''}</div>` : ''}
       <div class="row" style="justify-content:flex-end">
         <button class="btn" data-action="cancel-csv">다른 파일 고르기</button>
+        ${d.exists && c.fromUrl ? `<button class="btn" data-action="append-manual-rows" ${S.busy ? 'disabled' : ''}>새 응답만 이어 붙이기</button>` : ''}
         <button class="btn primary" data-action="import-manual-csv" ${S.busy ? 'disabled' : ''}>이 내용으로 시트 만들기</button>
       </div>`;
   }
@@ -395,6 +428,21 @@
     }
     if (['csv', 'tsv', 'txt'].includes(ext)) return { table: readCsvBuffer(buf) };
     throw new Error('엑셀(.xlsx, .xls) 또는 CSV 파일만 올릴 수 있어요.');
+  }
+
+  // 구글 설문 응답 시트 링크를 서버에서 엑셀 파일로 받아, 파일을 올렸을 때와 같은 모양(S.csv)으로 만든다.
+  async function readSheetFromUrl(url) {
+    const res = await call('uiFetchSheetFromUrl', url);
+    const bin = atob(res.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    if (res.kind === 'csv') return Object.assign({ fileName: res.name, fromUrl: url }, csvTable(readCsvBuffer(bytes.buffer)));
+    const XLSX = await loadSheetJs();
+    const book = XLSX.read(bytes, { type: 'array' });
+    const sheets = book.SheetNames.filter(name => book.Sheets[name] && book.Sheets[name]['!ref']);
+    if (!sheets.length) throw new Error('가져온 시트에 내용이 없어요.');
+    const sheetName = sheets.find(name => /^(설문지 응답|Form Responses)/i.test(name)) || sheets[0];
+    return Object.assign({ fileName: res.name, fromUrl: url, book, sheets, sheetName }, csvTable(sheetToTable(XLSX, book, sheetName)));
   }
 
   function sheetToTable(XLSX, book, name) {
@@ -500,6 +548,17 @@
 
   // 프롬프트 카드에 따로 보여 주는 예시. [이 예시로 채우기]를 누르면 그대로 옮겨 온다.
   const PROMPT_EXAMPLES = {
+    OCR_PROMPT: [
+      '[추출 내용 및 방법]',
+      '"학번", "이름", "사례1", "Q1 비용을 절감하지만 일자리가 감소한다면 공공기관에서 AI 에이전트를 도입해야할까? 자신의 판단과 그 이유를 설명하시오", "사례2", "Q2 경쟁력이 높아지고 일부 기업의 폐업을 막을 수 있다면 일자리가 감소해도 AI 에이전트를 도입해야할까?"를 추출한다.',
+      '이때 스프레드시트로 저장할 수 있는 표 형태로 추출한다.',
+      '',
+      '[옮겨 적기 원칙]',
+      '1. 학생이 손으로 쓴 글만 옮긴다.',
+      '2. 보이는 그대로 옮긴다. 맞춤법을 고치거나, 요약하거나, 없는 내용을 보태지 않는다.',
+      '3. 읽을 수 없는 글자나 낱말은 [?]로 적는다. 짐작이 가더라도 확실하지 않으면 [?]로 적는다.',
+      '4. 줄을 바꾼 곳과 문단은 줄바꿈으로 살린다. 줄을 그어 지운 글은 옮기지 않는다.',
+    ].join('\n'),
     PROMPT_1: [
       '[교사 안내] (선택)',
       '- 과목/작성 영역: 인공지능 기초',
@@ -543,6 +602,10 @@
 
   // 안내 줄이 없는 프롬프트(행발)는 summary·설명 문구를 따로 쓴다.
   const PROMPT_CARD_TEXT = {
+    OCR_PROMPT: {
+      summary: '⚠️ [추출 내용 및 방법]을 이번 과제에 맞게 꼭 고쳐 주세요.',
+      help: 'AI가 스캔한 과제를 옮겨 적을 때 따르는 지침이에요. [추출 내용 및 방법]에 적은 항목이 표의 열이 되니, 과제지의 문항을 줄이지 말고 통째로 적어 주세요. 열 이름이 생기부를 쓸 때 AI에게 함께 가서, 무엇을 물었는지 알고 써요. 항목은 하나씩 "큰따옴표"로 감싸고 쉼표로 나눠 주세요. 그러면 문항 안에 쉼표가 있어도 정확히 나눠요. 학번·이름은 늘 따로 옮겨 적어요. “스프레드시트로 저장할 수 있는 표 형태로 추출한다”는 문장은 지워도 AI에게 늘 함께 보내요.',
+    },
     BEHAVIOR_RECORD_PROMPT: {
       summary: '작성 스타일에 맞게 고쳐 쓸 수 있어요.',
       help: 'AI가 행발 문구를 쓸 때 따르는 지침이에요. 학생별 특성·관찰 내용과 글자수는 여기에 없어도 자동으로 함께 보내져요.',
@@ -557,7 +620,7 @@
     if (!S.settings) return '';
     const text = currentPrompt(key);
     const dirty = promptDirty(key);
-    const missing = promptMissingInfo(text);
+    const missing = promptMissingInfo(text) || (key === 'OCR_PROMPT' && text.includes('(여기에'));
     const filled = promptInfo(text).filter(item => item.value).map(item => item.value);
     const custom = PROMPT_CARD_TEXT[key];
     const pill = missing ? '<span class="pill warn">안내를 채워 주세요</span>'
@@ -766,8 +829,9 @@
       return `
         <h1>수동추가</h1>
         <p class="lead">Classroom에 없는 활동(동아리, 대회, 프로젝트 등)의 내용을 직접 넣어 생기부를 만들어요.</p>
+        ${S.csv ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px">${resetAllButton('manual-reset-all')}</div>` : ''}
         ${busyNote()}
-        <div class="card hero">${manualUploadCard(d)}</div>`;
+        <div class="card">${manualUploadCard(d)}</div>`;
     }
 
     const pending = d.rows.filter(r => r.status === '대기' || r.status === '오류').length;
@@ -777,9 +841,10 @@
     return `
       <h1>수동추가</h1>
       <p class="lead">올린 파일의 각 행 내용을 AI에게 보내 생기부를 만들어요.</p>
+      <div class="row" style="justify-content:flex-end;margin-bottom:8px">${resetAllButton('manual-reset-all')}</div>
       ${busyNote()}
       <details class="card" ${S.csv ? 'open' : ''}>
-        <summary><b>새 파일 올리기</b> <span class="muted small">다른 엑셀·CSV 파일로 '수동추가' 시트를 다시 만들어요.</span></summary>
+        <summary><b>새 파일 올리기</b> <span class="muted small">다른 엑셀·CSV 파일이나 구글 설문 응답 시트 링크로 '수동추가' 시트를 다시 만들어요.</span></summary>
         ${manualUploadCard(d)}
       </details>
       ${manualSetupCard(d, !d.configured)}
@@ -794,6 +859,7 @@
         <div class="toolbar">
           <input type="search" id="search" class="grow" placeholder="이름이나 내용으로 찾기" value="${esc(S.filters.search)}">
           <button class="btn" data-action="reload-manual">새로고침</button>
+          ${d.formUrl ? `<button class="btn" data-action="refresh-manual-form" ${S.busy || jobRunning('manual') ? 'disabled' : ''} title="${esc(d.formUrl)}">설문 새 응답 가져오기</button>` : ''}
           ${d.rows.length ? downloadButton('manual') : ''}
           ${d.rows.some(r => r.output || r.note) ? toolDeleteButton('clear-manual', '생기부 모두 지우기') : ''}
         </div>
@@ -810,6 +876,278 @@
             ${r.output ? resultEditor('manual', r.row, 5) : ''}
             ${r.note && r.status !== '완료' ? `<div class="caution">${esc(r.note)}</div>` : ''}
           </div>`).join('')}` : ''}`;
+  }
+
+  // ---- 손글씨 추출 -------------------------------------------------------------
+  // 스캔한 PDF는 브라우저에서 학생별로 나눠 한 명씩 서버에 보낸다. 창을 닫으면 멈추고, 끝난 학생은 시트에 남는다.
+  // 구글이 화면 코드의 '//' 뒤를 주석으로 잘라 내는 경우가 있어서 URL의 슬래시는 \/로 쓴다.
+  const PDF_LIB_URL = 'https:\/\/cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+
+  function loadPdfLib() {
+    if (window.PDFLib) return Promise.resolve(window.PDFLib);
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = PDF_LIB_URL;
+      script.onload = () => resolve(window.PDFLib);
+      script.onerror = () => reject(new Error('PDF 읽기 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.'));
+      document.head.appendChild(script);
+    });
+  }
+
+  const OCR_REASONING_LABELS = {
+    none: 'none · 추론 없음 (가장 쌈)',
+    low: 'low · 조금 더 생각함 (비용 약 2배)',
+    medium: 'medium · 더 많이 생각함 (가장 비쌈)',
+  };
+
+  // 학생이 시작하는 쪽 목록(S.ocrStarts)으로 PDF 쪽을 학생별 묶음으로 나눈다. key는 시트의 '쪽' 값('3' 또는 '3-4')이다.
+  function ocrGroups() {
+    const pdf = S.ocrPdf;
+    if (!pdf || !S.ocrStarts) return [];
+    const starts = S.ocrStarts;
+    return starts.map((from, i) => {
+      const to = i + 1 < starts.length ? starts[i + 1] - 1 : pdf.pageCount;
+      return { from, to, key: from === to ? String(from) : `${from}-${to}` };
+    });
+  }
+
+  // '1, 3, 4-6, 9'처럼 적은 시작 쪽을 읽는다. 범위(4-6)는 그 쪽마다 학생이 한 명씩이라는 뜻이다.
+  function evenOcrStarts(per, pageCount) {
+    const starts = [];
+    for (let p = 1; p <= pageCount; p += per) starts.push(p);
+    return starts;
+  }
+
+  function ocrPagesOf(key) {
+    const m = String(key).match(/^(\d+)(?:-(\d+))?$/);
+    return m ? { from: Number(m[1]), to: Number(m[2] || m[1]), key: String(key) } : null;
+  }
+
+  async function ocrPiece(group) {
+    const PDFLib = await loadPdfLib();
+    const out = await PDFLib.PDFDocument.create();
+    const indices = [];
+    for (let p = group.from; p <= group.to; p++) indices.push(p - 1);
+    const pages = await out.copyPages(S.ocrPdf.doc, indices);
+    pages.forEach(page => out.addPage(page));
+    return out.saveAsBase64();
+  }
+
+  function ocrUnreadableCount(text) {
+    return (String(text || '').match(/\[\?\]/g) || []).length;
+  }
+
+  function ocrGuideCard() {
+    return `
+      <div class="card ocr-guide">
+        <h2 style="margin-top:0">사용 안내</h2>
+        <ol style="margin:0 0 12px;padding-left:20px;line-height:1.9">
+          <li><b>추출 지침을 반드시 이번 과제에 맞게 고치세요.</b> [추출 내용 및 방법]에 적은 항목(예: 학번, 이름, 악곡명, 느낀 점)이 표의 열이 되고, 수동추가로 보낼 때도 그대로 열이 돼요.</li>
+          <li>학생 과제를 <b>학생 순서대로</b> 스캔해 PDF 하나로 만드세요. 학생마다 쪽수가 달라도 괜찮아요.</li>
+          <li>PDF를 고르고 <b>학생 1명당 쪽수</b>를 적으면 그 쪽수씩 학생을 나눠요. 학생마다 쪽수가 다르면 <b>[AI로 나누기]</b>를 누르세요. AI가 이름·학번을 보고 학생이 바뀌는 쪽을 찾아요.</li>
+          <li>먼저 <b>[3명만 시험해 보기]</b>로 몇 명만 추출해 원본과 비교해 보세요. 잘 읽었으면 <b>[남은 학생 모두 추출]</b>을 누르세요. 이미 추출한 학생은 건너뛰어요.</li>
+          <li>표에서 틀린 글자를 고친 뒤 <b>[수동추가로 보내기]</b>를 누르면 수동추가에서 바로 생기부를 만들 수 있어요.</li>
+        </ol>
+        <div class="tip" style="margin-bottom:10px"><b>💡 모델은 이렇게 고르세요.</b> 싼 모델(GPT luna, Claude haiku)은 손글씨를 잘 못 읽어요. 처음부터 <b>GPT terra</b>나 <b>Claude sonnet</b>을 쓰세요.<br>
+          그래도 잘못 읽으면 추론을 low → medium으로 올리세요. 추론이 높을수록 잘 읽지만 비용이 늘고 느려져요. 특정 학생만 잘못 읽었다면 그 학생만 <b>[다시 읽기]</b>를 누르세요.</div>
+        <div class="save-warn">⚠️ 스캔한 종이에 적힌 이름·학번도 AI에게 함께 전달돼요. 수동추가로 보낸 뒤 생기부를 만들 때는 <b>내용 열만</b> AI에게 보내요.<br>
+          ⚠️ AI가 손글씨를 잘못 읽을 수 있어요. 특히 <b>[?] 표시</b>와 <b>확인할 점</b>이 있는 학생은 원본과 꼭 비교해 주세요.</div>
+      </div>`;
+  }
+
+  function ocrRunNote(run) {
+    if (!run) return '';
+    const split = run.kind === 'split';
+    const unit = split ? '쪽' : '명';
+    const doing = split ? '학생별로 나누는 중…' : '읽는 중…';
+    const state = run.running ? `${doing} 이 창을 닫으면 멈춰요${split ? '' : '(끝난 학생은 남아요)'}.` : run.stopped ? '멈췄어요.' : '끝났어요.';
+    const failed = run.failed ? ` · 실패 ${run.failed}${split ? '묶음' : '명 (다시 추출하면 실패한 학생부터 다시 읽어요)'}` : '';
+    return `<div class="help" style="margin-top:8px">${run.running ? '<span class="spinner"></span> ' : ''}${run.done} / ${run.total}${unit} ${state}${failed}</div>`;
+  }
+
+  function ocrFileCard(d) {
+    const pdf = S.ocrPdf;
+    const run = S.ocrRun;
+    const running = run && run.running;
+    const locked = S.busy || running;
+    const promptText = S.settings ? currentPrompt('OCR_PROMPT') : '';
+    const needsEdit = promptText.includes('(여기에');
+    const columnsFresh = d.items.length && d.columnsPrompt && d.columnsPrompt.trim() === promptText.trim();
+    const blocked = d.layoutMismatch || needsEdit;
+    const groups = ocrGroups();
+    const doneKeys = new Set(d.rows.filter(r => r.filled).map(r => r.pages));
+    const left = groups.filter(g => !doneKeys.has(g.key)).length;
+    const modelSelect = `<select id="ocr-model" ${locked ? 'disabled' : ''}>${d.models.map(m =>
+      `<option value="${esc(m.id)}" ${m.id === d.model ? 'selected' : ''}>${esc(m.id)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`).join('')}</select>`;
+    const reasoningSelect = `<select id="ocr-reasoning" ${locked ? 'disabled' : ''}>${d.reasoningOptions.map(o =>
+      `<option value="${o}" ${o === d.reasoning ? 'selected' : ''}>${esc(OCR_REASONING_LABELS[o] || o)}</option>`).join('')}</select>`;
+    const stopButton = `<button class="btn danger" data-action="ocr-stop" ${run && run.stop ? 'disabled' : ''}>${run && run.stop ? '멈추는 중…' : '멈추기'}</button>`;
+    const aiSplit = Object.keys(S.ocrDetected || {}).length > 0;
+    const uneven = pdf && !aiSplit && pdf.pageCount % Math.max(1, Number(S.ocrEven) || 1) !== 0;
+    const label = g => {
+      const info = S.ocrDetected[g.from] || {};
+      const who = [info.studentId, info.name].filter(Boolean).join(' ');
+      return `<span class="chip ${doneKeys.has(g.key) ? 'on' : ''}">${esc(g.key)}쪽${who ? ` · ${esc(who)}` : ''}</span>`;
+    };
+
+    return `
+      <div class="card hero">
+        <h2 style="margin-top:0">① 스캔한 PDF 고르기</h2>
+        <input type="file" id="ocr-file" accept=".pdf,application/pdf" ${locked ? 'disabled' : ''}>
+        ${S.ocrLoading ? '<div class="help"><span class="spinner"></span> PDF를 읽는 중…</div>' : ''}
+        ${pdf ? `<div class="help">${esc(pdf.fileName)} · 모두 ${pdf.pageCount}쪽</div>` : ''}
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0">② 학생별로 나누기</h2>
+        ${!pdf ? '<p class="muted" style="margin:0">PDF를 먼저 골라 주세요.</p>' : `
+        <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
+          <span>학생 1명당</span>
+          <input type="number" id="ocr-even" min="1" max="20" value="${esc(S.ocrEven)}" style="width:70px" ${locked ? 'disabled' : ''}>
+          <span>쪽</span>
+        </div>
+        ${aiSplit
+          ? `<div class="help">AI가 이름·학번을 보고 나눈 결과예요. 쪽수 칸을 바꾸면 다시 같은 쪽수로 나눠요.</div>`
+          : `<div class="help">${uneven ? `<b>${pdf.pageCount}쪽은 ${esc(S.ocrEven)}쪽씩 딱 나눠지지 않아요.</b> ` : ''}학생마다 쪽수가 다르면 아래 <b>[AI로 나누기]</b>를 누르세요.</div>`}
+        <div class="row" style="flex-wrap:wrap;gap:10px;margin-top:8px">
+          ${running && run.kind === 'split' ? stopButton
+            : `<button class="btn" data-action="ocr-split-ai" ${locked || !d.hasKey ? 'disabled' : ''}>AI로 나누기</button>`}
+          <span class="muted small">쪽수가 다를 때만 쓰세요. ③에서 고른 모델로, 추론 없이 4쪽씩 보내요. 글씨 추출보다 비용이 훨씬 적어요.</span>
+        </div>
+        ${run && run.kind === 'split' ? ocrRunNote(run) : ''}
+        ${groups.length ? `<div class="help" style="margin:12px 0 6px">학생 ${groups.length}명으로 나눴어요. 파란 칸은 이미 추출한 학생이에요.</div>
+          <div class="chips">${groups.map(label).join('')}</div>` : ''}`}
+      </div>
+
+      <div class="card ${groups.length && left ? 'hero' : ''}">
+        <h2 style="margin-top:0">③ 글씨 추출</h2>
+        <div class="row" style="flex-wrap:wrap">
+          <label class="field grow"><span>모델 (${esc(d.provider)})</span>${modelSelect}</label>
+          <label class="field grow"><span>추론 수준</span>${reasoningSelect}</label>
+        </div>
+        <div class="help" style="margin-bottom:10px">${columnsFresh
+          ? `표의 열: <b>${['학번', '이름'].concat(d.items.map(it => it.name)).map(esc).join(' · ')}</b> <span class="muted">(추출 지침에서 읽었어요)</span>`
+          : '추출을 시작하면 추출 지침에서 표의 열을 먼저 읽어 보여 드려요.'}</div>
+        ${needsEdit ? '<div class="save-warn" style="margin-bottom:10px">⚠️ 추출 지침을 아직 과제에 맞게 고치지 않았어요. 위 추출 지침의 [추출 내용 및 방법]을 고치고 저장해 주세요.</div>' : ''}
+        ${d.layoutMismatch ? '<div class="save-warn" style="margin-bottom:10px">⚠️ 이미 추출한 결과의 열이 추출 지침의 항목과 달라요. 아래 [결과 모두 지우기]를 누른 뒤 다시 추출해 주세요.</div>' : ''}
+        ${d.hasKey ? '' : `<div class="save-warn" style="margin-bottom:10px">⚠️ ${esc(d.provider)} API 키가 없어요. 시작하기에서 키를 먼저 저장해 주세요.</div>`}
+        <div class="row between" style="flex-wrap:wrap">
+          <span class="muted small">${groups.length ? `아직 추출하지 않은 학생 ${left}명${left < groups.length ? ` (이미 추출한 ${groups.length - left}명은 건너뛰어요)` : ''}` : '학생별로 나누면 추출할 수 있어요.'}</span>
+          <div class="row">
+            ${running && run.kind === 'extract' ? stopButton : `
+              ${left > 3 ? `<button class="btn" data-action="ocr-start" data-limit="3" ${locked || blocked || !d.hasKey ? 'disabled' : ''}>3명만 시험해 보기</button>` : ''}
+              <button class="btn primary" data-action="ocr-start" ${!left || locked || blocked || !d.hasKey ? 'disabled' : ''}>남은 학생 모두 추출 (${left}명)</button>`}
+          </div>
+        </div>
+        ${run && run.kind === 'extract' ? ocrRunNote(run) : ''}
+      </div>`;
+  }
+
+  function ocrRowValue(r) {
+    const edit = S.ocrEdits[r.row];
+    return edit || { studentId: r.studentId, name: r.name, answers: r.answers };
+  }
+
+  function ocrRowCard(r) {
+    const edit = S.ocrEdits[r.row];
+    const v = ocrRowValue(r);
+    const names = Object.keys(r.answers);
+    const unread = names.reduce((sum, n) => sum + ocrUnreadableCount(v.answers[n]), 0);
+    const running = S.ocrRun && S.ocrRun.running;
+    const field = n => `
+        <label class="field" style="margin-top:6px"><span>${esc(n)}</span>
+          <textarea class="ocr-edit" data-id="${r.row}" data-field="answer" data-item="${esc(n)}" rows="${names.length > 1 ? 4 : 6}" placeholder="학생이 쓴 내용">${esc(v.answers[n] || '')}</textarea></label>`;
+    return `
+      <div class="record">
+        <div class="row between">
+          <div><b>${esc(r.pages)}쪽</b> <span class="muted small">${esc(r.model)}</span></div>
+          <div class="row">
+            ${r.failed ? '<span class="pill warn">읽기 실패</span>' : unread ? `<span class="pill warn">[?] ${unread}곳</span>` : r.note ? '<span class="pill warn">확인할 점</span>' : '<span class="pill ok">읽음</span>'}
+            <button class="btn" data-action="ocr-reread" data-id="${r.row}" ${S.busy || running || S.ocr.layoutMismatch ? 'disabled' : ''}>다시 읽기</button>
+            ${running ? '' : toolDeleteButton('ocr-delete', '삭제', r.row)}
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="field"><span>학번</span><input class="ocr-edit" data-id="${r.row}" data-field="studentId" value="${esc(v.studentId)}" style="width:120px"></label>
+          <label class="field grow"><span>이름</span><input class="ocr-edit" data-id="${r.row}" data-field="name" value="${esc(v.name)}"></label>
+        </div>
+        ${names.map(field).join('')}
+        ${r.note ? `<div class="caution">${esc(r.note)}</div>` : ''}
+        <div class="row" style="justify-content:flex-end;margin-top:6px">
+          <button class="btn primary" data-action="ocr-save" data-id="${r.row}" ${edit && !S.ocr.layoutMismatch ? '' : 'disabled'}>고친 내용 저장</button>
+        </div>
+      </div>`;
+  }
+
+  function viewOcr() {
+    const d = S.ocr;
+    if (!d) return '<div class="loading">불러오는 중…</div>';
+    const ready = d.rows.filter(r => r.filled).length;
+    const running = S.ocrRun && S.ocrRun.running;
+
+    return `
+      <h1>손글씨 추출</h1>
+      <p class="lead">종이로 받은 과제를 스캔한 PDF에서 학생별 손글씨를 추출해 표로 만들고, 수동추가로 넘겨 생기부를 만들어요.</p>
+      ${running ? '' : `<div class="row" style="justify-content:flex-end;margin-bottom:8px">${resetAllButton('ocr-reset-all')}</div>`}
+      ${busyNote()}
+      ${ocrGuideCard()}
+      <div class="save-warn" style="margin-bottom:12px;font-size:14px">⚠️ <b>추출 지침을 반드시 과제에 맞게 고쳐 주세요.</b> 아래 지침의 [추출 내용 및 방법]에 학번·이름과 추출할 항목을 쉼표로 나눠 적으면, 그 항목이 표의 열이 되고 수동추가로도 그대로 넘어가요.</div>
+      ${promptCard('OCR_PROMPT', '추출 지침 (과제에 맞게 고치기)')}
+      ${ocrFileCard(d)}
+      ${d.rows.length ? `
+        <div class="card row between">
+          <div>추출한 학생 <b>${ready}</b>명 <span class="muted small">(내용이 있는 학생만 보내요)</span></div>
+          <div class="row">
+            ${running ? '' : toolDeleteButton('ocr-clear', '결과 모두 지우기')}
+            <button class="btn primary" data-action="ocr-send" ${!ready || S.busy || running || d.layoutMismatch ? 'disabled' : ''}>수동추가로 보내기 (${ready}명)</button>
+          </div>
+        </div>` : ''}
+      ${d.rows.length === 0 ? '<div class="card empty">아직 추출한 글이 없어요.</div>' : d.rows.map(ocrRowCard).join('')}`;
+  }
+
+  function replaceOcrRow(updated) {
+    if (!updated) return;
+    const i = S.ocr.rows.findIndex(r => r.row === updated.row);
+    if (i >= 0) S.ocr.rows[i] = updated; else S.ocr.rows.push(updated);
+  }
+
+  async function ocrExtractGroup(group) {
+    const data = await ocrPiece(group);
+    const row = await call('uiOcrExtract', { pages: group.key, data, model: S.ocr.model, reasoning: S.ocr.reasoning });
+    if (row) delete S.ocrEdits[row.row];
+    replaceOcrRow(row);
+    return row;
+  }
+
+  // 추출 지침에서 표의 열을 읽는다(지침이 그대로면 읽어 둔 열을 쓴다). 열 이름을 '·'로 이어 돌려준다.
+  async function ocrPrepareColumns() {
+    if (S.settings && currentPrompt('OCR_PROMPT').includes('(여기에')) {
+      S.promptOpen.OCR_PROMPT = true;
+      render();
+      banner('추출 지침의 [추출 내용 및 방법]을 이번 과제에 맞게 먼저 고쳐 주세요. 적은 항목이 표의 열이 돼요.', 'err');
+      return '';
+    }
+    let columns = '';
+    await withBusy('추출 지침에서 표의 열을 읽는 중…', async () => {
+      const result = await call('uiOcrPrepareColumns', { model: S.ocr.model });
+      S.ocr.items = result.items;
+      S.ocr.columnsPrompt = result.prompt;
+      columns = ['학번', '이름'].concat(result.items.map(it => it.name)).join(' · ');
+    });
+    return columns;
+  }
+
+  function findOcrRow(id) {
+    return (S.ocr.rows || []).find(r => r.row === Number(id));
+  }
+
+  async function ocrSaveEdit(id) {
+    const r = findOcrRow(id);
+    const edit = S.ocrEdits[id];
+    if (!r || !edit) return;
+    const updated = await call('uiOcrUpdateRow', r.row, r.pages, edit);
+    delete S.ocrEdits[id];
+    replaceOcrRow(updated);
   }
 
   // ---- 채점 -----------------------------------------------------------------
@@ -1140,7 +1478,7 @@
     return false;
   }
 
-  const TOOL_VIEWS = { common: viewCommon, behavior: viewBehavior, manual: viewManual, grading: viewGrading };
+  const TOOL_VIEWS = { common: viewCommon, behavior: viewBehavior, manual: viewManual, grading: viewGrading, ocr: viewOcr };
 
   // ---- 동작 ---------------------------------------------------------------
   function afterToolStart(result, fallback) {
@@ -1330,9 +1668,211 @@
       await withBusy('불러오는 중…', async () => { S.behavior = await call('uiListBehaviorRows'); S.bDraft = null; });
     },
 
+    async 'ocr-start'(el) {
+      const pdf = S.ocrPdf;
+      if (!pdf) return banner('스캔한 PDF를 먼저 골라 주세요.', 'err');
+      if (!S.ocrStarts) return banner('먼저 ② 학생별로 나누기를 해 주세요.', 'err');
+      const doneKeys = new Set(S.ocr.rows.filter(r => r.filled).map(r => r.pages));
+      let groups = ocrGroups().filter(g => !doneKeys.has(g.key));
+      const limit = Math.floor(Number(el.dataset.limit) || 0);
+      if (limit > 0) groups = groups.slice(0, limit);
+      if (!groups.length) return banner('추출할 학생이 없어요. 이미 모두 추출했어요.', 'info');
+      if (!await preparePrompt('OCR_PROMPT')) return;
+      const columns = await ocrPrepareColumns();
+      if (!columns) return;
+      const level = S.ocr.reasoning === 'none' ? '추론 없음' : `추론 ${S.ocr.reasoning}`;
+      if (!await confirmModal('손글씨 추출',
+        `학생 ${groups.length}명(${groups[0].key}쪽부터)의 글씨를 ${S.ocr.model} · ${level}로 추출할까요?\n\n표의 열: ${columns}\n열이 틀렸으면 [취소]를 누르고 추출 지침의 [추출 내용 및 방법]을 고쳐 주세요.\n\n한 명에 10초~1분쯤 걸려요. 추출하는 동안 이 창을 닫지 마세요.`,
+        '추출 시작', '⚠️ 스캔한 종이 속 이름·학번도 AI에게 전달돼요.')) return;
+
+      call('uiOcrSaveSettings', { model: S.ocr.model, reasoning: S.ocr.reasoning }).catch(() => {});
+      const run = S.ocrRun = { kind: 'extract', running: true, stop: false, stopped: false, done: 0, total: groups.length, failed: 0 };
+      banner('');
+      render();
+      try {
+        for (const group of groups) {
+          if (run.stop) { run.stopped = true; break; }
+          try {
+            const row = await ocrExtractGroup(group);
+            if (!row || row.failed) run.failed++;
+          } catch (err) {
+            run.failed++;
+            showError(err);
+          }
+          run.done++;
+          if (S.view === 'ocr' && !isEditing()) render();
+        }
+      } finally {
+        run.running = false;
+        render();
+      }
+      if (!run.stopped) banner(`${run.done}명을 읽었어요.${run.failed ? ` ${run.failed}명은 읽지 못했어요.` : ''} 결과를 원본과 비교해 확인해 주세요.`, run.failed ? 'err' : 'ok');
+    },
+    async 'ocr-split-ai'() {
+      const pdf = S.ocrPdf;
+      if (!pdf) return banner('스캔한 PDF를 먼저 골라 주세요.', 'err');
+      if (!await confirmModal('AI로 학생별 나누기',
+        `${pdf.pageCount}쪽을 ${S.ocr.model}(추론 없음)로 보고 학생이 바뀌는 쪽을 찾을까요?\n나눈 뒤 학생 목록이 맞는지 확인해 주세요.`,
+        '나누기', '⚠️ 스캔한 종이 속 이름·학번도 AI에게 전달돼요.')) return;
+      const SIZE = 4;
+      const chunks = [];
+      for (let p = 1; p <= pdf.pageCount; p += SIZE) chunks.push({ from: p, to: Math.min(p + SIZE - 1, pdf.pageCount) });
+      const run = S.ocrRun = { kind: 'split', running: true, stop: false, stopped: false, done: 0, total: pdf.pageCount, failed: 0 };
+      const found = {};
+      const failedPages = [];
+      banner('');
+      render();
+      try {
+        for (const chunk of chunks) {
+          if (run.stop) { run.stopped = true; break; }
+          try {
+            const data = await ocrPiece(chunk);
+            const pages = await call('uiOcrDetectStarts', { firstPage: chunk.from, count: chunk.to - chunk.from + 1, data, model: S.ocr.model });
+            pages.forEach(p => { found[p.page] = p; });
+          } catch (err) {
+            run.failed++;
+            for (let p = chunk.from; p <= chunk.to; p++) failedPages.push(p);
+            showError(err);
+          }
+          run.done = chunk.to;
+          if (S.view === 'ocr' && !isEditing()) render();
+        }
+      } finally {
+        run.running = false;
+      }
+      if (!run.stopped) {
+        // 판단하지 못한 쪽은 학생이 시작하는 쪽으로 두어, 다른 학생 글과 섞이지 않게 한다.
+        const starts = [1];
+        for (let p = 2; p <= pdf.pageCount; p++) {
+          if ((found[p] && found[p].newStudent) || failedPages.includes(p)) starts.push(p);
+        }
+        S.ocrStarts = starts;
+        S.ocrDetected = found;
+        banner(`학생 ${starts.length}명으로 나눴어요.${failedPages.length ? ` ${failedPages.join(', ')}쪽은 판단하지 못해 한 쪽씩 따로 나눠 두었어요.` : ''} 쪽 목록과 이름이 맞는지 확인해 주세요.`, failedPages.length ? 'err' : 'ok');
+      }
+      render();
+    },
+    'ocr-stop'() {
+      if (S.ocrRun) S.ocrRun.stop = true;
+      render();
+    },
+    async 'ocr-reread'(el) {
+      const r = findOcrRow(el.dataset.id);
+      if (!r) return;
+      const group = ocrPagesOf(r.pages);
+      if (!S.ocrPdf) return banner('다시 읽으려면 같은 스캔 PDF를 먼저 골라 주세요.', 'err');
+      if (!group || group.to > S.ocrPdf.pageCount) return banner(`지금 고른 PDF에는 ${r.pages}쪽이 없어요. 같은 PDF를 골랐는지 확인해 주세요.`, 'err');
+      const level = S.ocr.reasoning === 'none' ? '추론 없음' : `추론 ${S.ocr.reasoning}`;
+      if (!await confirmModal('다시 읽기', `${r.pages}쪽을 ${S.ocr.model} · ${level}로 다시 읽을까요?\n지금 내용(고친 내용 포함)은 새로 읽은 내용으로 바뀌어요.`, '다시 읽기')) return;
+      if (!await preparePrompt('OCR_PROMPT')) return;
+      if (!await ocrPrepareColumns()) return;
+      await withBusy(`${r.pages}쪽을 다시 읽는 중…`, async () => {
+        const row = await ocrExtractGroup(group);
+        banner(row && !row.failed ? `${r.pages}쪽을 다시 읽었어요.` : `${r.pages}쪽을 읽지 못했어요. 아래 메모를 확인해 주세요.`, row && !row.failed ? 'ok' : 'err');
+      });
+    },
+    async 'ocr-save'(el) {
+      await withBusy('저장하는 중…', async () => {
+        await ocrSaveEdit(el.dataset.id);
+        banner('고친 내용을 저장했어요.', 'ok');
+      });
+    },
+    async 'ocr-delete'(el) {
+      const r = findOcrRow(el.dataset.id);
+      if (!r) return;
+      if (!await confirmModal('삭제', `${r.pages}쪽 결과를 지울까요?`, '삭제')) return;
+      await withBusy('지우는 중…', async () => {
+        S.ocr = await call('uiOcrDeleteRow', r.row, r.pages);
+        S.ocrEdits = {};
+      });
+    },
+    async 'ocr-reset-all'() {
+      if (S.ocrRun && S.ocrRun.running) return banner('추출하는 중에는 초기화할 수 없어요. [멈추기]를 누른 뒤 다시 눌러 주세요.', 'err');
+      if (!await confirmModal('손글씨 추출 모두 초기화',
+        `처음 상태로 되돌릴까요?
+
+· 고른 PDF와 학생별로 나눈 결과를 비워요.
+· 추출한 글을 모두 지워요(손글씨추출 시트 삭제). 수동추가로 이미 보낸 내용은 그대로 남아요.
+· 추출 지침과 모델 설정은 그대로 남아요.
+
+되돌릴 수 없어요.`, '모두 초기화')) return;
+      await withBusy('초기화하는 중…', async () => {
+        S.ocr = await call('uiOcrResetAll');
+        S.ocrPdf = null;
+        S.ocrStarts = null;
+        S.ocrDetected = {};
+        S.ocrRun = null;
+        S.ocrEdits = {};
+        S.ocrEven = 1;
+        banner('손글씨 추출을 초기화했어요.', 'ok');
+      });
+    },
+    async 'ocr-clear'() {
+      if (!await confirmModal('결과 모두 지우기', '추출한 글을 모두 지울까요? 수동추가로 이미 보낸 내용은 그대로 남아요.\n지우고 나면 추출할 문항 이름을 바꿀 수 있어요.', '모두 지우기')) return;
+      await withBusy('지우는 중…', async () => {
+        S.ocr = await call('uiOcrClear');
+        S.ocrEdits = {};
+        S.ocrRun = null;
+      });
+    },
+    async 'ocr-send'() {
+      const ready = S.ocr.rows.filter(r => r.filled).length;
+      if (Object.keys(S.ocrEdits).length && !await confirmModal('저장하지 않은 내용', '고치고 저장하지 않은 학생이 있어요. 저장하지 않은 내용은 빼고 보낼까요?', '그대로 보내기')) return;
+      let mode = 'backup';
+      if (S.ocr.manualExists) {
+        if (jobRunning('manual')) return banner('수동추가에서 생기부를 만드는 중이에요. 끝난 뒤 다시 눌러 주세요.', 'err');
+        mode = await choiceModal('이미 수동추가 시트가 있어요',
+          `추출한 ${ready}명을 '수동추가'로 보내요. 지금 시트는 어떻게 할까요?\n\n` +
+          `· 이어 붙이기: 지금 시트 맨 아래에 붙여요. 열 이름과 AI에게 보낼 열이 지금 문항과 같아야 해요.\n` +
+          `· 백업 남기기: 지금 시트를 '수동추가_백업_날짜' 이름으로 남기고 새로 만들어요.\n` +
+          `· 덮어쓰기: 지금 시트를 지우고 새로 만들어요. 만들어 둔 생기부도 함께 사라져요.`,
+          [{ value: 'append', label: '이어 붙이기' }, { value: 'backup', label: '백업 남기고 새로 만들기' }, { value: 'overwrite', label: '덮어쓰기', kind: 'danger' }]);
+        if (!mode) return;
+      }
+      let result;
+      await withBusy('수동추가로 보내는 중…', async () => {
+        result = await call('uiOcrSendToManual', mode);
+      });
+      if (!result) return;
+      S.manual = result;
+      S.ocr.manualExists = true;
+      await go('manual');
+      banner(`${result.imported}명을 '수동추가'로 ${result.appended ? '이어 붙였어요' : '보냈어요'}.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} 프롬프트를 확인한 뒤 [생기부 만들기]를 누르세요.`, 'ok');
+    },
     'cancel-csv'() {
       S.csv = null;
       render();
+    },
+    async 'fetch-manual-url'() {
+      const input = $('#manual-url');
+      const url = String(input ? input.value : (S.manualUrl || '')).trim();
+      if (!url) return banner('구글 설문 응답 시트의 주소를 넣어 주세요.', 'err');
+      S.manualUrl = url;
+      await withBusy('설문 응답 시트를 가져오는 중…', async () => {
+        S.csv = await readSheetFromUrl(url);
+        S.manual.formUrl = url;
+      });
+    },
+    async 'append-manual-rows'() {
+      const c = S.csv;
+      if (jobRunning('manual')) return banner('생기부를 만드는 중에는 행을 붙일 수 없어요. 끝난 뒤 다시 눌러 주세요.', 'err');
+      await withBusy('새 응답을 붙이는 중…', async () => {
+        const result = await call('uiAppendManualRows', { headers: c.headers, rows: c.rows });
+        S.csv = null;
+        S.manual = result;
+        banner(result.appended ? `새 응답 ${result.appended}행을 '수동추가' 시트 뒤에 붙였어요. [생기부 만들기]로 이어서 만들 수 있어요.` : '새로 들어온 응답이 없어요. 이미 모두 가져왔어요.', result.appended ? 'ok' : 'info');
+      });
+    },
+    async 'refresh-manual-form'() {
+      const url = S.manual && S.manual.formUrl;
+      if (!url) return;
+      if (jobRunning('manual')) return banner('생기부를 만드는 중에는 행을 붙일 수 없어요. 끝난 뒤 다시 눌러 주세요.', 'err');
+      await withBusy('설문 새 응답을 가져오는 중…', async () => {
+        const c = await readSheetFromUrl(url);
+        const result = await call('uiAppendManualRows', { headers: c.headers, rows: c.rows });
+        S.manual = result;
+        banner(result.appended ? `'${c.fileName}'에서 새 응답 ${result.appended}행을 가져와 뒤에 붙였어요.` : `'${c.fileName}'에 새로 들어온 응답이 없어요.`, result.appended ? 'ok' : 'info');
+      });
     },
     async 'import-manual-csv'() {
       const c = S.csv;
@@ -1433,6 +1973,27 @@
       });
       banner('행을 지웠어요.', 'ok');
     },
+    async 'manual-reset-all'() {
+      if (jobRunning('manual')) return banner('생기부를 만드는 중에는 초기화할 수 없어요. 끝난 뒤 다시 눌러 주세요.', 'err');
+      if (!await confirmModal('수동추가 모두 초기화',
+        `처음 상태로 되돌릴까요?
+
+· '수동추가' 시트와 '수동추가_백업_…' 시트를 모두 지워요. 만들어 둔 생기부도 함께 사라져요.
+· 고르던 파일과 저장해 둔 설문 링크도 비워요.
+· 프롬프트는 그대로 남아요.
+
+필요하면 먼저 [엑셀로 받기]로 저장해 두세요. 되돌릴 수 없어요.`, '모두 초기화')) return;
+      let result;
+      await withBusy('초기화하는 중…', async () => {
+        result = await call('uiResetManualAll');
+        S.manual = result;
+        S.csv = null;
+        S.manualUrl = undefined;
+        Object.keys(S.edits).forEach(k => { if (k.startsWith('manual:')) delete S.edits[k]; });
+        if (S.ocr) S.ocr.manualExists = false;
+      });
+      if (result) banner(result.deletedSheets.length ? `수동추가를 초기화했어요. 지운 시트: ${result.deletedSheets.join(', ')}` : '수동추가를 초기화했어요.', 'ok');
+    },
     async 'clear-manual'() {
       if (jobRunning('manual')) return banner('생기부를 만드는 중에는 지울 수 없어요. 끝난 뒤 다시 눌러 주세요.', 'err');
       const count = S.manual.rows.filter(r => r.output || r.note).length;
@@ -1503,6 +2064,20 @@
   // 입력 중에는 다시 그리지 않고 글자수·저장 버튼만 바꾼다.
   function handleToolInput(el) {
     if (handlePromptInput(el)) return true;
+    if (el.classList.contains('ocr-edit') && S.ocr) {
+      const r = findOcrRow(el.dataset.id);
+      if (!r) return true;
+      const base = ocrRowValue(r);
+      const edit = { studentId: base.studentId, name: base.name, answers: Object.assign({}, base.answers) };
+      if (el.dataset.field === 'answer') edit.answers[el.dataset.item] = el.value;
+      else edit[el.dataset.field] = el.value;
+      const same = edit.studentId === r.studentId && edit.name === r.name &&
+        Object.keys(r.answers).every(n => (edit.answers[n] || '') === (r.answers[n] || ''));
+      if (same) delete S.ocrEdits[r.row]; else S.ocrEdits[r.row] = edit;
+      const btn = document.querySelector(`[data-action="ocr-save"][data-id="${r.row}"]`);
+      if (btn) btn.disabled = same;
+      return true;
+    }
     if (handleLengthInput(el)) return true;
     if (handleGradingInput(el)) return true;
     if (el.dataset.bfield && S.bDraft) {
@@ -1540,7 +2115,56 @@
     if (exampleKey) S.promptExampleOpen[exampleKey] = event.target.open;
   }, true);
 
+  // 수동추가 파일 칸에 끌어다 놓으면 파일 선택과 똑같이 처리한다.
+  ['dragenter', 'dragover'].forEach(type => document.addEventListener(type, event => {
+    const zone = event.target.closest && event.target.closest('#manual-drop');
+    if (!zone || zone.classList.contains('disabled')) return;
+    event.preventDefault();
+    zone.classList.add('over');
+  }));
+  document.addEventListener('dragleave', event => {
+    const zone = event.target.closest && event.target.closest('#manual-drop');
+    if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove('over');
+  });
+  document.addEventListener('drop', event => {
+    const zone = event.target.closest && event.target.closest('#manual-drop');
+    if (!zone) return;
+    event.preventDefault();
+    zone.classList.remove('over');
+    const input = $('#manual-csv');
+    if (zone.classList.contains('disabled') || !input || !event.dataTransfer.files.length) return;
+    input.files = event.dataTransfer.files;
+    handleToolChange(input);
+  });
+
   function handleToolChange(el) {
+    if (el.id === 'ocr-file' && el.files && el.files[0]) {
+      const file = el.files[0];
+      S.ocrLoading = true;
+      render();
+      Promise.all([file.arrayBuffer(), loadPdfLib()])
+        .then(([buf, PDFLib]) => PDFLib.PDFDocument.load(buf, { ignoreEncryption: true }))
+        .then(doc => {
+          S.ocrPdf = { fileName: file.name, doc, pageCount: doc.getPageCount() };
+          S.ocrRun = null;
+          S.ocrDetected = {};
+          S.ocrStarts = evenOcrStarts(S.ocrEven, S.ocrPdf.pageCount);
+        })
+        .catch(err => banner(`PDF를 읽지 못했어요: ${err.message || err}`, 'err'))
+        .finally(() => { S.ocrLoading = false; render(); });
+    }
+    if (el.id === 'ocr-even') {
+      S.ocrEven = Math.min(20, Math.max(1, Math.floor(Number(el.value) || 1)));
+      if (S.ocrPdf) {
+        S.ocrStarts = evenOcrStarts(S.ocrEven, S.ocrPdf.pageCount);
+        S.ocrDetected = {};
+      }
+      render();
+    }
+    if ((el.id === 'ocr-model' || el.id === 'ocr-reasoning') && S.ocr) {
+      S.ocr[el.id === 'ocr-model' ? 'model' : 'reasoning'] = el.value;
+      call('uiOcrSaveSettings', { model: S.ocr.model, reasoning: S.ocr.reasoning }).catch(() => {});
+    }
     if (el.id === 'grading-assignment') {
       S.gradingKey = el.value;
       S.selected = new Set();
