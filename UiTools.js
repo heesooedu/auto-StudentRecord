@@ -44,11 +44,13 @@ function uiGetCommonPhrases() {
 
 // 멈춘 공통문구를 지우지 않고 빈 칸만 이어서 만든다.
 function uiResumeCommonPhrases() {
+  requireCurrentAiApiKey_();
   const result = runWithCollectedUi_(() => startAutoCommonPhraseTrigger_());
   return Object.assign(result, { status: uiGetStatus(), data: uiGetCommonPhrases() });
 }
 
 function uiStartCommonPhrases(input) {
+  requireCurrentAiApiKey_();
   const prompt = String((input && input.prompt) || '').trim();
   const sourceText = String((input && input.sourceText) || '').trim();
   const count = Number(input && input.count);
@@ -293,6 +295,7 @@ function uiDeleteAllBehaviorRows() {
 }
 
 function uiStartBehavior() {
+  requireCurrentAiApiKey_();
   const result = runWithCollectedUi_(() => generateBehaviorRecommendationsCore_());
   return Object.assign(result, { status: uiGetStatus(), data: uiListBehaviorRows() });
 }
@@ -590,6 +593,7 @@ function uiClearManualOutputs() {
 }
 
 function uiStartManual(options) {
+  requireCurrentAiApiKey_();
   // 오류 메모가 있는 행은 만들기 대상에서 빠지므로, 메모를 지워 다시 만든다.
   if (options && options.retryErrors) {
     withDocumentLock_(() => {
@@ -785,6 +789,7 @@ function uiQueueGrades(submissionKeys) {
 }
 
 function uiStartGrades() {
+  requireCurrentAiApiKey_();
   // 실행이 끊겨 '생성중'으로 남은 제출물도 이어서 채점한다.
   if (PropertiesService.getUserProperties().getProperty(AUTO_GRADING_TRIGGER_PROPERTY) !== 'ON') {
     withDocumentLock_(() => resetStatusValues_(SHEET_NAMES.gradingResults, 'gradeStatus', ['생성중'], '대기'));

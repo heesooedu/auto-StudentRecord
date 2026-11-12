@@ -127,6 +127,41 @@
     return fallback;
   }
 
+  function catalogFor(provider) {
+    return S.settings && S.settings.catalogs && S.settings.catalogs[provider];
+  }
+
+  function catalogNote(catalog, selected) {
+    if (!catalog) return '<div class="help" role="status">모델 목록을 불러오는 중이에요.</div>';
+    if (catalog.status !== 'ok') return `<div class="save-warn" role="status">${esc(catalog.message)}</div>`;
+    const outdated = selected && !catalog.models.some(m => m.id === selected);
+    const family = (String(selected).match(/haiku|sonnet|luna|terra|flash/) || [])[0];
+    const replacement = catalog.models.find(m => m.family === family || m.id.includes(family || '__none__'));
+    return `${outdated ? `<div class="save-warn" role="status">현재 저장된 모델: <b>${esc(selected)}</b><br>최신 목록에서 빠졌어요. 새 모델을 선택하고 저장해야 생성을 시작할 수 있어요.${replacement ? `<br>같은 계열 추천: ${esc(replacement.id)}` : ''}</div>` : ''}
+      <div class="help">정식 모델만 표시해요. 목록 확인: ${esc(new Date(catalog.fetchedAt).toLocaleString('ko-KR'))}. 추론은 최대 medium까지 사용해요. Gemini의 추론 없음은 지원에 따라 minimal 또는 low로 적용돼요.</div>`;
+  }
+
+  function modelSelectOptions(models, selected) {
+    return `<option value="" ${models.some(m => (m.id || m) === selected) ? '' : 'selected'}>모델을 선택하세요</option>` + models.map(m => {
+      const id = m.id || m;
+      return `<option value="${esc(id)}" ${id === selected ? 'selected' : ''}>${esc(id)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`;
+    }).join('');
+  }
+
+  async function reloadModelCatalog(provider, force) {
+    const catalog = await call('uiGetModelCatalog', provider, force === true);
+    // 결과는 제공사별로 보관하므로 이전 제공사의 응답이 현재 목록을 덮어쓰지 않는다.
+    if (S.settings) {
+      S.settings.catalogs = S.settings.catalogs || {};
+      S.settings.catalogs[provider] = catalog;
+      const key = PROVIDERS.find(p => p.id === provider).modelKey;
+      const setting = S.settings.groups.ai.find(item => item.key === key);
+      if (setting) setting.options = catalog.models.map(m => m.id);
+    }
+    dropTool('ocr');
+    return catalog;
+  }
+
   function banner(message, type) {
     const el = $('#banner');
     if (!message) {
@@ -235,7 +270,7 @@
     const on = job => st[job] && st[job].state === 'ON';
 
     switch (id) {
-      case 'start': return b.isSetup && b.keys[b.provider] ? 'done' : '';
+      case 'start': return b.isSetup && b.keys[b.provider] && catalogFor(b.provider)?.models.some(m => m.id === b.model) ? 'done' : '';
       case 'collect': return on('collect') ? 'running' : c.submissions > 0 ? 'done' : '';
       case 'drafts': return on('drafts') ? 'running' : c.drafts > 0 ? 'done' : '';
       case 'review': return c.drafts > 0 && c.draftsChecked >= c.drafts ? 'done' : '';
@@ -342,12 +377,13 @@
       drafts: assignmentsAndSubmissions,
       review: async () => { if (!S.drafts) S.drafts = await call('uiListDrafts'); },
       final: async () => { if (!S.finals) S.finals = await call('uiListFinalRecords'); },
-      settings: async () => { if (!S.settings) S.settings = await call('uiGetSettings'); },
+      start: async () => { S.settings = await call('uiGetSettings'); },
+      settings: async () => { S.settings = await call('uiGetSettings'); },
       common: () => loadTool('common'),
       behavior: () => loadTool('behavior'),
       manual: () => loadTool('manual'),
       grading: () => loadTool('grading'),
-      ocr: () => loadTool('ocr'),
+      ocr: async () => { dropTool('ocr'); await loadTool('ocr'); },
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
     // 프롬프트 확인 칸에 설정 값이 필요하다.
@@ -562,6 +598,8 @@
 
     const modelSetting = S.settings && S.settings.groups.ai.find(item => item.key === provider.modelKey);
     const reasoningSetting = S.settings && S.settings.groups.ai.find(item => item.key === 'REASONING');
+    const catalog = catalogFor(provider.id);
+    const modelReady = catalog && catalog.status === 'ok';
     const select = (setting, id) => setting && setting.options ? `
       <select id="${id}">${setting.options.map(o => `<option ${o === setting.value ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>` : '';
 
@@ -593,11 +631,12 @@
 
         ${modelSetting ? `
         <div class="row">
-          <label class="field"><span>모델</span>${select(modelSetting, 'model-select')}</label>
+          <label class="field"><span>모델</span><select id="model-select" ${modelReady && !S.busy ? '' : 'disabled'}>${modelSelectOptions(modelSetting.options || [], modelSetting.value)}</select></label>
           <label class="field"><span>추론 수준</span>${select(reasoningSetting, 'reasoning-select')}</label>
-          <button class="btn" data-action="save-model" style="margin-top:10px">모델 저장</button>
+          <button class="btn" data-action="save-model" ${modelReady && !S.busy ? '' : 'disabled'} style="margin-top:10px">모델 저장</button>
         </div>
-        <div class="help">${esc(modelSetting.description)}</div>` : ''}
+        ${catalogNote(catalog, modelSetting.value)}
+        <button class="btn" data-action="refresh-models" data-id="${provider.id}" ${hasKey && !S.busy ? '' : 'disabled'}>모델 목록 새로고침</button>` : ''}
       </div>
 
       ${b.isSetup ? `
@@ -997,6 +1036,13 @@
     const field = item => {
       const id = `set-${item.key}`;
       let input;
+      const modelProvider = PROVIDERS.find(p => p.modelKey === item.key);
+      if (modelProvider) {
+        const catalog = catalogFor(modelProvider.id);
+        input = `<select id="${id}" data-setting="${item.key}" ${catalog && catalog.status === 'ok' && !S.busy ? '' : 'disabled'}>${modelSelectOptions(item.options || [], item.value)}</select>`;
+        return `<label class="field"><span>${esc(item.label)}</span>${input}</label>${catalogNote(catalog, item.value)}
+          <button class="btn" data-action="refresh-models" data-id="${modelProvider.id}" ${S.boot.keys[modelProvider.id] && !S.busy ? '' : 'disabled'}>모델 목록 새로고침</button>`;
+      }
       if (item.options) {
         input = `<select id="${id}" data-setting="${item.key}">${item.options.map(o => `<option ${o === item.value ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
       } else if (S.settingsTab === 'prompts') {
@@ -1079,6 +1125,7 @@
       if (!key) return banner('API 키를 입력하세요.', 'err');
       await withBusy('API 키를 저장하는 중…', async () => {
         S.boot = await call('uiSaveApiKey', el.dataset.id, key);
+        await reloadModelCatalog(el.dataset.id, true);
         banner('API 키를 저장했어요.', 'ok');
       });
     },
@@ -1086,11 +1133,20 @@
       if (!await confirmModal('API 키 삭제', '저장된 API 키를 삭제할까요?', '삭제')) return;
       await withBusy('API 키를 삭제하는 중…', async () => {
         S.boot = await call('uiClearApiKey', el.dataset.id);
+        await reloadModelCatalog(el.dataset.id, false);
+      });
+    },
+    async 'refresh-models'(el) {
+      await withBusy('모델 목록을 불러오는 중…', async () => {
+        await reloadModelCatalog(el.dataset.id || S.boot.provider, true);
+        if (S.view === 'ocr') await loadTool('ocr');
       });
     },
     async 'save-model'() {
       const provider = PROVIDERS.find(p => p.id === S.boot.provider);
-      const patch = { [provider.modelKey]: $('#model-select').value };
+      const selected = $('#model-select').value;
+      if (!selected) return banner('모델을 선택해 주세요.', 'err');
+      const patch = { [provider.modelKey]: selected };
       if ($('#reasoning-select')) patch.REASONING = $('#reasoning-select').value;
       await withBusy('모델을 저장하는 중…', async () => {
         S.settings = await call('uiSaveSettings', patch);
@@ -1356,6 +1412,7 @@
     async 'save-settings'() {
       const patch = {};
       document.querySelectorAll('[data-setting]').forEach(input => {
+        if (input.disabled || (PROVIDERS.some(p => p.modelKey === input.dataset.setting) && !input.value)) return;
         const key = input.dataset.setting;
         const original = Object.values(S.settings.groups).flat().find(item => item.key === key);
         if (!original || original.value !== input.value) patch[key] = input.value;
@@ -1610,7 +1667,7 @@
     refreshBoot()
     .then(saveUnsavedAssignments)
     .then(() => {
-      if (!S.boot.isSetup || !S.boot.keys[S.boot.provider]) go('start');
+      if (!S.boot.isSetup || !S.boot.keys[S.boot.provider] || !catalogFor(S.boot.provider)?.models.some(m => m.id === S.boot.model)) go('start');
       prefetchTools();
     })
     .catch(err => {

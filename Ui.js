@@ -408,6 +408,7 @@ function uiSaveApiKey(provider, key) {
   const trimmed = String(key || '').trim();
   if (!trimmed) throw new Error('API 키가 비어 있습니다.');
 
+  invalidateModelCatalog_(provider);
   PropertiesService.getUserProperties().setProperty(propertyName, trimmed);
   log_('uiSaveApiKey', 'OK', `현재 사용자 ${provider} API 키 저장 완료`);
 
@@ -418,6 +419,7 @@ function uiClearApiKey(provider) {
   const propertyName = API_KEY_PROPERTY_BY_PROVIDER[provider];
   if (!propertyName) throw new Error(`알 수 없는 AI 서비스입니다: ${provider}`);
 
+  invalidateModelCatalog_(provider);
   PropertiesService.getUserProperties().deleteProperty(propertyName);
   log_('uiClearApiKey', 'OK', `현재 사용자 ${provider} API 키 삭제 완료`);
 
@@ -436,6 +438,10 @@ function uiGetSettings() {
     if (key) rowsByKey[key] = values[i];
   }
 
+  const catalogs = {};
+  Object.keys(MODEL_SETTING_PROVIDERS).forEach(key => {
+    catalogs[MODEL_SETTING_PROVIDERS[key]] = uiGetModelCatalog(MODEL_SETTING_PROVIDERS[key]);
+  });
   const groups = {};
 
   Object.keys(ASSISTANT_SETTING_GROUPS).forEach(group => {
@@ -447,7 +453,7 @@ function uiGetSettings() {
         label: ASSISTANT_SETTING_LABELS[key] || key,
         value: String(row[1] === undefined ? '' : row[1]),
         description: String(row[2] || ''),
-        options: CONFIG_VALIDATION_OPTIONS[key] || null,
+        options: MODEL_SETTING_PROVIDERS[key] ? catalogs[MODEL_SETTING_PROVIDERS[key]].models.map(m => m.id) : CONFIG_VALIDATION_OPTIONS[key] || null,
       };
     });
   });
@@ -464,7 +470,7 @@ function uiGetSettings() {
   // 행발 기본 프롬프트는 진지한 버전(기본값) 외에 가벼운 버전도 고를 수 있다.
   defaults.BEHAVIOR_RECORD_PROMPT_LIGHT = defaultBehaviorRecordPrompt_('light');
 
-  return { groups, defaults };
+  return { groups, defaults, catalogs };
 }
 
 function uiSaveSettings(patch) {
@@ -492,6 +498,7 @@ function saveSettingsPatch_(patch) {
   entries.forEach(key => {
     const options = CONFIG_VALIDATION_OPTIONS[key];
     const value = String(patch[key] === undefined || patch[key] === null ? '' : patch[key]);
+    if (MODEL_SETTING_PROVIDERS[key]) requireCatalogModel_(MODEL_SETTING_PROVIDERS[key], value);
 
     if (options && !options.includes(value)) {
       throw new Error(`${ASSISTANT_SETTING_LABELS[key] || key}에 쓸 수 없는 값입니다: ${value}`);
@@ -813,6 +820,7 @@ function uiQueueDrafts(submissionKeys) {
 }
 
 function uiStartDrafts() {
+  requireCurrentAiApiKey_();
   // 실행이 끊겨 '생성중'으로 남은 제출물도 이어서 만든다.
   if (PropertiesService.getUserProperties().getProperty('AUTO_RECORD_DRAFT_TRIGGER') !== 'ON') {
     withDocumentLock_(() => resetStatusValues_(SHEET_NAMES.submissions, 'aiStatus', ['생성중'], '대기'));
@@ -823,6 +831,7 @@ function uiStartDrafts() {
 
 // 초안 합치기를 처음부터 다시 하지 않고, 멈추거나 오류 난 학생만 이어서 만든다.
 function uiResumeFinalRecords() {
+  requireCurrentAiApiKey_();
   if (PropertiesService.getUserProperties().getProperty('AUTO_STUDENT_FINAL_TRIGGER') !== 'ON') {
     withDocumentLock_(() => resetStatusValues_(SHEET_NAMES.studentFinalRecords, 'finalStatus', ['생성중', '오류'], '대기'));
   }
@@ -961,6 +970,7 @@ function uiUpdateDraft(row, key, patch) {
 }
 
 function uiStartFinalRecords() {
+  requireCurrentAiApiKey_();
   const result = runWithCollectedUi_(() => generateStudentFinalRecordsForIncludedAssignments());
   return Object.assign(result, { status: uiGetStatus() });
 }

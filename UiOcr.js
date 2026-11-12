@@ -19,24 +19,6 @@ const OCR_REASONING_PROPERTY = 'OCR_REASONING';
 const OCR_MAX_PDF_BYTES = 10 * 1024 * 1024;
 const OCR_FAILED_PREFIX = '[읽기 실패]';
 
-// 회사별로 싼 모델부터 적는다. 화면은 이 순서대로 보여 주고, 처음에는 첫 모델을 고른다.
-const OCR_MODEL_CHOICES = {
-  claude: [
-    { id: 'claude-sonnet-5-5', note: '손글씨를 잘 읽어요. 이걸로 쓰세요.' },
-    { id: 'claude-haiku-5-5', note: '싸지만 손글씨를 잘 못 읽어요.' },
-  ],
-  gpt: [
-    { id: 'gpt-6.1-terra', note: '손글씨를 잘 읽어요. 이걸로 쓰세요.' },
-    { id: 'gpt-6-luna', note: '싸지만 손글씨를 잘 못 읽어요.' },
-  ],
-  gemini: [
-    { id: 'gemini-3.8-flash', note: '가장 새 모델이에요.' },
-    { id: 'gemini-3.7-flash', note: '' },
-    { id: 'gemini-3.6-flash', note: '' },
-    { id: 'gemini-3.5-flash', note: '' },
-  ],
-};
-
 const OCR_RESPONSE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -203,7 +185,7 @@ function uiOcrPrepareColumns(input) {
   }
   if (ocrItemsFresh_(prompt)) return { items: ocrItems_(), prompt, changed: false };
 
-  const model = s.models.some(c => c.id === (input && input.model)) ? input.model : s.model;
+  const model = requireOcrModel_(s, input && input.model);
   // 항목을 모두 큰따옴표로 감쌌으면 AI 없이 그대로 열로 쓴다. 하나라도 빠졌으면 AI에게 맡긴다.
   const quoted = quotedOcrColumns_(prompt);
   let items, source;
@@ -264,7 +246,8 @@ function ocrMaxTokens_(reasoning) {
 function ocrSettings_() {
   const config = getConfigMap_();
   const provider = getAiProviderAndModel_(config).provider;
-  const choices = OCR_MODEL_CHOICES[provider] || [];
+  const listing = modelCatalogChoices_(provider, true);
+  const choices = listing.models.map(m => ({ id: m.id, note: ['sonnet', 'terra'].includes(m.family) ? '손글씨 추출 추천' : '' }));
   const props = PropertiesService.getUserProperties();
   const savedModel = props.getProperty(OCR_MODEL_PROPERTY_PREFIX + provider) || '';
   const savedReasoning = props.getProperty(OCR_REASONING_PROPERTY) || 'none';
@@ -273,9 +256,17 @@ function ocrSettings_() {
     config,
     provider,
     models: choices,
-    model: choices.some(c => c.id === savedModel) ? savedModel : (choices[0] ? choices[0].id : ''),
+    catalog: publicModelCatalog_(listing.catalog),
+    model: savedModel || (choices[0] ? choices[0].id : ''),
     reasoning: CONFIG_VALIDATION_OPTIONS.REASONING.includes(savedReasoning) ? savedReasoning : 'none',
   };
+}
+
+function requireOcrModel_(settings, requested) {
+  const model = requested || settings.model;
+  requireCatalogModel_(settings.provider, settings.model);
+  if (model !== settings.model) throw new Error('손글씨 추출 모델을 먼저 선택하고 저장해 주세요.');
+  return model;
 }
 
 function getOcrSheet_(create) {
@@ -349,7 +340,9 @@ function uiOcrGet() {
     layoutMismatch: rows.length > 0 && !ocrLayoutMatches_(sh, items),
     provider: s.provider,
     models: s.models,
+    catalog: s.catalog,
     model: s.model,
+    savedModel: s.model,
     reasoning: s.reasoning,
     reasoningOptions: CONFIG_VALIDATION_OPTIONS.REASONING,
     hasKey: !!PropertiesService.getUserProperties().getProperty(AI_API_ENDPOINTS[s.provider].keyProperty),
@@ -364,9 +357,12 @@ function uiOcrSaveSettings(input) {
   const reasoning = String((input && input.reasoning) || '');
   const props = PropertiesService.getUserProperties();
 
-  if (model && s.models.some(c => c.id === model)) props.setProperty(OCR_MODEL_PROPERTY_PREFIX + s.provider, model);
+  if (model) {
+    requireCatalogModel_(s.provider, model);
+    props.setProperty(OCR_MODEL_PROPERTY_PREFIX + s.provider, model);
+  }
   if (CONFIG_VALIDATION_OPTIONS.REASONING.includes(reasoning)) props.setProperty(OCR_REASONING_PROPERTY, reasoning);
-  return { model: model || s.model, reasoning: reasoning || s.reasoning };
+  return { model: model || s.model, reasoning: CONFIG_VALIDATION_OPTIONS.REASONING.includes(reasoning) ? reasoning : s.reasoning };
 }
 
 // 학생 한 명 조각(input.data: PDF base64)을 AI에 보내 글씨를 추출하고, 같은 쪽의 행이 있으면 바꾸고 없으면 아래에 붙인다.
@@ -380,7 +376,7 @@ function uiOcrExtract(input) {
   }
 
   const s = ocrSettings_();
-  const model = s.models.some(c => c.id === input.model) ? input.model : s.model;
+  const model = requireOcrModel_(s, input.model);
   const reasoning = CONFIG_VALIDATION_OPTIONS.REASONING.includes(input.reasoning) ? input.reasoning : s.reasoning;
   const prompt = ocrPrompt_(s.config);
   if (!ocrItemsFresh_(prompt)) throw new Error('추출 지침이 바뀌어 표의 열을 다시 읽어야 해요. 추출 버튼을 다시 눌러 주세요.');
@@ -481,7 +477,7 @@ function uiOcrDetectStarts(input) {
   }
 
   const s = ocrSettings_();
-  const model = s.models.some(c => c.id === input.model) ? input.model : s.model;
+  const model = requireOcrModel_(s, input.model);
   const result = callAi_(s.provider, model, ocrSplitGuide_(count), `첨부한 ${count}쪽을 쪽마다 판단해 JSON으로 답하세요.`, 'none', OCR_SPLIT_RESPONSE_SCHEMA, {
     attachments: [{ mimeType: 'application/pdf', data, name: `pages-${firstPage}.pdf` }],
     maxTokens: 2000,

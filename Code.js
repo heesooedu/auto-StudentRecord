@@ -299,7 +299,9 @@ function saveOpenAiApiKey() {
     return;
   }
 
+  invalidateModelCatalog_('gpt');
   PropertiesService.getUserProperties().setProperty('OPENAI_API_KEY', key);
+  getModelCatalog_('gpt', true);
 
   log_('saveOpenAiApiKey', 'OK', '현재 사용자 OpenAI API 키 저장 완료');
   ui.alert('OpenAI API 키를 현재 사용자 계정에 저장했습니다.');
@@ -321,13 +323,16 @@ function saveGeminiApiKey() {
     return;
   }
 
+  invalidateModelCatalog_('gemini');
   PropertiesService.getUserProperties().setProperty('GEMINI_API_KEY', key);
+  getModelCatalog_('gemini', true);
 
   log_('saveGeminiApiKey', 'OK', '현재 사용자 Gemini API 키 저장 완료');
   ui.alert('Gemini API 키를 현재 사용자 계정에 저장했습니다.');
 }
 
 function clearAiApiKeys() {
+  ['claude', 'gpt', 'gemini'].forEach(invalidateModelCatalog_);
   const props = PropertiesService.getUserProperties();
   props.deleteProperty('CLAUDE_API_KEY');
   props.deleteProperty('OPENAI_API_KEY');
@@ -814,6 +819,7 @@ function processPendingCommonPhrasesCore_() {
 }
 
 function startAutoCommonPhraseTrigger_() {
+  requireCurrentAiApiKey_();
   ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
     'https://www.googleapis.com/auth/script.scriptapp',
     'https://www.googleapis.com/auth/spreadsheets.currentonly',
@@ -2117,9 +2123,9 @@ function setupSheets() {
 
   const defaults = [
     ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
-    ['CLAUDE_MODEL', 'claude-haiku-5-5', 'claude-haiku-5-5 / claude-sonnet-5-5\nclaude-haiku-5-5 - 기본값. 값이 싸고 대답이 빠름. 생기부 문장 쓰기에 충분함\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 더 똑똑한 편'],
-    ['GPT_MODEL', 'gpt-6-luna', 'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델'],
-    ['GEMINI_MODEL', 'gemini-3.8-flash', 'gemini-3.8-flash / gemini-3.7-flash / gemini-3.6-flash / gemini-3.5-flash'],
+    ['CLAUDE_MODEL', '', MODEL_SELECTION_HELP],
+    ['GPT_MODEL', '', MODEL_SELECTION_HELP],
+    ['GEMINI_MODEL', '', MODEL_SELECTION_HELP],
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
     ['MAX_RECORD_CHARS', '500', '생기부 초안 최대 글자수'],
     ['MAX_INPUT_CHARS', '30000', 'Claude에 보낼 과제 원문 최대 글자수'],
@@ -2184,7 +2190,9 @@ function saveClaudeApiKey() {
     return;
   }
 
+  invalidateModelCatalog_('claude');
   PropertiesService.getUserProperties().setProperty('CLAUDE_API_KEY', key);
+  getModelCatalog_('claude', true);
 
   log_('saveClaudeApiKey', 'OK', '현재 사용자 Claude API 키 저장 완료');
   ui.alert('Claude API 키를 현재 사용자 계정에 저장했습니다.');
@@ -2969,30 +2977,39 @@ function getClaudeMaxTokens_(reasoning) {
 
 function applyClaudeReasoning_(payload, model, reasoning) {
   reasoning = normalizeReasoning_(reasoning);
-
+  const info = catalogClaudeModel_(model);
+  const capabilities = info && info.capabilities;
+  const types = capabilities && capabilities.thinking && capabilities.thinking.types;
+  const supports = type => types && types[type] && types[type].supported;
   if (reasoning === 'none') {
-    // Haiku 5.5와 Sonnet 5.5는 thinking을 안 보내면 스스로 생각을 켠다. 그래서 '없음'일 때 명시적으로 끈다.
-    // Sonnet 5.5는 disabled를 400으로 거절하고 between_tools만 받는다.
-    const value = String(model || '').toLowerCase();
-    if (/claude-sonnet-5-5/.test(value)) payload.thinking = { type: 'between_tools' };
-    else if (/claude-haiku-5-5/.test(value)) payload.thinking = { type: 'disabled' };
+    if (supports('disabled')) payload.thinking = { type: 'disabled' };
+    else if (supports('between_tools')) {
+      payload.thinking = { type: 'between_tools' };
+      const effort = capabilities.effort;
+      const level = ['low', 'medium'].find(v => effort && effort[v] && effort[v].supported);
+      if (!level) throw new Error('이 Claude 모델의 추론을 medium 이하로 제한할 수 없어요. 다른 모델을 선택해 주세요.');
+      payload.output_config = { effort: level };
+      reportReasoningAdjustment_('claude', model, 'none', level);
+    } else if (types && capabilities.thinking.supported === false) {
+      payload.thinking = { type: 'disabled' };
+    } else {
+      throw new Error('이 Claude 모델의 추론 끄기 지원 정보를 확인할 수 없어요. 모델 목록을 새로고침해 주세요.');
+    }
     return;
   }
-
-  if (usesLegacyClaudeThinking_(model)) {
-    payload.thinking = {
-      type: 'enabled',
-      budget_tokens: reasoning === 'medium' ? 2048 : 1024,
-    };
-    return;
+  if (supports('adaptive')) {
+    const effort = capabilities.effort;
+    const level = effort && effort[reasoning] && effort[reasoning].supported ? reasoning
+      : ['low', 'medium'].find(v => effort && effort[v] && effort[v].supported);
+    if (!level) throw new Error('이 Claude 모델은 medium 이하 추론 설정을 지원하지 않아요.');
+    payload.thinking = { type: 'adaptive' };
+    payload.output_config = { effort: level };
+    if (level !== reasoning) reportReasoningAdjustment_('claude', model, reasoning, level);
+  } else if (supports('enabled') || usesLegacyClaudeThinking_(model)) {
+    payload.thinking = { type: 'enabled', budget_tokens: reasoning === 'medium' ? 2048 : 1024 };
+  } else {
+    throw new Error('이 Claude 모델의 추론 설정을 확인할 수 없어요. 모델 목록을 새로고침해 주세요.');
   }
-
-  payload.thinking = {
-    type: 'adaptive',
-  };
-  payload.output_config = {
-    effort: reasoning,
-  };
 }
 
 // Claude 3·4.0·4.1·4.5 모델만 budget_tokens 방식을 쓴다. 그 뒤 모델(4.6, 5.x 등)은 adaptive만 받는다.
@@ -3022,7 +3039,7 @@ function getGeminiThinkingLevel_(reasoning, model) {
 }
 
 // minimal을 400으로 거절한 모델을 기억해 둔다. 알려진 모델은 처음부터 low로 보내 헛 호출을 줄인다.
-const GEMINI_MINIMAL_UNSUPPORTED_MODELS = ['gemini-3.8-flash', 'gemini-3.7-flash'];
+const GEMINI_MINIMAL_UNSUPPORTED_MODELS = [];
 
 function isGeminiMinimalUnsupported_(model) {
   const value = String(model || '').trim().toLowerCase();
@@ -3077,7 +3094,7 @@ function buildOpenAiPayload_(model, systemGuide, userPrompt, reasoning, response
   }));
 
   return {
-    model: model || 'gpt-6-luna',
+    model: model,
     // 응답을 OpenAI 서버에 대화 기록으로 남기지 않는다(기본값은 30일 보관).
     store: false,
     reasoning: {
@@ -3120,6 +3137,7 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, 
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
+  let reasoningRetryUsed = false;
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3166,6 +3184,15 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, 
       };
     }
 
+    if (code === 400 && !reasoningRetryUsed) {
+      const actual = supportedReasoningRetry_(body, payload.reasoning.effort, 'gpt');
+      if (actual) {
+        reasoningRetryUsed = true;
+        reportReasoningAdjustment_('gpt', model, payload.reasoning.effort, actual);
+        payload.reasoning.effort = actual;
+        continue;
+      }
+    }
     lastErrorMessage = `OpenAI API 오류 ${code}: ${body}`;
 
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
@@ -3220,7 +3247,7 @@ function buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, response
   const attachments = aiAttachments_(options);
 
   return {
-    model: model || 'gemini-3.8-flash',
+    model: model,
     // 요청을 Gemini 서버에 대화 기록으로 남기지 않는다(기본값은 보관).
     store: false,
     system_instruction: systemGuide,
@@ -3233,7 +3260,7 @@ function buildGeminiPayload_(model, systemGuide, userPrompt, reasoning, response
       temperature: 0.2,
       // 생각에 쓴 토큰도 이 한도에 들어가므로 추론 수준에 맞춰 늘린다.
       max_output_tokens: aiMaxTokens_(options) || getClaudeMaxTokens_(reasoning),
-      thinking_level: getGeminiThinkingLevel_(reasoning, model || 'gemini-3.8-flash'),
+      thinking_level: getGeminiThinkingLevel_(reasoning, model),
     },
     response_format: {
       type: 'text',
@@ -3255,6 +3282,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
 
   const maxAttempts = 5;
   let outputTokenRetryUsed = false;
+  let reasoningRetryUsed = false;
   let lastErrorMessage = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -3300,7 +3328,9 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
     lastErrorMessage = `Gemini API 오류 ${code}: ${body}`;
 
     // gemini-3.8-flash·3.7-flash처럼 minimal을 받지 않는 모델은 가장 낮은 low로 다시 보내고, 다음부터는 처음부터 low로 보낸다.
-    if (code === 400 && payload.generation_config.thinking_level === 'minimal' && /THINKING_LEVEL_MINIMAL/.test(body)) {
+    if (code === 400 && !reasoningRetryUsed && payload.generation_config.thinking_level === 'minimal' && /THINKING_LEVEL_MINIMAL/.test(body) && /not supported|unsupported/i.test(body)) {
+      reasoningRetryUsed = true;
+      reportReasoningAdjustment_('gemini', model, 'minimal', 'low');
       payload.generation_config.thinking_level = 'low';
       rememberGeminiMinimalUnsupported_(payload.model);
       log_('callGemini_', 'RETRY', `${payload.model}은 thinking_level minimal을 지원하지 않아 low로 다시 요청합니다.`);
@@ -3313,6 +3343,15 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
       continue;
     }
 
+    if (code === 400 && !reasoningRetryUsed) {
+      const actual = supportedReasoningRetry_(body, payload.generation_config.thinking_level, 'gemini');
+      if (actual) {
+        reasoningRetryUsed = true;
+        reportReasoningAdjustment_('gemini', model, payload.generation_config.thinking_level, actual);
+        payload.generation_config.thinking_level = actual;
+        continue;
+      }
+    }
     throw new Error(lastErrorMessage);
   }
 
@@ -3610,9 +3649,6 @@ function getConfigMap_() {
 
 const CONFIG_VALIDATION_OPTIONS = {
   AI_PROVIDER: ['claude', 'gpt', 'gemini'],
-  CLAUDE_MODEL: ['claude-haiku-5-5', 'claude-sonnet-5-5'],
-  GPT_MODEL: ['gpt-6-luna', 'gpt-6.1-terra'],
-  GEMINI_MODEL: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
   REASONING: ['none', 'low', 'medium'],
   FAST_GENERATION: ['OFF', 'ON'],
 };
@@ -3628,9 +3664,9 @@ function syncConfigModelsOnOpen_() {
   applyConfigValidations_(config);
   syncConfigDefaults_(config, [
     ['AI_PROVIDER', 'claude', 'claude 또는 gpt 또는 gemini'],
-    ['CLAUDE_MODEL', 'claude-haiku-5-5', 'claude-haiku-5-5 / claude-sonnet-5-5\nclaude-haiku-5-5 - 기본값. 값이 싸고 대답이 빠름. 생기부 문장 쓰기에 충분함\nclaude-sonnet-5-5 - 상대적으로 비쌈. 조금 느리지만 더 똑똑한 편'],
-    ['GPT_MODEL', 'gpt-6-luna', 'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델'],
-    ['GEMINI_MODEL', 'gemini-3.8-flash', 'gemini-3.8-flash / gemini-3.7-flash / gemini-3.6-flash / gemini-3.5-flash'],
+    ['CLAUDE_MODEL', '', MODEL_SELECTION_HELP],
+    ['GPT_MODEL', '', MODEL_SELECTION_HELP],
+    ['GEMINI_MODEL', '', MODEL_SELECTION_HELP],
     ['REASONING', 'none', '추론 수준입니다\nlow, medium을 사용하면 글을 조금 더 생각하고 써줍니다\n다만, none이 아니라 low를 사용하면 비용을 대략 2배정도 사용하는 것 같습니다'],
   ]);
 }
@@ -3665,25 +3701,6 @@ function syncConfigDefaults_(config, defaults) {
         config.getRange(sheetRow, 2).setValue('claude');
       } else if (provider === 'google') {
         config.getRange(sheetRow, 2).setValue('gemini');
-      }
-    } else if (key === 'CLAUDE_MODEL') {
-      const model = String(row[1] || '').trim();
-
-      if (!CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL.includes(model)) {
-        const nextModel = model.indexOf('sonnet') !== -1 ? 'claude-sonnet-5-5' : defaultMap[key][1];
-        config.getRange(sheetRow, 2).setValue(nextModel);
-      }
-    } else if (key === 'GPT_MODEL') {
-      const model = String(row[1] || '').trim();
-
-      if (!CONFIG_VALIDATION_OPTIONS.GPT_MODEL.includes(model)) {
-        config.getRange(sheetRow, 2).setValue(defaultMap[key][1]);
-      }
-    } else if (key === 'GEMINI_MODEL') {
-      const model = String(row[1] || '').trim();
-
-      if (!CONFIG_VALIDATION_OPTIONS.GEMINI_MODEL.includes(model)) {
-        config.getRange(sheetRow, 2).setValue(defaultMap[key][1]);
       }
     } else if (key === 'REASONING') {
       const reasoning = normalizeReasoning_(row[1]);
@@ -3753,8 +3770,8 @@ function migrateLegacyConfigKeys_(config) {
     const migratedRow = openAiModelRows.shift();
     config.getRange(migratedRow, 1, 1, 3).setValues([[
       'GPT_MODEL',
-      firstOpenAiModelValue || 'gpt-6-luna',
-      'gpt-6-luna / gpt-6.1-terra\ngpt-6.1-terra / 상위 고성능 모델\ngpt-6-luna / 무난하게 쓸 수 있는 기본 모델',
+      firstOpenAiModelValue || '',
+      MODEL_SELECTION_HELP,
     ]]);
   }
 
@@ -3829,6 +3846,10 @@ function applyConfigValidations_(config) {
 
   values.forEach((row, index) => {
     const key = String(row[0] || '').trim();
+    if (MODEL_SETTING_PROVIDERS[key]) {
+      config.getRange(index + 2, 2).clearDataValidations();
+      return;
+    }
     const options = validationOptions[key];
     if (!options) return;
 
@@ -4939,6 +4960,7 @@ function hasUsableExtractedText_(text) {
 }
 
 function clearClaudeApiKey() {
+  invalidateModelCatalog_('claude');
   PropertiesService.getUserProperties().deleteProperty('CLAUDE_API_KEY');
   PropertiesService.getScriptProperties().deleteProperty('CLAUDE_API_KEY');
 
@@ -6327,6 +6349,7 @@ function toastAutoRecordDraft_(message, title) {
 }
 
 function processPendingRecordDrafts() {
+  requireCurrentAiApiKey_();
   const result = runFirstBatchQuickly_(() => processPendingRecordDraftsCore_(true));
   saveAutoRecordDraftLastResult_(result.blocked ? 'BLOCKED' : 'MANUAL_RUN', result);
 
@@ -6990,6 +7013,7 @@ function deleteAutoRecordDraftTriggers_() {
 }
 
 function generateManualAddedRecords() {
+  requireCurrentAiApiKey_();
   const ui = getUi_();
   const lock = LockService.getScriptLock();
 
@@ -7529,12 +7553,12 @@ function getAiProviderAndModel_(config) {
   const provider = normalizeAiProvider_(config.AI_PROVIDER);
   const reasoning = normalizeReasoning_(config.REASONING || config.reasoning);
 
-  let model = config.CLAUDE_MODEL || 'claude-haiku-5-5';
+  let model = config.CLAUDE_MODEL || '';
 
   if (provider === 'gpt') {
-    model = config.GPT_MODEL || config.OPENAI_MODEL || 'gpt-6-luna';
+    model = config.GPT_MODEL || config.OPENAI_MODEL || '';
   } else if (provider === 'gemini') {
-    model = config.GEMINI_MODEL || 'gemini-3.8-flash';
+    model = config.GEMINI_MODEL || '';
   }
 
   return {
@@ -7550,9 +7574,9 @@ function getAiProviderAndModel_(config) {
 function checkAllAiCombinations() {
   const props = PropertiesService.getUserProperties();
   const modelOptions = {
-    claude: CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL,
-    gpt: CONFIG_VALIDATION_OPTIONS.GPT_MODEL,
-    gemini: CONFIG_VALIDATION_OPTIONS.GEMINI_MODEL,
+    claude: getModelCatalog_('claude').models.map(m => m.id),
+    gpt: getModelCatalog_('gpt').models.map(m => m.id),
+    gemini: getModelCatalog_('gemini').models.map(m => m.id),
   };
   const systemGuide = '너는 JSON으로만 답한다.';
   const userPrompt = [
@@ -7677,9 +7701,9 @@ function compareBehaviorAcrossModels() {
   const systemGuide = behaviorRecommendationSystemGuide_();
   const props = PropertiesService.getUserProperties();
   const modelOptions = {
-    claude: CONFIG_VALIDATION_OPTIONS.CLAUDE_MODEL,
-    gpt: CONFIG_VALIDATION_OPTIONS.GPT_MODEL,
-    gemini: CONFIG_VALIDATION_OPTIONS.GEMINI_MODEL,
+    claude: getModelCatalog_('claude').models.map(m => m.id),
+    gpt: getModelCatalog_('gpt').models.map(m => m.id),
+    gemini: getModelCatalog_('gemini').models.map(m => m.id),
   };
   const headers = ['회사', '모델', '추론', '결과', '걸린 시간(초)', '바이트', '추천 문구', '돌려 쓴 표현 후보', '확인할 점 / 오류'];
   const sh = ss.getSheetByName('행발비교') || ss.insertSheet('행발비교');
@@ -7820,6 +7844,7 @@ function compareBehaviorAcrossModels() {
 }
 
 function clearOpenAiApiKey() {
+  invalidateModelCatalog_('gpt');
   PropertiesService.getUserProperties().deleteProperty('OPENAI_API_KEY');
 
   // 혹시 예전에 Script Properties에 저장한 흔적이 있으면 같이 삭제
@@ -7830,6 +7855,7 @@ function clearOpenAiApiKey() {
 }
 
 function clearGeminiApiKey() {
+  invalidateModelCatalog_('gemini');
   PropertiesService.getUserProperties().deleteProperty('GEMINI_API_KEY');
   PropertiesService.getScriptProperties().deleteProperty('GEMINI_API_KEY');
 
@@ -8922,6 +8948,7 @@ function countPendingStudentFinalRecords_() {
 }
 
 function startAutoStudentFinalRecordTrigger_() {
+  requireCurrentAiApiKey_();
   ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
     'https://www.googleapis.com/auth/script.scriptapp',
     'https://www.googleapis.com/auth/spreadsheets.currentonly',
@@ -9347,6 +9374,7 @@ function requireCurrentAiApiKey_() {
   const config = getConfigMap_();
   const ai = getAiProviderAndModel_(config);
   const provider = normalizeAiProvider_(ai.provider);
+  requireCatalogModel_(provider, ai.model);
 
   if (provider === 'gpt') {
     const key = PropertiesService.getUserProperties().getProperty('OPENAI_API_KEY');

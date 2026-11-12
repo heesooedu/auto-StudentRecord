@@ -973,12 +973,13 @@
     const promptText = S.settings ? currentPrompt('OCR_PROMPT') : '';
     const needsEdit = promptText.includes('(여기에');
     const columnsFresh = d.items.length && d.columnsPrompt && d.columnsPrompt.trim() === promptText.trim();
-    const blocked = d.layoutMismatch || needsEdit;
+    const modelReady = d.catalog && d.catalog.status === 'ok' && d.models.some(m => m.id === d.model);
+    const modelSaved = !d.savedModel || d.savedModel === d.model;
+    const blocked = d.layoutMismatch || needsEdit || !modelReady || !modelSaved;
     const groups = ocrGroups();
     const doneKeys = new Set(d.rows.filter(r => r.filled).map(r => r.pages));
     const left = groups.filter(g => !doneKeys.has(g.key)).length;
-    const modelSelect = `<select id="ocr-model" ${locked ? 'disabled' : ''}>${d.models.map(m =>
-      `<option value="${esc(m.id)}" ${m.id === d.model ? 'selected' : ''}>${esc(m.id)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`).join('')}</select>`;
+    const modelSelect = `<select id="ocr-model" ${locked || !d.models.length ? 'disabled' : ''}>${modelSelectOptions(d.models, d.model)}</select>`;
     const reasoningSelect = `<select id="ocr-reasoning" ${locked ? 'disabled' : ''}>${d.reasoningOptions.map(o =>
       `<option value="${o}" ${o === d.reasoning ? 'selected' : ''}>${esc(OCR_REASONING_LABELS[o] || o)}</option>`).join('')}</select>`;
     const stopButton = `<button class="btn danger" data-action="ocr-stop" ${run && run.stop ? 'disabled' : ''}>${run && run.stop ? '멈추는 중…' : '멈추기'}</button>`;
@@ -1011,7 +1012,7 @@
           : `<div class="help">${uneven ? `<b>${pdf.pageCount}쪽은 ${esc(S.ocrEven)}쪽씩 딱 나눠지지 않아요.</b> ` : ''}학생마다 쪽수가 다르면 아래 <b>[AI로 나누기]</b>를 누르세요.</div>`}
         <div class="row" style="flex-wrap:wrap;gap:10px;margin-top:8px">
           ${running && run.kind === 'split' ? stopButton
-            : `<button class="btn" data-action="ocr-split-ai" ${locked || !d.hasKey ? 'disabled' : ''}>AI로 나누기</button>`}
+            : `<button class="btn" data-action="ocr-split-ai" ${locked || !modelReady || !modelSaved || !d.hasKey ? 'disabled' : ''}>AI로 나누기</button>`}
           <span class="muted small">쪽수가 다를 때만 쓰세요. ③에서 고른 모델로, 추론 없이 4쪽씩 보내요. 글씨 추출보다 비용이 훨씬 적어요.</span>
         </div>
         ${run && run.kind === 'split' ? ocrRunNote(run) : ''}
@@ -1024,7 +1025,11 @@
         <div class="row" style="flex-wrap:wrap">
           <label class="field grow"><span>모델 (${esc(d.provider)})</span>${modelSelect}</label>
           <label class="field grow"><span>추론 수준</span>${reasoningSelect}</label>
+          <button class="btn" data-action="ocr-save-model" ${locked || !modelReady ? 'disabled' : ''}>모델 저장</button>
+          <button class="btn" data-action="refresh-models" data-id="${d.provider}" ${locked || !d.hasKey ? 'disabled' : ''}>모델 목록 새로고침</button>
         </div>
+        ${catalogNote(d.catalog, d.savedModel || d.model)}
+        ${!modelSaved ? '<div class="help" role="status">바꾼 모델을 저장한 뒤 추출해 주세요.</div>' : ''}
         <div class="help" style="margin-bottom:10px">${columnsFresh
           ? `표의 열: <b>${['학번', '이름'].concat(d.items.map(it => it.name)).map(esc).join(' · ')}</b> <span class="muted">(추출 지침에서 읽었어요)</span>`
           : '추출을 시작하면 추출 지침에서 표의 열을 먼저 읽어 보여 드려요.'}</div>
@@ -1668,7 +1673,15 @@
       await withBusy('불러오는 중…', async () => { S.behavior = await call('uiListBehaviorRows'); S.bDraft = null; });
     },
 
+    async 'ocr-save-model'() {
+      await withBusy('모델을 저장하는 중…', async () => {
+        const saved = await call('uiOcrSaveSettings', { model: S.ocr.model, reasoning: S.ocr.reasoning });
+        S.ocr.savedModel = saved.model;
+        banner('손글씨 추출 모델을 저장했어요.', 'ok');
+      });
+    },
     async 'ocr-start'(el) {
+      if (!S.ocr.models.some(m => m.id === S.ocr.model) || (S.ocr.savedModel && S.ocr.savedModel !== S.ocr.model)) return banner('모델을 선택하고 저장해 주세요.', 'err');
       const pdf = S.ocrPdf;
       if (!pdf) return banner('스캔한 PDF를 먼저 골라 주세요.', 'err');
       if (!S.ocrStarts) return banner('먼저 ② 학생별로 나누기를 해 주세요.', 'err');
@@ -1685,7 +1698,7 @@
         `학생 ${groups.length}명(${groups[0].key}쪽부터)의 글씨를 ${S.ocr.model} · ${level}로 추출할까요?\n\n표의 열: ${columns}\n열이 틀렸으면 [취소]를 누르고 추출 지침의 [추출 내용 및 방법]을 고쳐 주세요.\n\n한 명에 10초~1분쯤 걸려요. 추출하는 동안 이 창을 닫지 마세요.`,
         '추출 시작', '⚠️ 스캔한 종이 속 이름·학번도 AI에게 전달돼요.')) return;
 
-      call('uiOcrSaveSettings', { model: S.ocr.model, reasoning: S.ocr.reasoning }).catch(() => {});
+      await call('uiOcrSaveSettings', { model: S.ocr.model, reasoning: S.ocr.reasoning });
       const run = S.ocrRun = { kind: 'extract', running: true, stop: false, stopped: false, done: 0, total: groups.length, failed: 0 };
       banner('');
       render();
@@ -2163,7 +2176,7 @@
     }
     if ((el.id === 'ocr-model' || el.id === 'ocr-reasoning') && S.ocr) {
       S.ocr[el.id === 'ocr-model' ? 'model' : 'reasoning'] = el.value;
-      call('uiOcrSaveSettings', { model: S.ocr.model, reasoning: S.ocr.reasoning }).catch(() => {});
+      render();
     }
     if (el.id === 'grading-assignment') {
       S.gradingKey = el.value;
