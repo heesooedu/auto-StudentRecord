@@ -30,8 +30,6 @@ const RECORD_BYTE_RANGE_SETTINGS = {
 };
 const COMMON_PHRASE_DEFAULT_PREVIOUS_LIMIT = 10;
 const COMMON_PHRASE_DUPLICATE_RETRY_LIMIT = 3;
-const BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION = '행발 최소 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
-const BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION = '행발 최대 글자수\n(나이스 바이트로는 약 3을 곱하시면 됩니다)\n(완벽하게 지키지는 못합니다)';
 const BEHAVIOR_RECOMMENDATION_HEADERS = [
   'studentName',
   'selectedTraits',
@@ -1188,6 +1186,7 @@ function styleBehaviorRecommendationSheet_() {
   }
   if (h.byteCount) {
     sh.getRange(1, h.byteCount).setNote('recommendedRecord 기준 나이스 바이트 계산값입니다.');
+    applyNeisByteFormulas_(sh, h.recommendedRecord, h.byteCount, 2, Math.max(lastRow - 1, 0));
   }
 
   try {
@@ -1239,12 +1238,14 @@ function generateBehaviorRecommendationsCore_() {
   }
 
   try {
+    saveAutoToolLastResult_('BEHAVIOR_RECOMMENDATION', {}, 'RUNNING');
     scheduleNextAutoBehaviorRecommendationTrigger_(AUTO_BACKUP_DELAY_MS);
     PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'ON');
 
     const config = getConfigMap_();
     const result = runFirstBatchQuickly_(() => processBehaviorRecommendationRows_(sh, h, target.startRow, target.rowCount, config));
     result.scopeLabel = target.scopeLabel;
+    saveAutoToolLastResult_('BEHAVIOR_RECOMMENDATION', result);
 
     styleBehaviorRecommendationSheet_();
     logBehaviorRecommendationResult_('generateBehaviorRecommendationsForSelectedRows', result);
@@ -1272,6 +1273,7 @@ function generateBehaviorRecommendationsCore_() {
     );
   } catch (err) {
     const message = String(err.message || err);
+    saveAutoToolError_('BEHAVIOR_RECOMMENDATION', message);
     PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
     deleteAutoBehaviorRecommendationTriggers_();
     log_('generateBehaviorRecommendationsForSelectedRows', 'ERROR', message);
@@ -1886,10 +1888,11 @@ function writeBehaviorRecommendationResult_(sh, h, row, recommendedRecord, statu
   ].filter(Boolean).join('\n\n');
 
   sh.getRange(row, h.recommendedRecord, 1, 3).setValues([[
-    record,
+    sheetSafeText_(record),
     byteCount,
     status,
   ]]);
+  applyNeisByteFormulas_(sh, h.recommendedRecord, h.byteCount, row, 1);
   sh.getRange(row, h.recommendedRecord).setNote(noteText);
 }
 
@@ -1992,9 +1995,7 @@ function autoProcessPendingBehaviorRecommendations() {
 
     const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.behaviorRecommendations);
     if (!sh) {
-      PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
-      log_('autoProcessPendingBehaviorRecommendations', 'STOP', '행발문구추천 시트를 찾을 수 없음');
-      return;
+      throw new Error('행발문구추천 시트를 찾을 수 없습니다.');
     }
 
     const lastRow = sh.getLastRow();
@@ -2009,6 +2010,7 @@ function autoProcessPendingBehaviorRecommendations() {
       { pendingOnly: true }
     );
     result.scopeLabel = '대기/재시도필요 행';
+    saveAutoToolLastResult_('BEHAVIOR_RECOMMENDATION', result);
 
     logBehaviorRecommendationResult_('autoProcessPendingBehaviorRecommendations', result);
 
@@ -2031,6 +2033,7 @@ function autoProcessPendingBehaviorRecommendations() {
     scheduleNextAutoBehaviorRecommendationTrigger_(nextDelayMs);
   } catch (err) {
     const message = String(err.message || err);
+    saveAutoToolError_('BEHAVIOR_RECOMMENDATION', message);
     PropertiesService.getUserProperties().setProperty(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'OFF');
     deleteAutoBehaviorRecommendationTriggers_();
     toastAutoRecordDraft_(message, '행발 추천 문구 자동 처리 오류');
@@ -3712,7 +3715,36 @@ function syncConfigDefaults_(config, defaults) {
   });
 }
 
+function migrateBehaviorByteConfig_(config) {
+  const lastRow = config.getLastRow();
+  if (lastRow < 2) return;
+  const rows = config.getRange(2, 1, lastRow - 1, 3).getValues();
+  const deletions = [];
+  ['MIN', 'MAX'].forEach(side => {
+    const key = `BEHAVIOR_RECORD_${side}_BYTES`;
+    const legacyKey = `BEHAVIOR_RECORD_BYTE_${side}`;
+    const current = rows.findIndex(r => String(r[0]).trim() === key);
+    const legacy = rows.map((r, i) => ({ r, row: i + 2 })).filter(x => String(x.r[0]).trim() === legacyKey);
+    const source = legacy.find(x => parsePositiveInteger_(x.r[1]) > 0);
+    let value = current >= 0 ? String(rows[current][1] || '').trim() : '';
+    if (!value && source) {
+      const targetRow = current >= 0 ? current + 2 : source.row;
+      config.getRange(targetRow, 1, 1, 3).setValues([[
+        key, source.r[1], `행발 ${side === 'MIN' ? '최소' : '최대'} 바이트(나이스 기준)`,
+      ]]);
+      // 쓰기를 다시 읽어 확인한 경우에만 구형 원본을 정리한다.
+      value = String(config.getRange(targetRow, 2).getValue() || '').trim();
+      if (current < 0) legacy.splice(legacy.indexOf(source), 1);
+    }
+    legacy.forEach(x => {
+      if (parsePositiveInteger_(value) > 0 && parsePositiveInteger_(x.r[1]) === parsePositiveInteger_(value)) deletions.push(x.row);
+    });
+  });
+  deletions.sort((a, b) => b - a).forEach(row => config.deleteRow(row));
+}
+
 function migrateLegacyConfigKeys_(config) {
+  migrateBehaviorByteConfig_(config);
   const lastRow = config.getLastRow();
   if (lastRow < 2) return;
 
@@ -3723,12 +3755,6 @@ function migrateLegacyConfigKeys_(config) {
   let reasoningRow = 0;
   const legacyReasoningRows = [];
   let firstLegacyReasoningValue = '';
-  let behaviorMinCharsRow = 0;
-  let behaviorMaxCharsRow = 0;
-  const legacyBehaviorMinRows = [];
-  const legacyBehaviorMaxRows = [];
-  let firstLegacyBehaviorMinValue = '';
-  let firstLegacyBehaviorMaxValue = '';
 
   values.forEach((row, index) => {
     const sheetRow = index + 2;
@@ -3748,20 +3774,6 @@ function migrateLegacyConfigKeys_(config) {
       legacyReasoningRows.push(sheetRow);
       if (!firstLegacyReasoningValue) {
         firstLegacyReasoningValue = row[1];
-      }
-    } else if (key === 'BEHAVIOR_RECORD_MIN_CHARS') {
-      behaviorMinCharsRow = sheetRow;
-    } else if (key === 'BEHAVIOR_RECORD_MAX_CHARS') {
-      behaviorMaxCharsRow = sheetRow;
-    } else if (key === 'BEHAVIOR_RECORD_BYTE_MIN') {
-      legacyBehaviorMinRows.push(sheetRow);
-      if (!firstLegacyBehaviorMinValue) {
-        firstLegacyBehaviorMinValue = row[1];
-      }
-    } else if (key === 'BEHAVIOR_RECORD_BYTE_MAX') {
-      legacyBehaviorMaxRows.push(sheetRow);
-      if (!firstLegacyBehaviorMaxValue) {
-        firstLegacyBehaviorMaxValue = row[1];
       }
     }
   });
@@ -3793,46 +3805,8 @@ function migrateLegacyConfigKeys_(config) {
     }
   }
 
-  if (legacyBehaviorMinRows.length > 0) {
-    if (!behaviorMinCharsRow) {
-      const migratedRow = legacyBehaviorMinRows.shift();
-      config.getRange(migratedRow, 1, 1, 3).setValues([[
-        'BEHAVIOR_RECORD_MIN_CHARS',
-        firstLegacyBehaviorMinValue || '',
-        BEHAVIOR_RECORD_MIN_CHARS_DESCRIPTION,
-      ]]);
-      behaviorMinCharsRow = migratedRow;
-    } else {
-      const currentValue = String(config.getRange(behaviorMinCharsRow, 2).getValue() || '').trim();
-
-      if (!currentValue && firstLegacyBehaviorMinValue) {
-        config.getRange(behaviorMinCharsRow, 2).setValue(firstLegacyBehaviorMinValue);
-      }
-    }
-  }
-
-  if (legacyBehaviorMaxRows.length > 0) {
-    if (!behaviorMaxCharsRow) {
-      const migratedRow = legacyBehaviorMaxRows.shift();
-      config.getRange(migratedRow, 1, 1, 3).setValues([[
-        'BEHAVIOR_RECORD_MAX_CHARS',
-        firstLegacyBehaviorMaxValue || '',
-        BEHAVIOR_RECORD_MAX_CHARS_DESCRIPTION,
-      ]]);
-      behaviorMaxCharsRow = migratedRow;
-    } else {
-      const currentValue = String(config.getRange(behaviorMaxCharsRow, 2).getValue() || '').trim();
-
-      if (!currentValue && firstLegacyBehaviorMaxValue) {
-        config.getRange(behaviorMaxCharsRow, 2).setValue(firstLegacyBehaviorMaxValue);
-      }
-    }
-  }
-
   openAiModelRows
     .concat(legacyReasoningRows)
-    .concat(legacyBehaviorMinRows)
-    .concat(legacyBehaviorMaxRows)
     .sort((a, b) => b - a)
     .forEach(row => config.deleteRow(row));
 }
@@ -4725,8 +4699,16 @@ function listAllStudentSubmissions_(courseId, courseWorkId) {
   return all;
 }
 
+// 실행 단위 메모리 캐시. 실패한 조회는 저장하지 않는다.
+let CLASSROOM_TEACHER_COURSE_IDS_ = null;
+const CLASSROOM_USER_PROFILES_ = new Map();
+
 function getUserProfile_(userId) {
-  return Classroom.UserProfiles.get(userId);
+  const key = String(userId);
+  if (!CLASSROOM_USER_PROFILES_.has(key)) {
+    CLASSROOM_USER_PROFILES_.set(key, Classroom.UserProfiles.get(userId));
+  }
+  return CLASSROOM_USER_PROFILES_.get(key);
 }
 function testMyClassroomCoursesOnly() {
   const res = Classroom.Courses.list({
@@ -4747,28 +4729,10 @@ function testMyClassroomCoursesOnly() {
 }
 
 function isMyTeacherCourse_(courseId) {
-  let pageToken = null;
-
-  do {
-    const optionalArgs = {
-      pageSize: 100,
-      courseStates: ['ACTIVE'],
-      teacherId: 'me',
-    };
-
-    if (pageToken) optionalArgs.pageToken = pageToken;
-
-    const res = Classroom.Courses.list(optionalArgs);
-    const courses = res.courses || [];
-
-    if (courses.some(course => String(course.id) === String(courseId))) {
-      return true;
-    }
-
-    pageToken = res.nextPageToken || null;
-  } while (pageToken);
-
-  return false;
+  if (CLASSROOM_TEACHER_COURSE_IDS_ === null) {
+    CLASSROOM_TEACHER_COURSE_IDS_ = new Set(listAllCourses_().map(course => String(course.id)));
+  }
+  return CLASSROOM_TEACHER_COURSE_IDS_.has(String(courseId));
 }
 
 
@@ -5861,6 +5825,16 @@ function neisByteCount_(text) {
   }
 
   return bytes;
+}
+
+function applyNeisByteFormulas_(sh, textCol, byteCol, startRow, rowCount) {
+  if (!textCol || !byteCol || rowCount <= 0) return;
+  const col = colToA1_(textCol);
+  const formulas = Array.from({ length: rowCount }, (_, i) => {
+    const cell = `$${col}${startRow + i}`;
+    return [`=IF(${cell}="","",2*LENB(${cell})-LEN(${cell}))`];
+  });
+  sh.getRange(startRow, byteCol, rowCount, 1).setFormulas(formulas);
 }
 
 function applyNeisByteFormulasToRecords_(targetRows) {
@@ -7012,6 +6986,35 @@ function deleteAutoRecordDraftTriggers_() {
   });
 }
 
+function saveAutoToolLastResult_(kind, result, status) {
+  PropertiesService.getUserProperties().setProperty(`AUTO_${kind}_LAST_RESULT`, JSON.stringify({
+    status: status || (result.blocked ? 'BLOCKED' : result.remaining === 0 ? 'DONE' : 'RUNNING'),
+    processed: result.processed || 0,
+    failed: result.failed || 0,
+    skipped: result.skipped || 0,
+    remaining: result.remaining || 0,
+    blocked: !!result.blocked,
+    blockingReason: result.blockingReason || '',
+    blockingMessage: result.blockingMessage || '',
+    updatedAt: new Date().toISOString(),
+  }));
+}
+
+function getAutoToolLastResult_(kind) {
+  const raw = PropertiesService.getUserProperties().getProperty(`AUTO_${kind}_LAST_RESULT`);
+  try { return raw ? JSON.parse(raw) : null; } catch (err) { return null; }
+}
+
+function saveAutoToolError_(kind, message) {
+  saveAutoToolLastResult_(kind, {
+    failed: 1,
+    remaining: kind === 'MANUAL_RECORD' ? countPendingManualAddedRows_() : countPendingBehaviorRecommendationRows_(),
+    blocked: true,
+    blockingReason: kind === 'MANUAL_RECORD' ? '수동추가 처리 오류' : '행발 추천 처리 오류',
+    blockingMessage: message,
+  });
+}
+
 function generateManualAddedRecords() {
   requireCurrentAiApiKey_();
   const ui = getUi_();
@@ -7023,10 +7026,12 @@ function generateManualAddedRecords() {
   }
 
   try {
+    saveAutoToolLastResult_('MANUAL_RECORD', {}, 'RUNNING');
     scheduleNextAutoManualRecordTrigger_(AUTO_BACKUP_DELAY_MS);
     PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'ON');
 
     const result = runFirstBatchQuickly_(() => processManualAddedRecordsCore_());
+    saveAutoToolLastResult_('MANUAL_RECORD', result);
 
     if (result.blocked) {
       PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
@@ -7052,6 +7057,7 @@ function generateManualAddedRecords() {
     );
   } catch (err) {
     const message = String(err.message || err);
+    saveAutoToolError_('MANUAL_RECORD', message);
     const result = {
       processed: 0,
       failed: 1,
@@ -7092,6 +7098,7 @@ function autoProcessPendingManualAddedRecords() {
     beginAutoRun_(scheduleNextAutoManualRecordTrigger_);
 
     const result = processManualAddedRecordsCore_();
+    saveAutoToolLastResult_('MANUAL_RECORD', result);
 
     if (result.blocked) {
       PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
@@ -7121,6 +7128,7 @@ function autoProcessPendingManualAddedRecords() {
     );
   } catch (err) {
     const message = String(err.message || err);
+    saveAutoToolError_('MANUAL_RECORD', message);
     PropertiesService.getUserProperties().setProperty(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'OFF');
     toastAutoRecordDraft_(message, '수동추가 자동 처리 오류');
     log_('autoProcessPendingManualAddedRecords', 'ERROR', message);
@@ -7198,10 +7206,8 @@ function processManualAddedRecordsCore_() {
       const index = r - manualConfig.startRow;
       const values = manualValues[index] || [];
       const note = String((outputNotes[index] && outputNotes[index][0]) || '').trim();
-      if (String(rowValueAt_(values, manualConfig.outputCol) || '').trim() || isManualOutputHandledNote_(note)) continue;
-
       const manualInput = buildManualInputFromRowValues_(values, headers, manualConfig.inputCols);
-      if (manualInput.length < 20) continue;
+      if (manualRowStatus_(manualInput, String(rowValueAt_(values, manualConfig.outputCol) || '').trim(), note) !== '대기') continue;
 
       requests.push({ provider, model, systemGuide, userPrompt: buildManualUserPrompt(r, manualInput), reasoning });
     }
@@ -7228,14 +7234,10 @@ function processManualAddedRecordsCore_() {
     const outputValue = String(rowValueAt_(rowValues, manualConfig.outputCol) || '').trim();
     const outputNote = String((outputNotes[rowIndex] && outputNotes[rowIndex][0]) || '').trim();
 
-    if (outputValue || isManualOutputHandledNote_(outputNote)) {
-      continue;
-    }
-
     const manualInput = buildManualInputFromRowValues_(rowValues, headers, manualConfig.inputCols);
-
-    if (manualInput.length < 20) {
-      skipped++;
+    const rowStatus = manualRowStatus_(manualInput, outputValue, outputNote);
+    if (rowStatus !== '대기') {
+      if (rowStatus === '내용 부족') skipped++;
       continue;
     }
 
@@ -7262,7 +7264,7 @@ function processManualAddedRecordsCore_() {
       const evidenceSummary = normalizeAiText_(parsed.evidence_summary);
 
       outputCell
-        .setValue(recordDraft)
+        .setValue(sheetSafeText_(recordDraft))
         .setNote(buildManualOutputNote_(recordDraft ? '처리완료' : '근거부족', caution, evidenceSummary, `${provider}:${model}`));
       setManualByteFormula_(sh, row, manualConfig.outputCol);
       formatManualProcessedRow_(sh, row, manualConfig);
@@ -7346,18 +7348,8 @@ function countPendingManualRowsInSheet_(sh, manualConfig) {
     const outputValue = String(row[manualConfig.outputCol - 1] || '').trim();
     const outputNote = String(outputNotes[index][0] || '').trim();
 
-    if (outputValue || isManualOutputHandledNote_(outputNote)) return;
-
-    const input = manualConfig.inputCols
-      .map(col => {
-        const label = String(headers[col - 1] || '').trim();
-        if (isPersonalInfoHeader_(label)) return '';
-        return sanitizePromptText_(row[col - 1]).trim();
-      })
-      .filter(Boolean)
-      .join('\n');
-
-    if (input.length >= 20) count++;
+    const input = buildManualInputFromRowValues_(row, headers, manualConfig.inputCols);
+    if (manualRowStatus_(input, outputValue, outputNote) === '대기') count++;
   });
 
   return count;
@@ -7447,6 +7439,15 @@ function buildManualInputFromRowValues_(rowValues, headers, inputCols) {
   }).filter(Boolean).join('\n\n');
 }
 
+// 화면 집계와 자동 처리의 대상 판정을 공유한다. 오류는 사용자가 재시도할 때만 다시 처리한다.
+function manualRowStatus_(input, output, note) {
+  if (output || /^\[수동추가 처리완료\]/.test(note)) return '완료';
+  if (/^\[수동추가 근거부족\]/.test(note)) return '근거부족';
+  if (input.length < 20) return '내용 부족';
+  if (/^\[수동추가 오류\]/.test(note)) return '오류';
+  return '대기';
+}
+
 function buildManualRecordPrompt_(data) {
   const template = data.promptTemplate || defaultManualRecordPrompt_();
   const renderedPrompt = renderPromptTemplate_(template, data);
@@ -7503,10 +7504,6 @@ function buildManualOutputErrorNote_(reason, message) {
     '[수동추가 오류]',
     `${reason}: ${message}`,
   ].filter(Boolean).join('\n');
-}
-
-function isManualOutputHandledNote_(note) {
-  return /^\[수동추가 (처리완료|근거부족|오류)\]/.test(String(note || '').trim());
 }
 
 function setManualByteFormula_(sh, row, outputCol) {
@@ -8773,9 +8770,9 @@ function processPendingStudentFinalRecordsCore_(showUi) {
       const evidenceSummary = normalizeAiText_(parsed.evidence_summary);
 
       sh.getRange(row, h.finalRecord)
-        .setValue(finalRecord)
+        .setValue(sheetSafeText_(finalRecord))
         .setNote(evidenceSummary ? `[evidence_summary]\n${evidenceSummary}` : '');
-      sh.getRange(row, h.charCount).setValue(neisByteCount_(finalRecord));
+      applyNeisByteFormulas_(sh, h.finalRecord, h.charCount, row, 1);
       sh.getRange(row, h.caution).setValue(caution);
       sh.getRange(row, h.teacherChecked).setValue(false);
       sh.getRange(row, h.createdAt).setValue(new Date());
@@ -9239,6 +9236,7 @@ function styleStudentFinalRecordsSheet_() {
     'createdAt'
   ]);
   clearRowsBelowLastData_(sh, lastRow);
+  applyNeisByteFormulas_(sh, h.finalRecord, h.charCount, 2, Math.max(lastRow - 1, 0));
   const lastCol = sh.getLastColumn();
 
   sh.setFrozenRows(1);

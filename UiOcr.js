@@ -286,7 +286,7 @@ function getOcrSheet_(create) {
   sh = ss.insertSheet(OCR_SHEET_NAME);
   hideNewWorkSheet_(sh);
   if (sh.getMaxColumns() < headers.length) sh.insertColumnsAfter(sh.getMaxColumns(), headers.length - sh.getMaxColumns());
-  sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#eaf4ff');
+  sh.getRange(1, 1, 1, headers.length).setValues([headers.map(sheetSafeText_)]).setFontWeight('bold').setBackground('#eaf4ff');
   // '3-4' 같은 쪽 번호와 학번 앞자리 0이 날짜·숫자로 바뀌지 않게 텍스트로 둔다.
   sh.getRange(1, 1, sh.getMaxRows(), 3).setNumberFormat('@');
   sh.setFrozenRows(1);
@@ -420,7 +420,7 @@ function uiOcrExtract(input) {
     const existing = readOcrRows_(sh).find(r => r.pages === pages);
     const row = existing ? existing.row : Math.max(sh.getLastRow() + 1, 2);
     const line = [pages, record.studentId, record.name].concat(record.answers, [record.note, label, new Date()]);
-    sh.getRange(row, 1, 1, line.length).setValues([line]);
+    sh.getRange(row, 1, 1, line.length).setValues([line.map(sheetSafeText_)]);
     return readOcrRows_(sh).find(r => r.row === row);
   });
 }
@@ -447,7 +447,7 @@ const OCR_SPLIT_RESPONSE_SCHEMA = {
   required: ['pages'],
 };
 
-function ocrSplitGuide_(count) {
+function ocrSplitGuide_(count, contextPages) {
   return [
     '# 역할',
     `너는 반 학생들의 손글씨 과제를 한꺼번에 스캔한 PDF를 학생별로 나누는 사람이다. 첨부한 PDF는 그중 연속된 ${count}쪽이다.`,
@@ -456,6 +456,7 @@ function ocrSplitGuide_(count) {
     '- 쪽마다 새 학생의 과제가 시작되는 쪽인지(new_student) 판단한다.',
     '- 이름이나 학번이 새로 적혀 있거나, 과제 양식의 첫 쪽(제목, 1번 문항부터 시작)이면 true다.',
     '- 앞 쪽의 글이 이어지는 쪽, 같은 학생의 뒷면·덧붙인 종이면 false다.',
+    contextPages ? '- 첨부의 첫 쪽은 앞 묶음의 마지막 쪽으로, 다음 쪽의 연속 여부를 판단할 참고 문맥이다. 첫 쪽에서 이어지는 학생을 새 학생으로 판단하지 않는다.' : '',
     '- 그 쪽에 적힌 학번(번호)과 이름을 student_id, name에 적는다. 없거나 읽을 수 없으면 빈 문자열.',
     '',
     '# 출력',
@@ -469,8 +470,10 @@ function ocrSplitGuide_(count) {
 function uiOcrDetectStarts(input) {
   const firstPage = Number(input && input.firstPage);
   const count = Number(input && input.count);
+  const contextPages = Number((input && input.contextPages) || 0);
   const data = String((input && input.data) || '');
   if (!Number.isInteger(firstPage) || firstPage < 1 || !Number.isInteger(count) || count < 1 || count > 10) throw new Error('쪽 번호가 올바르지 않습니다.');
+  if (![0, 1].includes(contextPages) || contextPages >= count) throw new Error('참고 쪽 수가 올바르지 않습니다.');
   if (!data) throw new Error('보낼 PDF가 없습니다.');
   if (Math.floor(data.length * 3 / 4) > OCR_MAX_PDF_BYTES) {
     throw new Error(`${firstPage}쪽부터의 파일이 너무 커요. 스캔 해상도를 낮추거나(예: 200dpi) 흑백으로 다시 스캔해 주세요.`);
@@ -478,7 +481,7 @@ function uiOcrDetectStarts(input) {
 
   const s = ocrSettings_();
   const model = requireOcrModel_(s, input.model);
-  const result = callAi_(s.provider, model, ocrSplitGuide_(count), `첨부한 ${count}쪽을 쪽마다 판단해 JSON으로 답하세요.`, 'none', OCR_SPLIT_RESPONSE_SCHEMA, {
+  const result = callAi_(s.provider, model, ocrSplitGuide_(count, contextPages), `첨부한 ${count}쪽을 쪽마다 판단해 JSON으로 답하세요.`, 'none', OCR_SPLIT_RESPONSE_SCHEMA, {
     attachments: [{ mimeType: 'application/pdf', data, name: `pages-${firstPage}.pdf` }],
     maxTokens: 2000,
   });
@@ -490,7 +493,7 @@ function uiOcrDetectStarts(input) {
   });
 
   const pages = [];
-  for (let i = 1; i <= count; i++) {
+  for (let i = contextPages + 1; i <= count; i++) {
     const p = byPage[i] || {};
     pages.push({
       page: firstPage + i - 1,
@@ -531,7 +534,7 @@ function uiOcrUpdateRow(row, expectedPages, patch) {
     const answers = (patch && patch.answers) || {};
     const texts = items.map(it => String(answers[it.name] == null ? '' : answers[it.name]).trim());
     const values = [String((patch && patch.studentId) || '').trim(), String((patch && patch.name) || '').trim()].concat(texts);
-    sh.getRange(row, 2, 1, values.length).setValues([values]);
+    sh.getRange(row, 2, 1, values.length).setValues([values.map(sheetSafeText_)]);
     // 교사가 직접 고친 행은 읽기 실패 표시를 지운다.
     const noteCol = OCR_FIXED_HEAD.length + items.length + 1;
     const note = String(sh.getRange(row, noteCol).getValue() || '');
@@ -605,7 +608,7 @@ function uiOcrSendToManual(mode) {
         cols.forEach((col, i) => { line[col - 1] = v[i]; });
         return line;
       });
-      manual.getRange(start, 1, block.length, width).setNumberFormat('@').setValues(block);
+      manual.getRange(start, 1, block.length, width).setNumberFormat('@').setValues(block.map(r => r.map(sheetSafeText_)));
     });
     log_('uiOcrSendToManual', 'OK', `손글씨 추출 ${rows.length}행을 수동추가 시트 뒤에 붙임`);
     return Object.assign(uiGetManual(), { imported: rows.length, appended: true });

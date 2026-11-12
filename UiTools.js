@@ -178,7 +178,7 @@ function uiAddBehaviorStudents(names) {
     const sh = ensureBehaviorRecommendationSheet_();
     const h = headerMap_(sh);
     const startRow = Math.max(sh.getLastRow(), 1) + 1;
-    sh.getRange(startRow, h.studentName, list.length, 1).setValues(list.map(n => [n]));
+    sh.getRange(startRow, h.studentName, list.length, 1).setValues(list.map(n => [sheetSafeText_(n)]));
   });
 
   styleBehaviorRecommendationSheet_();
@@ -216,10 +216,10 @@ function uiSaveBehaviorRow(row, expectedName, data) {
       if (contiguous) {
         // 입력 열이 붙어 있으면 한 번에 쓴다(칸마다 쓰면 느리다).
         const rowValues = [];
-        fields.forEach(field => { rowValues[h[field] - first] = String(values[field]).trim(); });
+        fields.forEach(field => { rowValues[h[field] - first] = sheetSafeText_(String(values[field]).trim()); });
         sh.getRange(row, first, 1, fields.length).setValues([rowValues]);
       } else {
-        fields.forEach(field => sh.getRange(row, h[field]).setValue(String(values[field]).trim()));
+        fields.forEach(field => sh.getRange(row, h[field]).setValue(sheetSafeText_(String(values[field]).trim())));
       }
     } catch (err) {
       if (String(values.selectedTraits || '').includes(',')) {
@@ -239,8 +239,8 @@ function uiUpdateBehaviorRecord(row, expectedName, text) {
     const h = assertBehaviorRow_(sh, row, expectedName);
     const value = String(text || '').trim();
 
-    sh.getRange(row, h.recommendedRecord).setValue(value);
-    sh.getRange(row, h.byteCount).setValue(value ? neisByteCount_(value) : '');
+    sh.getRange(row, h.recommendedRecord).setValue(sheetSafeText_(value));
+    applyNeisByteFormulas_(sh, h.recommendedRecord, h.byteCount, row, 1);
 
     return readBehaviorRow_(sh, h, row);
   });
@@ -363,6 +363,9 @@ function getManualData_() {
     inputCols: manualConfig ? manualConfig.inputCols : [],
     outputCol: manualConfig ? manualConfig.outputCol : 0,
     rows: [],
+    pendingCount: 0,
+    errorCount: 0,
+    handledCount: 0,
     truncated: false,
   };
 
@@ -371,7 +374,7 @@ function getManualData_() {
   const lastRow = sh.getLastRow();
   if (lastRow < manualConfig.startRow) return result;
 
-  const rowCount = Math.min(lastRow - manualConfig.startRow + 1, MANUAL_ROW_LIMIT);
+  const rowCount = lastRow - manualConfig.startRow + 1;
   const readCols = Math.max(lastCol, manualConfig.byteCol);
   const fullHeaders = readCols === lastCol ? headerValues : sh.getRange(1, 1, 1, readCols).getValues()[0];
   const values = sh.getRange(manualConfig.startRow, 1, rowCount, readCols).getValues();
@@ -385,29 +388,24 @@ function getManualData_() {
   values.forEach((r, i) => {
     const input = buildManualInputFromRowValues_(r, fullHeaders, manualConfig.inputCols);
     const output = String(rowValueAt_(r, manualConfig.outputCol) || '').trim();
-    if (!input && !output) return;
-
     const note = String(notes[i][0] || '').trim();
+    const status = manualRowStatus_(input, output, note);
+    if (status === '대기') result.pendingCount++;
+    if (status === '오류') result.errorCount++;
+    if (output || note) result.handledCount++;
+    if (i >= MANUAL_ROW_LIMIT || (!input && !output)) return;
     result.rows.push({
       row: manualConfig.startRow + i,
       label: labelCols.map(col => String(rowValueAt_(r, col) || '').trim()).filter(Boolean).join(' '),
       input,
       output,
       note,
-      status: manualRowStatus_(input, output, note),
+      status,
     });
   });
 
   result.truncated = lastRow - manualConfig.startRow + 1 > MANUAL_ROW_LIMIT;
   return result;
-}
-
-function manualRowStatus_(input, output, note) {
-  if (output) return '완료';
-  if (/^\[수동추가 오류\]/.test(note)) return '오류';
-  if (/^\[수동추가 근거부족\]/.test(note)) return '근거부족';
-  if (input.length < 20) return '내용 부족';
-  return '대기';
 }
 
 // 화면에서 읽은 CSV로 '수동추가' 시트를 새로 만든다. 맨 오른쪽에 생기부·바이트 열을 붙인다.
@@ -450,11 +448,11 @@ function uiImportManualCsv(data) {
     // 학번 앞자리 0 등이 사라지지 않게 원본 열은 텍스트로 둔다.
     sh.getRange(1, 1, rows.length + 1, headers.length).setNumberFormat('@');
     sh.getRange(1, 1, 1, width)
-      .setValues([headers.concat(['생기부', '바이트'])])
+      .setValues([headers.concat(['생기부', '바이트']).map(sheetSafeText_)])
       .setFontWeight('bold')
       .setBackground('#eaf4ff');
     sh.getRange(1, outputCol, 1, 2).setBackground('#fff2cc');
-    sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    sh.getRange(2, 1, rows.length, headers.length).setValues(rows.map(r => r.map(sheetSafeText_)));
     sh.setFrozenRows(1);
     inputCols.forEach(col => sh.setColumnWidth(col, 360));
     sh.setColumnWidth(outputCol, 420);
@@ -510,7 +508,7 @@ function uiAddManualRow(valuesByCol) {
 
     const config = getManualRecordConfig_(getConfigMap_());
     const row = Math.max(sh.getLastRow() + 1, config.startRow);
-    sh.getRange(row, 1, 1, width).setValues([rowValues]);
+    sh.getRange(row, 1, 1, width).setValues([rowValues.map(sheetSafeText_)]);
   });
 
   return uiGetManual();
@@ -521,10 +519,10 @@ function uiUpdateManualOutput(row, expectedInput, text) {
     const ctx = assertManualRow_(row, expectedInput);
     const value = String(text || '').trim();
 
-    ctx.sh.getRange(row, ctx.config.outputCol).setValue(value);
-    if (value) setManualByteFormula_(ctx.sh, row, ctx.config.outputCol);
+    ctx.sh.getRange(row, ctx.config.outputCol).setValue(sheetSafeText_(value));
+    setManualByteFormula_(ctx.sh, row, ctx.config.outputCol);
 
-    return { row: Number(row), output: value };
+    return { row: Number(row), output: value, data: uiGetManual() };
   });
 }
 
@@ -537,7 +535,7 @@ function uiResetManualOutput(row, expectedInput) {
     cell.clearNote();
     ctx.sh.getRange(row, ctx.config.byteCol).clearContent();
 
-    return { row: Number(row), output: '', note: '' };
+    return { row: Number(row), output: '', note: '', data: uiGetManual() };
   });
 }
 
@@ -1023,7 +1021,7 @@ function uiAppendManualRows(data) {
       return line;
     });
     const start = Math.max(lastRow + 1, config.startRow);
-    sh.getRange(start, 1, block.length, width).setNumberFormat('@').setValues(block);
+    sh.getRange(start, 1, block.length, width).setNumberFormat('@').setValues(block.map(r => r.map(sheetSafeText_)));
     sh.getRange(start, 1, block.length, Math.max(sh.getLastColumn(), width)).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP).setVerticalAlignment('top');
     return block.length;
   });

@@ -344,6 +344,12 @@
     delete toolLoads[key];
   }
 
+  function loadFreshTool(key, maxAge = 5000) {
+    if (toolLoads[key]) return toolLoads[key];
+    if (S[key] && Date.now() - (toolLoadedAt[key] || 0) >= maxAge) dropTool(key);
+    return loadTool(key);
+  }
+
   function prefetchTools() {
     if (!S.boot || !S.boot.isSetup) return;
     Object.keys(TOOL_LOADERS).forEach(key => {
@@ -383,7 +389,7 @@
       behavior: () => loadTool('behavior'),
       manual: () => loadTool('manual'),
       grading: () => loadTool('grading'),
-      ocr: async () => { dropTool('ocr'); await loadTool('ocr'); },
+      ocr: () => loadFreshTool('ocr'),
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;
     // 프롬프트 확인 칸에 설정 값이 필요하다.
@@ -1058,6 +1064,7 @@
     return `
       <h1>설정</h1>
       <p class="lead">자주 바꾸는 설정만 모았어요. 수동추가의 열 설정은 [수동추가] 화면에서 바꿀 수 있어요.</p>
+      ${S.settings.behaviorMigrationNotice ? `<div class="banner">${esc(S.settings.behaviorMigrationNotice)}</div>` : ''}
       ${busyNote()}
       <div class="tabs">${tabs.map(t => `<button class="tab ${S.settingsTab === t.id ? 'active' : ''}" data-action="settings-tab" data-id="${t.id}">${t.label}</button>`).join('')}</div>
       <div class="card">${items.map(field).join('')}

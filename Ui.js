@@ -470,7 +470,16 @@ function uiGetSettings() {
   // 행발 기본 프롬프트는 진지한 버전(기본값) 외에 가벼운 버전도 고를 수 있다.
   defaults.BEHAVIOR_RECORD_PROMPT_LIGHT = defaultBehaviorRecordPrompt_('light');
 
-  return { groups, defaults, catalogs };
+  const config = {};
+  Object.keys(rowsByKey).forEach(key => { config[key] = rowsByKey[key][1]; });
+  const legacyBehavior = ['BEHAVIOR_RECORD_MIN_CHARS', 'BEHAVIOR_RECORD_MAX_CHARS']
+    .filter(key => String(config[key] || '').trim())
+    .map(key => `${key}=${config[key]}`);
+  const range = getRecordByteRange_(config, 'behavior');
+  const behaviorMigrationNotice = legacyBehavior.length
+    ? `구형 행발 분량 설정(${legacyBehavior.join(', ')})을 보존했습니다. 과거 이관 이력 때문에 단위를 확정할 수 없어 자동 환산하지 않았어요. 현재 행발 분량은 ${range.min}~${range.max}바이트입니다. [행발 추천]의 분량 설정에서 확인해 주세요.`
+    : '';
+  return { groups, defaults, catalogs, behaviorMigrationNotice };
 }
 
 function uiSaveSettings(patch) {
@@ -924,13 +933,13 @@ function getStatus_(triggerNames) {
       state: stateOf(AUTO_BEHAVIOR_RECOMMENDATION_TRIGGER_PROPERTY, 'autoProcessPendingBehaviorRecommendations'),
       triggers: triggerCount('autoProcessPendingBehaviorRecommendations'),
       remaining: countPendingBehaviorRecommendationRows_(),
-      last: null,
+      last: getAutoToolLastResult_('BEHAVIOR_RECOMMENDATION'),
     },
     manual: {
       state: stateOf(AUTO_MANUAL_RECORD_TRIGGER_PROPERTY, 'autoProcessPendingManualAddedRecords'),
       triggers: triggerCount('autoProcessPendingManualAddedRecords'),
       remaining: countPendingManualAddedRows_(),
-      last: null,
+      last: getAutoToolLastResult_('MANUAL_RECORD'),
     },
     grading: {
       state: stateOf(AUTO_GRADING_TRIGGER_PROPERTY, 'autoProcessPendingGrades'),
@@ -1131,7 +1140,8 @@ function updateRecordRow_(sheetName, row, key, patch, keyOf) {
     }
 
     if (patch && patch.finalRecord !== undefined && h.finalRecord) {
-      sh.getRange(row, h.finalRecord).setValue(String(patch.finalRecord));
+      sh.getRange(row, h.finalRecord).setValue(sheetSafeText_(String(patch.finalRecord)));
+      applyNeisByteFormulas_(sh, h.finalRecord, h.charCount, row, 1);
     }
 
     if (patch && patch.teacherChecked !== undefined && h.teacherChecked) {
