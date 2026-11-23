@@ -984,7 +984,7 @@ function scheduleNextAutoCommonPhraseTrigger_(delayMs) {
   log_(
     'scheduleNextAutoCommonPhraseTrigger_',
     'OK',
-    `${Math.round(delayMs / 1000)}초 뒤 다음 공통문구 자동 생성 예약`
+    autoScheduleLogText_(delayMs, '공통문구 자동 생성')
   );
 }
 
@@ -2090,7 +2090,7 @@ function scheduleNextAutoBehaviorRecommendationTrigger_(delayMs) {
   log_(
     'scheduleNextAutoBehaviorRecommendationTrigger_',
     'OK',
-    `${Math.round(delayMs / 1000)}초 뒤 다음 행발 추천 문구 자동 생성 예약`
+    autoScheduleLogText_(delayMs, '행발 추천 문구 자동 생성')
   );
 }
 
@@ -2932,6 +2932,8 @@ function createAiPrefetcher_(config, label) {
   };
 }
 
+const AI_SLOW_CALL_LOG_MS = 30 * 1000;
+
 // responseSchema를 주지 않으면 GPT·Gemini는 생기부 초안 형식(evidence_summary, record_draft, caution)으로 답하게 한다.
 // Claude는 형식을 강제하지 않고 프롬프트의 JSON 예시를 따른다.
 function callAi_(provider, model, systemGuide, userPrompt, reasoning, responseSchema, options) {
@@ -2944,16 +2946,21 @@ function callAi_(provider, model, systemGuide, userPrompt, reasoning, responseSc
     if (prefetched) return prefetched;
   }
 
-  if (provider === 'gpt') {
-    return callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
-  }
+  const call = {
+    gpt: () => callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, options),
+    gemini: () => callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, options),
+    claude: () => callClaude_(model, systemGuide, userPrompt, reasoning, options),
+  }[provider];
 
-  if (provider === 'gemini') {
-    return callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, options);
-  }
-
-  if (provider === 'claude') {
-    return callClaude_(model, systemGuide, userPrompt, reasoning, options);
+  if (call) {
+    // 오래 걸린 요청은 어디서 시간이 갔는지 로그로 남긴다(재시도·한도 대기 로그와 함께 보면 원인이 보인다).
+    const startedAt = Date.now();
+    const result = call();
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= AI_SLOW_CALL_LOG_MS) {
+      log_('callAi_', 'SLOW', `${provider} ${model} 응답까지 ${Math.round(elapsedMs / 1000)}초 (추론 ${reasoning})`);
+    }
+    return result;
   }
 
   throw new Error(`지원하지 않는 AI_PROVIDER입니다. claude, gpt, gemini 중 하나로 설정해주세요: ${provider}`);
@@ -3208,8 +3215,9 @@ function callOpenAi_(model, systemGuide, userPrompt, reasoning, responseSchema, 
     lastErrorMessage = `OpenAI API 오류 ${code}: ${body}`;
 
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
-      const waitMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
-      sleepWithinAiBudget_(Math.min(waitMs, 30000));
+      const waitMs = Math.min(2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000), 30000);
+      log_('callOpenAi_', 'RETRY', `OpenAI API ${code} 오류. ${attempt}/${maxAttempts}회 시도 실패. ${Math.round(waitMs / 1000)}초 후 재시도`);
+      sleepWithinAiBudget_(waitMs);
       continue;
     }
 
@@ -3363,8 +3371,9 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
       // 무료 키가 분당 한도에 걸렸으면(다른 곳에서 같은 키를 쓴 경우) 짧게 기다려 봐야 또 거절된다.
       const baseMs = freeTier && code === 429 ? 20000 : 2000 * Math.pow(2, attempt - 1);
-      const waitMs = baseMs + Math.floor(Math.random() * 1000);
-      sleepWithinAiBudget_(Math.min(waitMs, 30000));
+      const waitMs = Math.min(baseMs + Math.floor(Math.random() * 1000), 30000);
+      log_('callGemini_', 'RETRY', `Gemini API ${code} 오류(${payload.model}). ${attempt}/${maxAttempts}회 시도 실패. ${Math.round(waitMs / 1000)}초 후 재시도`);
+      sleepWithinAiBudget_(waitMs);
       continue;
     }
 
@@ -6376,6 +6385,15 @@ const START_LOCK_WAIT_MS = 45 * 1000;
 // [시작]의 첫 묶음도 창을 닫거나 실행이 끊길 수 있어서, 처리하기 전에 같은 예약을 먼저 만든다.
 const AUTO_BACKUP_DELAY_MS = 7 * 60 * 1000;
 
+// 예비 예약은 '그만큼 기다렸다 시작'으로 오해하기 쉬워서 로그에 예비라고 밝힌다.
+function autoScheduleLogText_(delayMs, what) {
+  const seconds = Math.round(delayMs / 1000);
+  if (delayMs === AUTO_BACKUP_DELAY_MS) {
+    return `${what} 예비 예약(${seconds}초 뒤): 작업은 지금 바로 시작하고, 6분 제한으로 끊길 때만 이 예약으로 이어서 처리합니다. 정상으로 끝나면 지웁니다.`;
+  }
+  return `${seconds}초 뒤 다음 ${what} 예약`;
+}
+
 // 자동 작업은 모두 스크립트 잠금을 잡고 돈다. 잠금을 잡은 지금 '생성중'인 행은 앞 실행이 강제 종료되며 남긴 것이라 '대기'로 돌린다.
 function beginAutoRun_(scheduleNext, staleStatus) {
   scheduleNext(AUTO_BACKUP_DELAY_MS);
@@ -6994,7 +7012,7 @@ function scheduleNextAutoRecordDraftTrigger_(delayMs) {
   log_(
     'scheduleNextAutoRecordDraftTrigger_',
     'OK',
-    `${Math.round(delayMs / 1000)}초 뒤 다음 자동 생성 예약`
+    autoScheduleLogText_(delayMs, '자동 생성')
   );
 }
 
@@ -7554,7 +7572,7 @@ function scheduleNextAutoManualRecordTrigger_(delayMs) {
   log_(
     'scheduleNextAutoManualRecordTrigger_',
     'OK',
-    `${Math.round(delayMs / 1000)}초 뒤 다음 수동추가 자동 생성 예약`
+    autoScheduleLogText_(delayMs, '수동추가 자동 생성')
   );
 }
 
@@ -8318,7 +8336,7 @@ function scheduleNextAutoSubmissionCollectionTrigger_(delayMs) {
   log_(
     'scheduleNextAutoSubmissionCollectionTrigger_',
     'OK',
-    `${Math.round(delayMs / 1000)}초 뒤 다음 제출물 수집 예약`
+    autoScheduleLogText_(delayMs, '제출물 수집')
   );
 }
 
@@ -9157,7 +9175,7 @@ function scheduleNextAutoStudentFinalRecordTrigger_(delayMs) {
   log_(
     'scheduleNextAutoStudentFinalRecordTrigger_',
     'OK',
-    `${Math.round(delayMs / 1000)}초 뒤 다음 학생별 최종 자동 생성 예약`
+    autoScheduleLogText_(delayMs, '학생별 최종 자동 생성')
   );
 }
 
@@ -9968,7 +9986,7 @@ function scheduleNextAutoGradingTrigger_(delayMs) {
     .after(delayMs)
     .create();
 
-  log_('scheduleNextAutoGradingTrigger_', 'OK', `${Math.round(delayMs / 1000)}초 뒤 다음 자동 채점 예약`);
+  log_('scheduleNextAutoGradingTrigger_', 'OK', autoScheduleLogText_(delayMs, '자동 채점'));
 }
 
 function deleteAutoGradingTriggers_() {
