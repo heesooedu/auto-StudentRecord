@@ -386,6 +386,7 @@ function uiGetBootstrap(withSettings) {
     status,
     autoOpen: triggers.includes('openAssistantOnOpen'),
     hiddenCourses: getHiddenCourses_(),
+    geminiQuota: getGeminiFreeUsageSummary_(),
     spreadsheetId: ss.getId(),
     spreadsheetUrl: ss.getUrl(),
   };
@@ -413,6 +414,13 @@ function uiSaveApiKey(provider, key) {
   log_('uiSaveApiKey', 'OK', `현재 사용자 ${provider} API 키 저장 완료`);
 
   return uiGetBootstrap();
+}
+
+// 무료 키면 분당 5회·하루 20회 한도를 지켜 보낸다. 유료면 한도 장치를 쓰지 않는다.
+function uiSetGeminiKeyTier(tier) {
+  setGeminiKeyTier_(tier);
+  log_('uiSetGeminiKeyTier', 'OK', `Gemini 키 종류: ${tier === 'paid' ? '유료' : '무료'}`);
+  return getGeminiFreeUsageSummary_();
 }
 
 function uiClearApiKey(provider) {

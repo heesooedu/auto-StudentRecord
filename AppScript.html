@@ -136,7 +136,7 @@
     if (!catalog) return '<div class="help" role="status">모델 목록을 불러오는 중이에요.</div>';
     if (catalog.status !== 'ok') return `<div class="save-warn" role="status">${esc(catalog.message)}</div>`;
     const outdated = selected && !catalog.models.some(m => m.id === selected);
-    const family = (String(selected).match(/haiku|sonnet|luna|terra|flash/) || [])[0];
+    const family = (String(selected).match(/haiku|sonnet|luna|terra|hydrogen|flash/) || [])[0];
     const replacement = catalog.models.find(m => m.family === family || m.id.includes(family || '__none__'));
     return `${outdated ? `<div class="save-warn" role="status">현재 저장된 모델: <b>${esc(selected)}</b><br>최신 목록에서 빠졌어요. 새 모델을 선택하고 저장해야 생성을 시작할 수 있어요.${replacement ? `<br>같은 계열 추천: ${esc(replacement.id)}` : ''}</div>` : ''}
       <div class="help">정식 모델만 표시해요. 목록 확인: ${esc(new Date(catalog.fetchedAt).toLocaleString('ko-KR'))}. 추론은 최대 medium까지 사용해요. Gemini의 추론 없음은 지원에 따라 minimal 또는 low로 적용돼요.</div>`;
@@ -585,6 +585,24 @@
         </button>`).join('')}</div>`;
   }
 
+  function geminiTierCard(q) {
+    if (!q) return '';
+    const free = q.tier !== 'paid';
+    const option = (tier, title, desc) => `
+      <button class="choice ${(tier === 'free') === free ? 'selected' : ''}" data-action="gemini-tier" data-id="${tier}" ${S.busy ? 'disabled' : ''}>
+        <b>${title}</b><div class="muted small">${desc}</div>
+      </button>`;
+    return `
+      <div class="field" style="margin-top:12px"><span>Gemini 키 종류</span>
+        <div class="choices">
+          ${option('free', '무료 키', `분당 ${q.limits.rpm}회 · 하루 ${q.limits.rpd}회 한도를 지켜 천천히 보내요.`)}
+          ${option('paid', '유료 키 (결제 연결)', '한도 걱정 없이 보내요.')}
+        </div>
+        ${free ? `<div class="help">오늘 사용: ${q.usedToday} / ${q.limits.rpd}회 · ${esc(q.resetText)}에 다시 채워져요.
+          학생 한 명에 요청이 1~2번 들어가서, 무료 키로는 하루에 10~20명 정도만 만들 수 있어요.</div>` : ''}
+      </div>`;
+  }
+
   function viewStart() {
     const b = S.boot;
     const provider = PROVIDERS.find(p => p.id === b.provider) || PROVIDERS[0];
@@ -623,7 +641,8 @@
         <div class="help">Claude와 GPT의 API는 보낸 내용을 AI 학습에 쓰지 않아요. Gemini는 결제를 연결한 유료 키일 때만 학습에 쓰지 않아요.
           Classroom 과제 글에 있는 학생 이름·학번·이메일은 지운 뒤 보내요.</div>
         ${b.provider === 'gemini' ? `<div class="caution" style="margin-top:8px">Gemini <b>무료</b> API 키를 쓰면 보낸 과제 내용과 AI의 답이 구글 제품 개선(AI 학습)에 쓰이고, 사람이 직접 읽을 수도 있어요.
-          학생 글을 보내기 전에 Google AI Studio에서 결제(유료 등급)를 연결하는 것을 권장해요.</div>` : ''}
+          학생 글을 보내기 전에 Google AI Studio에서 결제(유료 등급)를 연결하는 것을 권장해요.</div>
+        ${geminiTierCard(b.geminiQuota)}` : ''}
 
         <label class="field"><span>${esc(provider.name)} API 키</span>
           ${hasKey ? `
@@ -1163,6 +1182,11 @@
         dropTool('ocr');
         if (!applyAiSettings()) S.boot = await call('uiGetBootstrap');
         banner('모델을 저장했어요.', 'ok');
+      });
+    },
+    async 'gemini-tier'(el) {
+      await withBusy('Gemini 키 종류를 바꾸는 중…', async () => {
+        S.boot.geminiQuota = await call('uiSetGeminiKeyTier', el.dataset.id);
       });
     },
     async 'auto-open'(el) {

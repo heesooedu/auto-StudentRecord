@@ -2724,6 +2724,8 @@ function fetchAiBatch_(requests) {
   const outcomes = requests.map(() => null);
   const codes = requests.map(() => 0);
   const sendable = [];
+  // Gemini 무료 키는 한꺼번에 보내면 분당 한도를 넘기므로 보내지 않고, callAiParallel_이 하나씩 보내게 둔다.
+  const deferred = [];
 
   requests.forEach((req, index) => {
     const provider = normalizeAiProvider_(req.provider);
@@ -2732,6 +2734,11 @@ function fetchAiBatch_(requests) {
 
     if (!apiKey) {
       outcomes[index] = { error: new Error(`${provider} API 키가 저장되어 있지 않습니다.`) };
+      return;
+    }
+
+    if (provider === 'gemini' && isGeminiFreeTier_()) {
+      deferred.push(index);
       return;
     }
 
@@ -2769,7 +2776,7 @@ function fetchAiBatch_(requests) {
     }
   });
 
-  return { outcomes, codes, fetchError, sentIndexes: sendable.map(item => item.index) };
+  return { outcomes, codes, fetchError, sentIndexes: sendable.map(item => item.index).concat(deferred).sort((a, b) => a - b) };
 }
 
 // fetchAiBatch_로 한꺼번에 보낸 뒤, 오류(429 등)이거나 잘렸거나 네트워크가 끊긴 요청만 callAi_로 하나씩 다시 보내
@@ -2843,6 +2850,8 @@ function clearPrefetchedAi_() {
 
 function isFastGenerationOn_(config) {
   if (String((config && config.FAST_GENERATION) || '').trim().toUpperCase() !== 'ON') return false;
+  // Gemini 무료 키는 분당 5회라 미리 받기가 도움이 안 되고 한도만 빨리 쓴다.
+  if (normalizeAiProvider_(config.AI_PROVIDER) === 'gemini' && isGeminiFreeTier_()) return false;
 
   const pausedUntil = Number(PropertiesService.getUserProperties().getProperty(FAST_GENERATION_PAUSED_UNTIL_PROPERTY) || 0);
   return Date.now() >= pausedUntil;
@@ -3288,8 +3297,12 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
   let reasoningRetryUsed = false;
   let lastErrorMessage = '';
 
+  // 무료 키는 다시 보내는 요청까지 모두 한도(GeminiQuota.js) 안에서 보낸다.
+  const freeTier = isGeminiFreeTier_();
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res;
+    const reservation = freeTier ? reserveGeminiFreeRequest_(estimateGeminiRequestTokens_(payload)) : null;
 
     try {
       res = fetchAiWithinBudget_(AI_API_ENDPOINTS.gemini.url, buildAiFetchOptions_('gemini', apiKey, payload));
@@ -3307,6 +3320,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
 
     if (code >= 200 && code < 300) {
       const json = JSON.parse(body);
+      if (reservation) recordGeminiFreeUsage_(reservation, json.usage || json.usage_metadata || json.usageMetadata);
 
       if (isGeminiOutputTruncated_(json) && !outputTokenRetryUsed) {
         outputTokenRetryUsed = true;
@@ -3340,8 +3354,16 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
       continue;
     }
 
+    if (freeTier && code === 429) {
+      // 거절된 요청은 하루 횟수에서 돌려놓되, 분당 기록에는 남겨 둔다.
+      if (markGeminiDailyQuotaExhausted_(body)) throw geminiDailyLimitError_(Date.now());
+      refundGeminiFreeRequest_(reservation);
+    }
+
     if ([408, 409, 429, 500, 502, 503, 504].includes(code)) {
-      const waitMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000);
+      // 무료 키가 분당 한도에 걸렸으면(다른 곳에서 같은 키를 쓴 경우) 짧게 기다려 봐야 또 거절된다.
+      const baseMs = freeTier && code === 429 ? 20000 : 2000 * Math.pow(2, attempt - 1);
+      const waitMs = baseMs + Math.floor(Math.random() * 1000);
       sleepWithinAiBudget_(Math.min(waitMs, 30000));
       continue;
     }

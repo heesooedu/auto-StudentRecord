@@ -8,6 +8,10 @@ const MODEL_CATALOG_URLS = {
   gpt: 'https://api.openai.com/v1/models',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
 };
+// Gemini 정식 계열. 버전이 올라가면(예: gemini-4.1-hydrogen, gemini-5-flash) 자동으로 최신이 잡힌다.
+// 새 계열 이름이 생기면 여기와 GEMINI_MODEL_ID_PATTERN에 단어만 추가한다.
+const GEMINI_MODEL_FAMILIES = ['hydrogen', 'flash'];
+const GEMINI_MODEL_ID_PATTERN = /^gemini-(\d+(?:\.\d+)*)-(hydrogen|flash)(?:-(\d{3}))?$/;
 let modelCatalogMemo_ = {};
 
 function modelCatalogCacheKey_(provider, key) {
@@ -56,9 +60,9 @@ function selectCatalogModels_(provider, rows) {
       if (!match) return;
       family = match[2]; version = match[1];
     } else {
-      match = id.match(/^gemini-(\d+(?:\.\d+)*)-flash(?:-(\d{3}))?$/);
+      match = id.match(GEMINI_MODEL_ID_PATTERN);
       if (!match || !(row.supportedGenerationMethods || []).includes('generateContent')) return;
-      family = 'flash'; version = match[1];
+      family = match[2]; version = match[1];
     }
     const item = {
       id, family, version,
@@ -69,11 +73,17 @@ function selectCatalogModels_(provider, rows) {
     const group = family + ':' + version;
     const old = versions[group];
     // 같은 버전은 기본 ID를 우선하며, 기본 ID가 없으면 최신 스냅샷을 고른다.
-    const base = provider === 'claude' ? `claude-${family}-${version}` : provider === 'gpt' ? `gpt-${version}-${family}` : `gemini-${version}-flash`;
+    const base = provider === 'claude' ? `claude-${family}-${version}` : provider === 'gpt' ? `gpt-${version}-${family}` : `gemini-${version}-${family}`;
     if (!old || id === base || (old.id !== base && compareModelVersions_(item, old) < 0)) versions[group] = item;
   });
   const sorted = Object.keys(versions).map(k => versions[k]).sort(compareModelVersions_);
-  if (provider === 'gemini') return sorted.slice(0, 2);
+  if (provider === 'gemini') {
+    // 계열마다 최신 버전을 보여 주고, Flash는 바로 이전 버전도 함께 남긴다.
+    return GEMINI_MODEL_FAMILIES.reduce((list, family) => {
+      const ofFamily = sorted.filter(m => m.family === family);
+      return list.concat(ofFamily.slice(0, family === 'flash' ? 2 : 1));
+    }, []).sort(compareModelVersions_);
+  }
   return (provider === 'claude' ? ['haiku', 'sonnet'] : ['luna', 'terra'])
     .map(family => sorted.find(m => m.family === family)).filter(Boolean);
 }

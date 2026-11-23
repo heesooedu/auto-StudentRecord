@@ -24,11 +24,20 @@ function harness() {
     },
     UrlFetchApp: { fetch: (url, options) => { requests.push({ url, options }); return c.nextResponse(url, options); } },
     SpreadsheetApp: { getActiveSpreadsheet: () => ({ toast: (...args) => notices.push(args) }) },
+    LockService: { getUserLock: () => ({ waitLock() {}, releaseLock() {} }) },
   });
-  for (const f of ['Code.js', 'ModelCatalog.js', 'Ui.js', 'UiOcr.js']) vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), c, { filename: f });
+  c.Utilities.formatDate = formatDate;
+  c.Utilities.sleep = () => {};
+  for (const f of ['Code.js', 'GeminiQuota.js', 'ModelCatalog.js', 'Ui.js', 'UiOcr.js']) vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), c, { filename: f });
   c.log_ = () => {};
   c.nextResponse = () => response(200, { data: [] });
   return { c, props, cache, requests, notices, propertyStore };
+}
+function formatDate(date, timeZone, pattern) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', timeZoneName: 'longOffset' })
+    .formatToParts(date).map(p => [p.type, p.value]));
+  if (pattern === 'Z') return (parts.timeZoneName.replace('GMT', '') || '+00:00').replace(':', '');
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 const response = (status, body) => ({ getResponseCode: () => status, getContentText: () => JSON.stringify(body) });
 const plain = x => JSON.parse(JSON.stringify(x));
@@ -54,6 +63,12 @@ test('families, stable releases, numeric versions and aliases are filtered befor
   assert.deepEqual(ids('claude', [{ id: 'claude-haiku-5-5', lifecycle: 'retired' }]), []);
   assert.deepEqual(ids('claude', [{ id: 'claude-haiku-5-5', line: 'opus' }]), []);
   assert.deepEqual(ids('gemini', ['gemini-3.8-flash-001', 'gemini-3.8-flash-002'].map(gemini)), ['gemini-3.8-flash-002']);
+  assert.deepEqual(ids('gemini', [
+    'gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-4-hydrogen-preview', 'gemini-4-hydrogen-lite',
+  ].map(gemini)), ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-3.7-flash']);
+  assert.deepEqual(ids('gemini', [
+    'gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-4.1-hydrogen', 'gemini-4.1-hydrogen-001',
+  ].map(gemini)), ['gemini-4.1-hydrogen', 'gemini-3.8-flash']);
 });
 
 test('pagination, headers, cache expiry, refresh and key isolation', () => {
@@ -240,4 +255,86 @@ test('single and parallel payloads normalize high effort; explicit GPT retry occ
   assert.equal(sent[1].reasoning.effort, 'low');
   c.fetchAiWithinBudget_ = () => response(400, { error: { param: 'reasoning.effort', message: "Unsupported value. Supported values are: 'high', 'max'." } });
   assert.throws(() => c.callOpenAi_('gpt-7-luna', 'test', 'test', 'medium'));
+});
+
+function quotaHarness(start = Date.UTC(2026, 10, 23, 12, 0, 0)) {
+  const h = harness();
+  let now = start;
+  class FakeDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  }
+  h.c.Date = FakeDate;
+  h.slept = [];
+  h.c.sleepWithinAiBudget_ = ms => { h.slept.push(ms); now += ms; };
+  h.advance = ms => { now += ms; };
+  h.props.set('GEMINI_API_KEY', 'key');
+  return h;
+}
+
+test('Gemini free key waits for 5 requests per minute and stops at 20 per day', () => {
+  const h = quotaHarness();
+  let sent = 0;
+  h.c.fetchAiWithinBudget_ = () => { sent++; return response(200, { output_text: 'ok', usage: { total_tokens: 100 } }); };
+  for (let i = 0; i < 5; i++) h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
+  assert.equal(h.slept.length, 0);
+  h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
+  assert.equal(h.slept.length, 1);
+  assert.ok(h.slept[0] >= 60000 && h.slept[0] < 61000);
+  for (let i = 6; i < 20; i++) h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
+  assert.equal(sent, 20);
+  assert.throws(() => h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low'), /하루 요청 한도\(20회\).*할당량/);
+  assert.equal(sent, 20);
+  assert.equal(h.c.classifyRecordDraftError_('Gemini 무료 키의 하루 요청 한도(20회)를 다 썼어요. (무료 할당량 소진)').reason, 'API 호출 한도 또는 속도 제한');
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 20);
+  h.advance(24 * 3600 * 1000);
+  h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 1);
+});
+
+test('Gemini free key keeps tokens per minute under 250k', () => {
+  const h = quotaHarness();
+  h.c.fetchAiWithinBudget_ = () => response(200, { output_text: 'ok' });
+  const big = 'x'.repeat(120000);
+  h.c.callGemini_('gemini-4-hydrogen', 's', big, 'low');
+  h.c.callGemini_('gemini-4-hydrogen', 's', big, 'low');
+  assert.equal(h.slept.length, 0);
+  h.c.callGemini_('gemini-4-hydrogen', 's', big, 'low');
+  assert.equal(h.slept.length, 1, 'third large request would pass 250k tokens');
+});
+
+test('Gemini paid key skips the limiter; free 429 per-day stops and per-minute is refunded', () => {
+  const h = quotaHarness();
+  h.c.uiSetGeminiKeyTier('paid');
+  let sent = 0;
+  h.c.fetchAiWithinBudget_ = () => { sent++; return response(200, { output_text: 'ok' }); };
+  for (let i = 0; i < 25; i++) h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
+  assert.equal(sent, 25);
+  assert.equal(h.slept.length, 0);
+  assert.equal(h.props.get('GEMINI_FREE_USAGE'), undefined);
+
+  h.c.uiSetGeminiKeyTier('free');
+  let calls = 0;
+  h.c.fetchAiWithinBudget_ = () => (++calls === 1
+    ? response(429, { error: { message: 'Quota exceeded for metric generate_requests_per_minute' } })
+    : response(200, { output_text: 'ok' }));
+  h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 1);
+
+  h.c.fetchAiWithinBudget_ = () => response(429, { error: { message: 'Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier' } });
+  assert.throws(() => h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low'), /하루 요청 한도/);
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 20);
+});
+
+test('Gemini free key is never sent in a parallel batch or prefetch', () => {
+  const h = quotaHarness();
+  let fetchAll = 0;
+  h.c.UrlFetchApp.fetchAll = () => { fetchAll++; return []; };
+  const req = { provider: 'gemini', model: 'gemini-4-hydrogen', systemGuide: 's', userPrompt: 'u', reasoning: 'low' };
+  const batch = h.c.fetchAiBatch_([req, req]);
+  assert.equal(fetchAll, 0);
+  assert.deepEqual(plain(batch.sentIndexes), [0, 1]);
+  assert.equal(h.c.isFastGenerationOn_({ FAST_GENERATION: 'ON', AI_PROVIDER: 'gemini' }), false);
+  h.c.uiSetGeminiKeyTier('paid');
+  assert.equal(h.c.isFastGenerationOn_({ FAST_GENERATION: 'ON', AI_PROVIDER: 'gemini' }), true);
 });

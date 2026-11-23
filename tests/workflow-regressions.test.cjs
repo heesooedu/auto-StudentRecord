@@ -50,11 +50,11 @@ function server(sheets = {}) {
   const c = vm.createContext({
     console, Date,
     PropertiesService: { getUserProperties: () => store, getDocumentProperties: () => store },
-    LockService: { getScriptLock: () => lock, getDocumentLock: () => lock },
+    LockService: { getScriptLock: () => lock, getDocumentLock: () => lock, getUserLock: () => lock },
     SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: name => sheets[name] }), flush() {}, WrapStrategy: { WRAP: 'WRAP' } },
-    ScriptApp: { getProjectTriggers: () => [] }, Utilities: { sleep() {} },
+    ScriptApp: { getProjectTriggers: () => [] }, Utilities: { sleep() {}, formatDate: (d, tz, pattern) => pattern === 'Z' ? '-0800' : new Date(d).toISOString().slice(0, 10) },
   });
-  for (const file of ['Code.js', 'ModelCatalog.js', 'Ui.js', 'UiTools.js', 'UiOcr.js']) vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), c, { filename: file });
+  for (const file of ['Code.js', 'GeminiQuota.js', 'ModelCatalog.js', 'Ui.js', 'UiTools.js', 'UiOcr.js']) vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), c, { filename: file });
   c.log_ = () => {};
   c.withDocumentLock_ = fn => fn();
   return { c, props };
