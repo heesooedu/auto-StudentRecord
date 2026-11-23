@@ -721,28 +721,30 @@ function uiGetGrading() {
   return { assignments: Array.from(assignments.values()), rows };
 }
 
-function uiSaveGradingRubric(assignmentKey, maxScore, rubric) {
+// assignmentKeys는 과제 키 하나 또는 여러 개다. 여러 반 과제를 묶어 채점할 때 같은 기준을 과제마다 저장한다.
+function uiSaveGradingRubric(assignmentKeys, maxScore, rubric) {
   const max = normalizeGradingMaxScore_(maxScore);
   const text = String(rubric || '').trim();
+  const keys = Array.from(new Set([].concat(assignmentKeys || []).map(String).filter(Boolean)));
 
   if (!max) throw new Error('만점은 0보다 큰 숫자로 적어 주세요.');
   if (!text) throw new Error('채점 기준을 입력해 주세요.');
+  if (!keys.length) throw new Error('과제를 찾을 수 없습니다. 새로고침해 주세요.');
 
-  const submission = listGradingSubmissions_().find(s => `${s.courseId}|${s.courseWorkId}` === String(assignmentKey));
-  if (!submission) throw new Error('과제를 찾을 수 없습니다. 새로고침해 주세요.');
+  const submissions = listGradingSubmissions_();
+  const savedAt = new Date();
+  const rows = keys.map(key => {
+    const submission = submissions.find(s => `${s.courseId}|${s.courseWorkId}` === key);
+    if (!submission) throw new Error('과제를 찾을 수 없습니다. 새로고침해 주세요.');
+    return [key, submission.courseName, submission.assignmentTitle, max, sheetSafeText_(text), savedAt];
+  });
 
   withDocumentLock_(() => {
     ensureGradingSheets_();
-    upsertByKey_(SHEET_NAMES.gradingRubrics, 'assignmentKey', [[
-      String(assignmentKey),
-      submission.courseName,
-      submission.assignmentTitle,
-      max,
-      sheetSafeText_(text),
-      new Date(),
-    ]]);
+    upsertByKey_(SHEET_NAMES.gradingRubrics, 'assignmentKey', rows);
   });
 
+  if (rows.length > 1) log_('uiSaveGradingRubric', 'OK', `과제 ${rows.length}개에 같은 채점 기준 저장`);
   return uiGetGrading();
 }
 

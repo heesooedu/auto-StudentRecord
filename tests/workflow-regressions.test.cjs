@@ -383,3 +383,68 @@ test('manual start uses hidden totals for confirmation and enables retry; status
   assert.match(message, /2개 행/); assert.equal(options.retryErrors, true);
   assert.match(c.statusPanel('manual', '행'), /quota[\s\S]*try later/);
 });
+
+test('grading rubric saves one shared rubric for several class assignments', () => {
+  const { c } = server();
+  const saved = [];
+  c.listGradingSubmissions_ = () => [
+    { courseId: 'c1', courseWorkId: 'w1', courseName: '1반', assignmentTitle: '감상문' },
+    { courseId: 'c1', courseWorkId: 'w1', courseName: '1반', assignmentTitle: '감상문' },
+    { courseId: 'c2', courseWorkId: 'w2', courseName: '2반', assignmentTitle: '감상문' },
+  ];
+  c.ensureGradingSheets_ = () => {};
+  c.upsertByKey_ = (name, key, rows) => saved.push(...plain(rows));
+  c.uiGetGrading = () => 'data';
+
+  assert.equal(c.uiSaveGradingRubric(['c1|w1', 'c2|w2', 'c1|w1'], '50', '=요소 5개'), 'data');
+  assert.deepEqual(saved.map(r => r.slice(0, 5)), [
+    ['c1|w1', '1반', '감상문', 50, "'=요소 5개"],
+    ['c2|w2', '2반', '감상문', 50, "'=요소 5개"],
+  ]);
+
+  saved.length = 0;
+  c.uiSaveGradingRubric('c2|w2', 20, '기준');
+  assert.deepEqual(saved.map(r => r[0]), ['c2|w2']);
+
+  saved.length = 0;
+  assert.throws(() => c.uiSaveGradingRubric(['c1|w1', 'c9|w9'], 20, '기준'), /과제를 찾을 수 없습니다/);
+  assert.equal(saved.length, 0);
+});
+
+test('grading client groups same-title class assignments and needs one shared rubric', () => {
+  const c = client();
+  const a = (key, courseName, title, rubric = '') => ({ key, courseName, assignmentTitle: title, maxPoints: 100, maxScore: rubric ? 50 : '', rubric });
+  vm.runInContext('S', c).grading = {
+    assignments: [a('k1', '1반', '감상문', '기준'), a('k2', '2반', ' 감상문 ', '다른 기준'), a('k3', '3반', '감상문'), a('k4', '1반', '보고서')],
+    rows: [
+      { key: 's3', assignmentKey: 'k2', studentNo: '10', studentName: '다' },
+      { key: 's1', assignmentKey: 'k1', studentNo: '2', studentName: '가' },
+      { key: 's2', assignmentKey: 'k1', studentNo: '10', studentName: '나' },
+      { key: 's4', assignmentKey: 'k4', studentNo: '1', studentName: '라' },
+    ],
+  };
+  const S = vm.runInContext('S', c);
+  S.gradingKey = 'k1';
+  const run = code => plain(vm.runInContext(code, c));
+  assert.deepEqual(run('gradingSameTitle(gradingAssignment()).map(x => x.key)'), ['k2', 'k3']);
+  assert.equal(run('groupRubricReady(gradingGroup())'), true);
+
+  S.selected = new Set(['s1', 's2']);
+  vm.runInContext("TOOL_ACTIONS['grading-with-same']()", c);
+  assert.deepEqual(run('gradingGroup().map(x => x.key)'), ['k1', 'k2', 'k3']);
+  assert.deepEqual(run('gradingRows().map(r => r.key)'), ['s1', 's2', 's3']);
+  assert.equal(run('groupRubricReady(gradingGroup())'), false);
+  assert.match(run('gradingReadyHelp(gradingGroup())'), /3개 과제에 채점 기준 저장/);
+  assert.equal(run('rubricCanSave(gradingGroup())'), true);
+  assert.deepEqual(run('rubricValues(gradingGroup())'), { maxScore: '50', rubric: '기준' });
+
+  vm.runInContext("TOOL_ACTIONS['grading-with']({ checked: false, dataset: { key: 'k1' } })", c);
+  vm.runInContext("TOOL_ACTIONS['grading-with']({ checked: false, dataset: { key: 'k2' } })", c);
+  assert.deepEqual(run('gradingGroup().map(x => x.key)'), ['k1', 'k3']);
+  assert.deepEqual([...S.selected], ['s1', 's2']);
+
+  S.grading.assignments[2] = a('k3', '3반', '감상문', '기준');
+  assert.equal(run('groupRubricReady(gradingGroup())'), true);
+  S.rubricEdits.k1 = { maxScore: '50', rubric: '바뀐 기준' };
+  assert.equal(run('groupRubricDirty(gradingGroup())'), true);
+});

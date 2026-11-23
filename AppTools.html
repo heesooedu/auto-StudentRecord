@@ -1161,11 +1161,55 @@
     return list.find(a => a.key === S.gradingKey) || list[0] || null;
   }
 
-  function gradingRows() {
+  // 기준 과제와 [함께 채점할 과제]로 고른 과제들. 기준 과제가 맨 앞이다.
+  function gradingGroup() {
     const a = gradingAssignment();
+    if (!a) return [];
+    const list = S.grading.assignments;
+    return [a].concat(S.gradingWith
+      .filter(key => key !== a.key)
+      .map(key => list.find(x => x.key === key))
+      .filter(Boolean));
+  }
+
+  function gradingTitle(a) {
+    return String(a.assignmentTitle || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function gradingSameTitle(a) {
+    const title = gradingTitle(a);
+    return ((S.grading && S.grading.assignments) || []).filter(x => x.key !== a.key && gradingTitle(x) === title);
+  }
+
+  function gradingCourseNames() {
+    const names = {};
+    ((S.grading && S.grading.assignments) || []).forEach(a => { names[a.key] = a.courseName; });
+    return names;
+  }
+
+  function gradingRows() {
+    const group = gradingGroup();
+    const keys = new Set(group.map(a => a.key));
     const text = S.filters.search.trim().toLowerCase();
-    return ((S.grading && S.grading.rows) || []).filter(r =>
-      a && r.assignmentKey === a.key && (!text || `${r.studentNo} ${r.studentName}`.toLowerCase().includes(text)));
+    const rows = ((S.grading && S.grading.rows) || []).filter(r =>
+      keys.has(r.assignmentKey) && (!text || `${r.studentNo} ${r.studentName}`.toLowerCase().includes(text)));
+    if (keys.size < 2) return rows;
+    // 여러 반을 묶으면 반(수업)별로 모아 번호순으로 보여 준다.
+    const names = gradingCourseNames();
+    const byText = (x, y) => String(x || '').localeCompare(String(y || ''), 'ko', { numeric: true });
+    return rows.slice().sort((x, y) =>
+      byText(names[x.assignmentKey], names[y.assignmentKey]) || byText(x.studentNo, y.studentNo));
+  }
+
+  // 함께 채점할 과제를 바꾸면 묶음에서 빠진 과제의 학생 선택은 푼다.
+  function setGradingWith(keys) {
+    S.gradingWith = keys;
+    const groupKeys = new Set(gradingGroup().map(a => a.key));
+    S.selected = new Set(Array.from(S.selected).filter(key => {
+      const r = findGrade(key);
+      return r && groupKeys.has(r.assignmentKey);
+    }));
+    render();
   }
 
   function gradingRubricSaved(a) {
@@ -1177,70 +1221,133 @@
     return String(value || '').replace(/\r\n?/g, '\n').trim();
   }
 
+  function rubricSame(x, y) {
+    return Number(x.maxScore || 0) === Number(y.maxScore || 0) && rubricText(x.rubric) === rubricText(y.rubric);
+  }
+
+  // 묶음에서 화면에 처음 보여 줄 저장된 기준: 기준 과제 것, 없으면 묶음에서 먼저 저장된 과제 것.
+  function rubricBase(group) {
+    return group.find(gradingRubricSaved) || group[0];
+  }
+
   function rubricDirty(a) {
     const edit = a && S.rubricEdits[a.key];
-    return !!edit && (Number(edit.maxScore || 0) !== Number(a.maxScore || 0) || rubricText(edit.rubric) !== rubricText(a.rubric));
+    return !!edit && !rubricSame(edit, a);
+  }
+
+  function groupRubricDirty(group) {
+    const edit = S.rubricEdits[group[0].key];
+    return !!edit && !rubricSame(edit, rubricBase(group));
+  }
+
+  // 묶음의 모든 과제에 같은 기준이 저장되어 있어야 채점할 수 있다.
+  function groupRubricReady(group) {
+    const base = rubricBase(group);
+    return group.every(x => gradingRubricSaved(x) && rubricSame(x, base));
   }
 
   function gradingUnsavedRubrics() {
     return ((S.grading && S.grading.assignments) || []).filter(rubricDirty);
   }
 
-  function rubricValues(a) {
+  function rubricValues(group) {
+    const a = group[0];
+    const base = rubricBase(group);
     const edit = S.rubricEdits[a.key];
-    return edit || { maxScore: String(a.maxScore || a.maxPoints || ''), rubric: String(a.rubric || '') };
+    return edit || { maxScore: String(base.maxScore || a.maxPoints || ''), rubric: String(base.rubric || '') };
   }
 
-  // 저장한 기준과 다르거나, 아직 저장하지 않았는데 내용이 있으면 저장할 수 있다.
-  function rubricCanSave(a) {
-    return rubricDirty(a) || (!gradingRubricSaved(a) && !!rubricValues(a).rubric.trim());
+  // 저장한 기준과 다르거나, 묶음의 기준이 아직 맞춰지지 않았는데 내용이 있으면 저장할 수 있다.
+  function rubricCanSave(group) {
+    return groupRubricDirty(group) || (!groupRubricReady(group) && !!rubricValues(group).rubric.trim());
   }
 
-  function rubricPill(a) {
-    if (!gradingRubricSaved(a)) return '<span class="pill warn">입력 필요</span>';
-    return rubricDirty(a) ? '<span class="pill warn">저장 안 함</span>' : '<span class="pill ok">저장됨</span>';
+  function rubricPill(group) {
+    if (groupRubricDirty(group)) return '<span class="pill warn">저장 안 함</span>';
+    if (groupRubricReady(group)) return '<span class="pill ok">저장됨</span>';
+    return group.length > 1 && group.some(gradingRubricSaved)
+      ? '<span class="pill warn">과제마다 다름</span>' : '<span class="pill warn">입력 필요</span>';
   }
 
-  function gradingReadyHelp(a) {
-    if (!gradingRubricSaved(a)) return '채점 기준과 만점을 저장해야 채점할 수 있어요.';
-    return rubricDirty(a) ? '바꾼 채점 기준을 저장해야 채점할 수 있어요.' : '';
+  function gradingReadyHelp(group) {
+    if (groupRubricDirty(group)) return '바꾼 채점 기준을 저장해야 채점할 수 있어요.';
+    if (groupRubricReady(group)) return '';
+    if (group.length > 1 && group.some(gradingRubricSaved)) {
+      return `함께 고른 과제 중 채점 기준이 다르거나 없는 과제가 있어요. [${group.length}개 과제에 채점 기준 저장]을 누르면 모두 같은 기준으로 맞춰져요.`;
+    }
+    return '채점 기준과 만점을 저장해야 채점할 수 있어요.';
   }
 
-  function gradingCanStart(a) {
-    return !S.busy && S.boot.status.grading.state !== 'ON' && S.selected.size > 0 && !gradingReadyHelp(a);
+  function gradingCanStart(group) {
+    return !S.busy && S.boot.status.grading.state !== 'ON' && S.selected.size > 0 && !gradingReadyHelp(group);
   }
 
   // 입력 중에는 화면을 다시 그리지 않으므로, 저장 상태가 드러나는 곳만 바로 바꾼다.
-  function syncRubricState(a) {
+  function syncRubricState(group) {
     const save = document.querySelector('[data-action="save-rubric"]');
     const start = document.querySelector('[data-action="make-grades"]');
     const pill = $('#rubric-pill');
     const help = $('#grading-ready-help');
-    if (save) save.disabled = !rubricCanSave(a);
-    if (start) start.disabled = !gradingCanStart(a);
-    if (pill) pill.innerHTML = rubricPill(a);
+    if (save) save.disabled = !rubricCanSave(group);
+    if (start) start.disabled = !gradingCanStart(group);
+    if (pill) pill.innerHTML = rubricPill(group);
     if (help) {
-      help.textContent = gradingReadyHelp(a);
+      help.textContent = gradingReadyHelp(group);
       help.style.display = help.textContent ? '' : 'none';
     }
   }
 
-  function gradingRubricCard(a) {
-    const saved = gradingRubricSaved(a);
-    const values = rubricValues(a);
+  function gradingGroupCard(group) {
+    const list = S.grading.assignments;
+    if (list.length < 2) return '';
+    const a = group[0];
+    const same = gradingSameTitle(a);
+    const sameKeys = new Set(same.map(x => x.key));
+    const rest = list.filter(x => x.key !== a.key && !sameKeys.has(x.key));
+    const chosen = new Set(group.map(x => x.key));
+    const restChosen = rest.filter(x => chosen.has(x.key)).length;
+    const item = (x, sameTitle) => `
+      <label class="row small">
+        <input type="checkbox" data-action="grading-with" data-key="${esc(x.key)}" ${chosen.has(x.key) ? 'checked' : ''}>
+        ${esc(x.courseName)} · ${esc(x.assignmentTitle)}
+        ${sameTitle ? '<span class="pill run">같은 제목</span>' : ''}
+        ${gradingRubricSaved(x) ? '' : '<span class="muted">(기준 없음)</span>'}
+      </label>`;
     return `
-      <div class="card ${saved ? '' : 'hero'}">
+      <div class="card">
         <div class="row between">
-          <div class="prompt-card-title">채점 기준 <span id="rubric-pill">${rubricPill(a)}</span></div>
+          <div class="prompt-card-title">함께 채점할 과제 ${group.length > 1 ? `<span class="pill ok">${group.length}개 과제 묶음</span>` : ''}</div>
+          ${same.length ? `<button class="btn" data-action="grading-with-same" ${same.every(x => chosen.has(x.key)) ? 'disabled' : ''}>같은 제목 모두 선택</button>` : ''}
+        </div>
+        <p class="muted small" style="margin:6px 0 10px">다른 반에 낸 같은 과제를 함께 고르면 채점 기준을 한 번에 저장하고, 여러 반 학생을 한 목록에서 골라 채점할 수 있어요.</p>
+        ${same.length ? `<div style="display:grid;gap:6px">${same.map(x => item(x, true)).join('')}</div>`
+          : '<p class="muted small" style="margin:0">제목이 같은 다른 과제는 없어요.</p>'}
+        ${rest.length ? `
+          <details class="small" ${restChosen ? 'open' : ''}>
+            <summary class="small">제목이 다른 과제 (${rest.length}개${restChosen ? `, ${restChosen}개 고름` : ''})</summary>
+            <div style="display:grid;gap:6px;margin-top:6px">${rest.map(x => item(x, false)).join('')}</div>
+          </details>` : ''}
+      </div>`;
+  }
+
+  function gradingRubricCard(group) {
+    const a = group[0];
+    const ready = groupRubricReady(group);
+    const values = rubricValues(group);
+    const many = group.length > 1;
+    return `
+      <div class="card ${ready ? '' : 'hero'}">
+        <div class="row between">
+          <div class="prompt-card-title">채점 기준 <span id="rubric-pill">${rubricPill(group)}</span></div>
           ${a.description ? '<button class="btn" data-action="copy-description">과제 본문 복사해 오기</button>' : ''}
         </div>
-        <p class="muted small" style="margin:6px 0 10px">이 과제를 채점할 기준이에요. AI는 여기에 저장한 기준으로만 채점해요. 평가 요소와 충족 개수별 점수처럼 점수를 정하는 방법까지 적어 주세요.</p>
+        <p class="muted small" style="margin:6px 0 10px">${many ? `묶은 과제 ${group.length}개를 채점할 기준이에요. 저장하면 ${group.length}개 과제에 모두 같은 기준과 만점이 저장돼요.` : '이 과제를 채점할 기준이에요.'} AI는 여기에 저장한 기준으로만 채점해요. 평가 요소와 충족 개수별 점수처럼 점수를 정하는 방법까지 적어 주세요.</p>
         <label class="field"><span>만점</span>
           <input type="number" id="grading-max" class="length-input" style="width:96px" min="0" step="any" value="${esc(values.maxScore)}"></label>
         <label class="field"><span>채점 기준</span>
           <textarea id="grading-rubric" rows="10" placeholder="예: 평가 요소 5개 중 충족한 개수에 따라 5개 50점, 4개 30점, 3개 20점, 2개 10점, 0~1개 3점">${esc(values.rubric)}</textarea></label>
         <div class="row" style="justify-content:flex-end">
-          <button class="btn primary" data-action="save-rubric" ${rubricCanSave(a) ? '' : 'disabled'}>채점 기준 저장</button>
+          <button class="btn primary" data-action="save-rubric" ${rubricCanSave(group) ? '' : 'disabled'}>${many ? `${group.length}개 과제에 채점 기준 저장` : '채점 기준 저장'}</button>
         </div>
       </div>`;
   }
@@ -1256,7 +1363,7 @@
     return '<span class="pill ok">채점 완료</span>';
   }
 
-  function gradingCard(r) {
+  function gradingCard(r, courseName) {
     const edit = S.edits[`grading:${r.key}`] || {};
     const score = edit.score !== undefined ? edit.score : r.score;
     const reason = edit.reason !== undefined ? edit.reason : r.reason;
@@ -1268,6 +1375,7 @@
           <label class="row">
             <input type="checkbox" data-action="select-one" data-key="${esc(r.key)}" ${S.selected.has(r.key) ? 'checked' : ''}>
             <b>${esc(r.studentNo)} ${esc(r.studentName)}</b>
+            ${courseName ? `<span class="pill">${esc(courseName)}</span>` : ''}
             ${gradeStatusPill(r)}
           </label>
           ${done ? `<label class="row small"><input type="checkbox" data-action="check-grade" data-key="${esc(r.key)}" ${r.teacherChecked ? 'checked' : ''}> 확인함 (초안에 반영)</label>` : ''}
@@ -1302,11 +1410,13 @@
       <div style="margin-top:12px"><button class="btn primary" data-go="collect">과제·제출물 수집으로 이동</button></div></div>`;
 
     const a = gradingAssignment();
+    const group = gradingGroup();
+    const courseNames = group.length > 1 ? gradingCourseNames() : {};
     const st = S.boot.status.grading;
     const running = st.state === 'ON';
     const rows = gradingRows();
     const shown = rows.slice(0, S.pageSize.grading);
-    const readyHelp = gradingReadyHelp(a);
+    const readyHelp = gradingReadyHelp(group);
     const allSelected = rows.length > 0 && rows.every(r => S.selected.has(r.key));
     const results = rows.filter(r => r.row);
 
@@ -1316,7 +1426,8 @@
         <select id="grading-assignment" class="grow">${d.assignments.map(x => `<option value="${esc(x.key)}" ${x.key === a.key ? 'selected' : ''}>${esc(x.courseName)} · ${esc(x.assignmentTitle)}${gradingRubricSaved(x) ? '' : ' (기준 입력 필요)'}</option>`).join('')}</select>
       </div>
       <div class="help" style="margin-bottom:12px">수집을 마친 과제 <b>${d.assignments.length}</b>개가 위 목록에 있어요. 목록에 없는 과제는 [과제·제출물 수집]을 먼저 해 주세요.</div>
-      ${gradingRubricCard(a)}
+      ${gradingGroupCard(group)}
+      ${gradingRubricCard(group)}
       ${promptCard('GRADING_GUIDE', '채점 공통 지침 확인')}
       ${statusPanel('grading', '개')}
       ${!running && st.remaining > 0 ? `
@@ -1333,12 +1444,12 @@
         <button class="btn" data-action="select-clear">선택 해제</button>
         <span class="grow"></span>
         <span class="muted">선택 <b>${S.selected.size}</b>개</span>
-        <button class="btn primary" data-action="make-grades" ${gradingCanStart(a) ? '' : 'disabled'}>선택한 ${S.selected.size}개 채점하기</button>
+        <button class="btn primary" data-action="make-grades" ${gradingCanStart(group) ? '' : 'disabled'}>선택한 ${S.selected.size}개 채점하기</button>
       </div>
       <div class="help" id="grading-ready-help" ${readyHelp ? '' : 'style="display:none"'}>${esc(readyHelp)}</div>
       ${results.length ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px">
         <button class="btn danger" data-action="delete-grades-filtered" ${S.busy || running ? 'disabled' : ''}>목록의 결과 ${results.length}개 모두 지우기</button></div>` : ''}
-      ${shown.map(gradingCard).join('') || '<div class="card empty">조건에 맞는 제출물이 없어요.</div>'}
+      ${shown.map(r => gradingCard(r, courseNames[r.assignmentKey])).join('') || '<div class="card empty">조건에 맞는 제출물이 없어요.</div>'}
       ${rows.length > shown.length ? `<button class="btn" data-action="more" data-kind="grading">더 보기 (${rows.length - shown.length}개 남음)</button>` : ''}`;
   }
 
@@ -1368,17 +1479,27 @@
 
   const GRADING_ACTIONS = {
     async 'save-rubric'() {
-      const a = gradingAssignment();
-      const values = rubricValues(a);
+      const group = gradingGroup();
+      const values = rubricValues(group);
       await withBusy('채점 기준을 저장하는 중…', async () => {
-        S.grading = await call('uiSaveGradingRubric', a.key, values.maxScore, values.rubric);
-        delete S.rubricEdits[a.key];
-        banner('채점 기준을 저장했어요.', 'ok');
+        S.grading = await call('uiSaveGradingRubric', group.map(x => x.key), values.maxScore, values.rubric);
+        group.forEach(x => delete S.rubricEdits[x.key]);
+        banner(group.length > 1 ? `과제 ${group.length}개에 채점 기준을 저장했어요.` : '채점 기준을 저장했어요.', 'ok');
       });
+    },
+    'grading-with'(el) {
+      const keys = new Set(S.gradingWith);
+      if (el.checked) keys.add(el.dataset.key); else keys.delete(el.dataset.key);
+      setGradingWith(Array.from(keys));
+    },
+    'grading-with-same'() {
+      const keys = new Set(S.gradingWith);
+      gradingSameTitle(gradingAssignment()).forEach(x => keys.add(x.key));
+      setGradingWith(Array.from(keys));
     },
     async 'copy-description'() {
       const a = gradingAssignment();
-      const values = rubricValues(a);
+      const values = rubricValues(gradingGroup());
       if (values.rubric.trim() && !await confirmModal('과제 본문 복사해 오기', '지금 적힌 채점 기준을 지우고 과제 본문으로 바꿀까요?\n[채점 기준 저장]을 눌러야 실제로 쓰여요.', '바꾸기')) return;
       S.rubricEdits[a.key] = { maxScore: values.maxScore, rubric: String(a.description || '') };
       render();
@@ -1405,7 +1526,9 @@
         graded ? `이미 채점한 ${graded}개는 지금 점수를 지우고 새로 채점해요.` : '',
         checked ? `그중 확인한 ${checked}개는 확인이 풀리고, 초안에 넘긴 점수도 지워져요.` : '',
       ].filter(Boolean).join('\n');
-      if (!await confirmModal('채점하기', `선택한 제출물 ${keys.length}개를 AI로 채점할까요?${notes ? `\n${notes}` : ''}`, '채점하기')) return;
+      const assignmentCount = new Set(rows.map(r => r.assignmentKey)).size;
+      const target = assignmentCount > 1 ? `과제 ${assignmentCount}개의 제출물 ${keys.length}개` : `선택한 제출물 ${keys.length}개`;
+      if (!await confirmModal('채점하기', `${target}를 AI로 채점할까요?${notes ? `\n${notes}` : ''}`, '채점하기')) return;
       await withBusy('채점하는 중… 첫 묶음은 몇 분 걸릴 수 있어요. 창을 닫아도 계속 진행돼요.', async () => {
         await call('uiQueueGrades', keys);
         const result = await call('uiStartGrades');
@@ -1464,9 +1587,9 @@
   // 입력 중에는 다시 그리지 않고 저장 버튼만 바꾼다.
   function handleGradingInput(el) {
     if (el.id === 'grading-max' || el.id === 'grading-rubric') {
-      const a = gradingAssignment();
-      S.rubricEdits[a.key] = { maxScore: $('#grading-max').value, rubric: $('#grading-rubric').value };
-      syncRubricState(a);
+      const group = gradingGroup();
+      S.rubricEdits[group[0].key] = { maxScore: $('#grading-max').value, rubric: $('#grading-rubric').value };
+      syncRubricState(group);
       return true;
     }
     if (el.dataset.action === 'edit-grade') {
@@ -2178,6 +2301,7 @@
     }
     if (el.id === 'grading-assignment') {
       S.gradingKey = el.value;
+      S.gradingWith = [];
       S.selected = new Set();
       render();
     }
