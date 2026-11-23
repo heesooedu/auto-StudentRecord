@@ -3297,12 +3297,12 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
   let reasoningRetryUsed = false;
   let lastErrorMessage = '';
 
-  // 무료 키는 다시 보내는 요청까지 모두 한도(GeminiQuota.js) 안에서 보낸다.
+  // 무료 키는 다시 보내는 요청까지 모두 모델별 한도(GeminiQuota.js) 안에서 보낸다.
   const freeTier = isGeminiFreeTier_();
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res;
-    const reservation = freeTier ? reserveGeminiFreeRequest_(estimateGeminiRequestTokens_(payload)) : null;
+    const reservation = freeTier ? reserveGeminiFreeRequest_(payload.model, estimateGeminiRequestTokens_(payload)) : null;
 
     try {
       res = fetchAiWithinBudget_(AI_API_ENDPOINTS.gemini.url, buildAiFetchOptions_('gemini', apiKey, payload));
@@ -3356,7 +3356,7 @@ function callGemini_(model, systemGuide, userPrompt, reasoning, responseSchema, 
 
     if (freeTier && code === 429) {
       // 거절된 요청은 하루 횟수에서 돌려놓되, 분당 기록에는 남겨 둔다.
-      if (markGeminiDailyQuotaExhausted_(body)) throw geminiDailyLimitError_(Date.now());
+      if (markGeminiDailyQuotaExhausted_(payload.model, body)) throw geminiDailyLimitError_(payload.model, Date.now());
       refundGeminiFreeRequest_(reservation);
     }
 

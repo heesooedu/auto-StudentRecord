@@ -585,21 +585,34 @@
         </button>`).join('')}</div>`;
   }
 
-  function geminiTierCard(q) {
+  // 무료 한도는 모델마다 따로다. 목록에 있는 모델과 오늘 쓴 모델을 모두 보여 준다.
+  function geminiTierCard(q, selectedModel) {
     if (!q) return '';
     const free = q.tier !== 'paid';
     const option = (tier, title, desc) => `
       <button class="choice ${(tier === 'free') === free ? 'selected' : ''}" data-action="gemini-tier" data-id="${tier}" ${S.busy ? 'disabled' : ''}>
         <b>${title}</b><div class="muted small">${desc}</div>
       </button>`;
+    const catalog = catalogFor('gemini');
+    const used = q.usedByModel || {};
+    const ids = Array.from(new Set(((catalog && catalog.models) || []).map(m => m.id).concat(Object.keys(used))));
+    const rows = ids.map(id => {
+      const count = used[id] || 0;
+      const label = id === selectedModel ? `<b>${esc(id)}</b> (지금 선택)` : esc(id);
+      return `<li>${label}: ${count} / ${q.limits.rpd}회${count >= q.limits.rpd ? ' · 오늘 다 씀' : ''}</li>`;
+    }).join('');
     return `
-      <div class="field" style="margin-top:12px"><span>Gemini 키 종류</span>
+      <div class="field quota-card" style="margin-top:12px"><span>Gemini 키 종류</span>
         <div class="choices">
-          ${option('free', '무료 키', `분당 ${q.limits.rpm}회 · 하루 ${q.limits.rpd}회 한도를 지켜 천천히 보내요.`)}
+          ${option('free', '무료 키', `모델마다 분당 ${q.limits.rpm}회 · 하루 ${q.limits.rpd}회 한도를 지켜 천천히 보내요.`)}
           ${option('paid', '유료 키 (결제 연결)', '한도 걱정 없이 보내요.')}
         </div>
-        ${free ? `<div class="help">오늘 사용: ${q.usedToday} / ${q.limits.rpd}회 · ${esc(q.resetText)}에 다시 채워져요.
-          학생 한 명에 요청이 1~2번 들어가서, 무료 키로는 하루에 10~20명 정도만 만들 수 있어요.</div>` : ''}
+        ${free ? `<div class="quota-box" role="status">
+          무료 한도는 <b>모델마다 따로</b> 있어요. 전체 합쳐서 ${q.limits.rpd}회가 아니라, 모델 하나당 하루 ${q.limits.rpd}회예요.<br>
+          예를 들어 Hydrogen을 ${q.limits.rpd}회 다 써도 3.8 Flash로 바꾸면 ${q.limits.rpd}회를 또 쓸 수 있어요.
+          ${rows ? `<ul>${rows}</ul>` : ''}
+          <div class="quota-sub">오늘 사용량은 ${esc(q.resetText)}에 다시 채워져요. 학생 한 명에 요청이 1~2번 들어가서, 모델 하나로 하루 10~20명 정도 만들 수 있어요.</div>
+        </div>` : ''}
       </div>`;
   }
 
@@ -642,7 +655,7 @@
           Classroom 과제 글에 있는 학생 이름·학번·이메일은 지운 뒤 보내요.</div>
         ${b.provider === 'gemini' ? `<div class="caution" style="margin-top:8px">Gemini <b>무료</b> API 키를 쓰면 보낸 과제 내용과 AI의 답이 구글 제품 개선(AI 학습)에 쓰이고, 사람이 직접 읽을 수도 있어요.
           학생 글을 보내기 전에 Google AI Studio에서 결제(유료 등급)를 연결하는 것을 권장해요.</div>
-        ${geminiTierCard(b.geminiQuota)}` : ''}
+        ${geminiTierCard(b.geminiQuota, modelSetting && modelSetting.value)}` : ''}
 
         <label class="field"><span>${esc(provider.name)} API 키</span>
           ${hasKey ? `

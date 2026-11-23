@@ -281,15 +281,22 @@ test('Gemini free key waits for 5 requests per minute and stops at 20 per day', 
   h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
   assert.equal(h.slept.length, 1);
   assert.ok(h.slept[0] >= 60000 && h.slept[0] < 61000);
+  // 분당 한도도 모델마다 따로라 다른 모델은 기다리지 않는다.
+  for (let i = 0; i < 5; i++) h.c.callGemini_('gemini-3.7-flash', 's', 'u', 'low');
+  assert.equal(h.slept.length, 1);
   for (let i = 6; i < 20; i++) h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
-  assert.equal(sent, 20);
+  assert.equal(sent, 25);
   assert.throws(() => h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low'), /하루 요청 한도\(20회\).*할당량/);
-  assert.equal(sent, 20);
+  assert.equal(sent, 25);
   assert.equal(h.c.classifyRecordDraftError_('Gemini 무료 키의 하루 요청 한도(20회)를 다 썼어요. (무료 할당량 소진)').reason, 'API 호출 한도 또는 속도 제한');
-  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 20);
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedByModel['gemini-4-hydrogen'], 20);
+  // 한도는 모델마다 따로다: 다른 모델은 바로 보낼 수 있다.
+  h.c.callGemini_('gemini-3.8-flash', 's', 'u', 'low');
+  assert.equal(sent, 26);
+  assert.deepEqual(plain(h.c.getGeminiFreeUsageSummary_().usedByModel), { 'gemini-4-hydrogen': 20, 'gemini-3.7-flash': 5, 'gemini-3.8-flash': 1 });
   h.advance(24 * 3600 * 1000);
   h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
-  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 1);
+  assert.deepEqual(plain(h.c.getGeminiFreeUsageSummary_().usedByModel), { 'gemini-4-hydrogen': 1 });
 });
 
 test('Gemini free key keeps tokens per minute under 250k', () => {
@@ -311,7 +318,7 @@ test('Gemini paid key skips the limiter; free 429 per-day stops and per-minute i
   for (let i = 0; i < 25; i++) h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
   assert.equal(sent, 25);
   assert.equal(h.slept.length, 0);
-  assert.equal(h.props.get('GEMINI_FREE_USAGE'), undefined);
+  assert.equal(h.props.get('GEMINI_FREE_USAGE_V2'), undefined);
 
   h.c.uiSetGeminiKeyTier('free');
   let calls = 0;
@@ -319,11 +326,11 @@ test('Gemini paid key skips the limiter; free 429 per-day stops and per-minute i
     ? response(429, { error: { message: 'Quota exceeded for metric generate_requests_per_minute' } })
     : response(200, { output_text: 'ok' }));
   h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low');
-  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 1);
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedByModel['gemini-4-hydrogen'], 1);
 
   h.c.fetchAiWithinBudget_ = () => response(429, { error: { message: 'Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier' } });
-  assert.throws(() => h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low'), /하루 요청 한도/);
-  assert.equal(h.c.getGeminiFreeUsageSummary_().usedToday, 20);
+  assert.throws(() => h.c.callGemini_('gemini-4-hydrogen', 's', 'u', 'low'), /gemini-4-hydrogen 모델의 하루 요청 한도.*모델마다 따로/);
+  assert.equal(h.c.getGeminiFreeUsageSummary_().usedByModel['gemini-4-hydrogen'], 20);
 });
 
 test('Gemini free key is never sent in a parallel batch or prefetch', () => {
