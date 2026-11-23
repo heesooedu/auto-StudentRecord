@@ -26,7 +26,8 @@
     background: var(--bg);
   }
 
-  .app { display: flex; height: 100vh; }
+  /* --app-w/--app-h는 화면 배율(zoom)을 뺀 창 크기다(AppScript.html의 applyUiScale). 배율을 줘도 창에 딱 맞는다. */
+  .app { display: flex; height: var(--app-h, 100vh); }
 
   /* 왼쪽 단계 메뉴 */
   .nav {
@@ -266,7 +267,7 @@
 
   /* 모달 */
   .modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .35); display: grid; place-items: center; z-index: 10; }
-  .modal-box { width: min(820px, 92vw); max-height: 86vh; background: var(--panel); border-radius: 12px; display: flex; flex-direction: column; }
+  .modal-box { width: min(820px, calc(var(--app-w, 100vw) * .92)); max-height: calc(var(--app-h, 100vh) * .86); background: var(--panel); border-radius: 12px; display: flex; flex-direction: column; }
   .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); font-weight: 600; }
   .modal-body { padding: 16px 18px; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; }
 

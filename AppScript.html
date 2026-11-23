@@ -1731,8 +1731,29 @@
     } catch (err) { /* 크기를 못 바꾸면 처음 크기 그대로 쓴다. */ }
   }
 
+  // 창 너비에 맞춰 글자·버튼·여백을 함께 키운다. 1280px 창을 100%로 보고 90%~140% 사이로 맞춘다.
+  // zoom을 쓰면 px 값도 배율만큼 커지므로, 화면 높이·너비는 배율로 나눈 px 값(--app-h, --app-w)으로 준다.
+  const UI_SCALE = { baseWidth: 1280, min: 0.9, max: 1.4 };
+  let uiScale = 1;
+
+  function applyUiScale() {
+    const w = window.innerWidth, h = window.innerHeight;
+    if (!w || !h) return;
+    const scale = Math.round(Math.min(UI_SCALE.max, Math.max(UI_SCALE.min, w / UI_SCALE.baseWidth)) * 100) / 100;
+    const root = document.documentElement;
+    if (!root || !root.style) return;
+    if (scale !== uiScale || !root.style.getPropertyValue('--app-h')) {
+      uiScale = scale;
+      root.style.zoom = String(scale);
+    }
+    root.style.setProperty('--app-w', (w / uiScale) + 'px');
+    root.style.setProperty('--app-h', (h / uiScale) + 'px');
+  }
+
   // AppTools.html까지 읽은 뒤 시작한다.
   function startApp() {
+    applyUiScale();
+    window.addEventListener('resize', applyUiScale);
     fitDialogToWindow();
     setInterval(fitDialogToWindow, DIALOG_FIT.everyMs);
     refreshBoot()
