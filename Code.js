@@ -9641,9 +9641,9 @@ function buildGradingPrompt_(data) {
       '[과제 정보]',
       `수업명: ${data.courseName}`,
       `과제명: ${data.assignmentTitle}`,
-      `제출상태: ${data.state}`,
-      `지각제출: ${data.late}`,
-    ].join('\n'),
+      data.state !== '' && data.state != null ? `제출상태: ${data.state}` : '',
+      data.late !== '' && data.late != null ? `지각제출: ${data.late}` : '',
+    ].filter(Boolean).join('\n'),
     [
       '[과제 문항/교사 지시사항]',
       data.assignmentDescription || '(과제 설명란에 별도 지시사항 없음)',
@@ -9817,6 +9817,8 @@ function processPendingGradesCore_() {
     'submissionKey', 'studentNo', 'studentName', 'email', 'courseId', 'courseWorkId', 'courseName',
     'assignmentTitle', 'state', 'late', 'extractedText', 'assignmentDescription',
   ], 'submissionKey').map(s => [String(s.submissionKey), s]));
+  const manualSource = manualGradingSource_();
+  if (manualSource) manualSource.submissions.forEach(s => submissions.set(s.submissionKey, s));
 
   const isPending = rowValues => {
     const status = String(rowValueAt_(rowValues, h.gradeStatus) || '').trim();
@@ -9826,7 +9828,11 @@ function processPendingGradesCore_() {
   // AI에 보낼 수 없는 행은 status를, 보낼 수 있는 행은 userPrompt를 담아 돌려준다.
   const gradingInput = rowValues => {
     const submission = submissions.get(String(rowValueAt_(rowValues, h.submissionKey) || '').trim());
-    if (!submission) return { status: '오류', note: '제출물 시트에서 이 제출물을 찾지 못했습니다.' };
+    if (!submission) {
+      return { status: '오류', note: isManualGradingKey_(rowValueAt_(rowValues, h.submissionKey))
+        ? "'수동추가' 시트에서 이 학생을 찾지 못했습니다. 시트가 바뀌었다면 새로고침해 다시 골라 주세요."
+        : '제출물 시트에서 이 제출물을 찾지 못했습니다.' };
+    }
 
     const rubric = rubrics[`${submission.courseId}|${submission.courseWorkId}`];
     if (!isGradingRubricReady_(rubric)) return { status: '오류', note: '이 과제의 채점 기준이나 만점이 저장되어 있지 않습니다.' };

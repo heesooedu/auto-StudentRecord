@@ -460,6 +460,7 @@ function uiImportManualCsv(data) {
     return backup;
   });
 
+  markNewManualSet_(data && data.title);
   writeConfigValues_({
     MANUAL_START_ROW: '2',
     MANUAL_INPUT_COLS: inputCols.map(colToA1_).join(','),
@@ -568,6 +569,7 @@ function uiResetManualAll() {
     const names = targets.map(sh => sh.getName());
     targets.forEach(sh => ss.deleteSheet(sh));
     PropertiesService.getDocumentProperties().deleteProperty(MANUAL_FORM_URL_PROPERTY);
+    clearManualSet_();
     return names;
   });
   log_('uiResetManualAll', 'OK', `수동추가 초기화: ${deleted.length ? deleted.join(', ') : '지울 시트 없음'}`);
@@ -674,30 +676,142 @@ function listGradingResults_() {
   ], 'submissionKey');
 }
 
+// --- 채점: 수동추가 자료 ------------------------------------------------------
+// '수동추가' 시트(파일·설문·손글씨 추출로 만든 것)의 행도 과제 하나로 보고 채점한다.
+// 과제 키는 'manual|<묶음 id>'다. 시트를 새로 만들 때마다 묶음 id가 바뀌어, 예전 자료의 채점 결과와 섞이지 않는다.
+// 학생 키는 학번·이름(없으면 앞쪽 열 값)으로 만들어 행을 지우거나 끼워 넣어도 결과가 다른 학생에게 붙지 않는다.
+const MANUAL_GRADING_COURSE_ID = 'manual';
+const MANUAL_SET_ID_PROPERTY = 'MANUAL_SET_ID';
+const MANUAL_SET_TITLE_PROPERTY = 'MANUAL_SET_TITLE';
+
+function isManualGradingKey_(key) {
+  return String(key || '').indexOf(`${MANUAL_GRADING_COURSE_ID}|`) === 0;
+}
+
+function markNewManualSet_(title) {
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty(MANUAL_SET_ID_PROPERTY, Date.now().toString(36));
+  props.setProperty(MANUAL_SET_TITLE_PROPERTY, String(title || '').replace(/\s+/g, ' ').trim().slice(0, 80) || '수동추가 자료');
+}
+
+function clearManualSet_() {
+  const props = PropertiesService.getDocumentProperties();
+  props.deleteProperty(MANUAL_SET_ID_PROPERTY);
+  props.deleteProperty(MANUAL_SET_TITLE_PROPERTY);
+}
+
+// 수동추가 시트가 없으면 null, 열 설정이 안 되어 있으면 submissions 없이 사유(error)를 돌려준다.
+function manualGradingSource_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MANUAL_SHEET_NAME);
+  if (!sh) return null;
+
+  const props = PropertiesService.getDocumentProperties();
+  const setId = props.getProperty(MANUAL_SET_ID_PROPERTY) || 'sheet';
+  const assignment = {
+    key: `${MANUAL_GRADING_COURSE_ID}|${setId}`,
+    courseId: MANUAL_GRADING_COURSE_ID,
+    courseWorkId: setId,
+    courseName: '수동추가',
+    assignmentTitle: props.getProperty(MANUAL_SET_TITLE_PROPERTY) || '수동추가 자료',
+  };
+
+  let config;
+  try {
+    config = getManualRecordConfig_(getConfigMap_());
+  } catch (err) {
+    return { assignment, submissions: [], error: String(err.message || err) };
+  }
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < config.startRow) return { assignment, submissions: [] };
+
+  const lastCol = Math.max(sh.getLastColumn(), Math.max.apply(null, config.inputCols));
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(v => String(v || '').trim());
+  const range = sh.getRange(config.startRow, 1, lastRow - config.startRow + 1, lastCol);
+  const values = range.getValues();
+  const shown = range.getDisplayValues();
+
+  const isDataCol = col => !config.inputCols.includes(col) && col !== config.outputCol && col !== config.byteCol;
+  const findCol = re => headers.findIndex((name, i) => isDataCol(i + 1) && re.test(name)) + 1;
+  const noCol = findCol(/학번|^번호$|출석\s*번호/);
+  const nameCol = findCol(/이름|성명/);
+  const hasStudentCols = !!(noCol || nameCol);
+  // 학번·이름 열이 없으면(설문 등) 앞쪽 열 두 개(타임스탬프 등)로 행을 구분한다.
+  const labelCols = hasStudentCols ? [noCol, nameCol].filter(Boolean) : [];
+  for (let col = 1; !hasStudentCols && col <= lastCol && labelCols.length < 2; col++) {
+    if (isDataCol(col) && headers[col - 1]) labelCols.push(col);
+  }
+
+  const seen = {};
+  const submissions = [];
+  values.forEach((r, i) => {
+    const row = config.startRow + i;
+    const text = buildManualInputFromRowValues_(r, headers, config.inputCols);
+    const cell = col => (col ? String(shown[i][col - 1] || '').trim() : '');
+    const labels = labelCols.map(cell);
+    if (!text && labels.every(v => !v)) return;
+
+    let id = labels.some(Boolean) ? labels.join('/').replace(/\|/g, '/') : `${row}행`;
+    seen[id] = (seen[id] || 0) + 1;
+    if (seen[id] > 1) id += `#${seen[id]}`;
+
+    submissions.push({
+      submissionKey: `${assignment.key}|${id}`,
+      studentNo: hasStudentCols ? cell(noCol) : (labels.filter(Boolean).join(' ') || `${row}행`),
+      studentName: hasStudentCols ? cell(nameCol) : '',
+      email: '',
+      courseId: assignment.courseId,
+      courseWorkId: assignment.courseWorkId,
+      courseName: assignment.courseName,
+      assignmentTitle: assignment.assignmentTitle,
+      state: '',
+      late: '',
+      textChars: text.length,
+      maxPoints: '',
+      assignmentDescription: '',
+      extractedText: text,
+      row,
+    });
+  });
+
+  return { assignment, submissions };
+}
+
+// 클래스룸 제출물(수집을 마친 과제만)과 수동추가 자료를 함께 돌려준다.
+function gradingSubmissions_(manualSource) {
+  const listed = listedAssignmentKeys_();
+  const classroom = listGradingSubmissions_().filter(s => listed.has(`${s.courseId}|${s.courseWorkId}`));
+  const manual = manualSource === undefined ? manualGradingSource_() : manualSource;
+  return classroom.concat(manual ? manual.submissions : []);
+}
+
 // 수집한 제출물이 있는 과제와 학생별 채점 상태를 돌려준다. 제출물 원문은 보내지 않는다.
 function uiGetGrading() {
   const rubrics = getGradingRubricMap_();
   const resultByKey = {};
   listGradingResults_().forEach(r => { resultByKey[String(r.submissionKey)] = r; });
 
-  const listed = listedAssignmentKeys_();
+  const manual = manualGradingSource_();
   const assignments = new Map();
-  const rows = listGradingSubmissions_().filter(s => listed.has(`${s.courseId}|${s.courseWorkId}`)).map(s => {
+  const addAssignment = (assignmentKey, s) => {
+    if (assignments.has(assignmentKey)) return;
+    const rubric = rubrics[assignmentKey] || {};
+    assignments.set(assignmentKey, {
+      key: assignmentKey,
+      courseName: s.courseName,
+      assignmentTitle: s.assignmentTitle,
+      maxPoints: s.maxPoints || '',
+      description: s.assignmentDescription || '',
+      maxScore: rubric.maxScore || '',
+      rubric: rubric.rubric || '',
+      manual: isManualGradingKey_(assignmentKey),
+    });
+  };
+
+  const rows = gradingSubmissions_(manual).map(s => {
     const assignmentKey = `${s.courseId}|${s.courseWorkId}`;
     const result = resultByKey[String(s.submissionKey)] || {};
-
-    if (!assignments.has(assignmentKey)) {
-      const rubric = rubrics[assignmentKey] || {};
-      assignments.set(assignmentKey, {
-        key: assignmentKey,
-        courseName: s.courseName,
-        assignmentTitle: s.assignmentTitle,
-        maxPoints: s.maxPoints,
-        description: s.assignmentDescription,
-        maxScore: rubric.maxScore || '',
-        rubric: rubric.rubric || '',
-      });
-    }
+    addAssignment(assignmentKey, s);
 
     return {
       key: String(s.submissionKey),
@@ -718,7 +832,16 @@ function uiGetGrading() {
     };
   });
 
-  return { assignments: Array.from(assignments.values()), rows };
+  // 수동추가 시트가 있으면 아직 행이 없어도 과제로 보여 줘야 기준을 미리 적을 수 있다.
+  if (manual && !manual.error) addAssignment(manual.assignment.key, manual.assignment);
+
+  return {
+    assignments: Array.from(assignments.values()),
+    rows,
+    manual: manual
+      ? { exists: true, key: manual.assignment.key, title: manual.assignment.assignmentTitle, count: manual.submissions.length, error: manual.error || '' }
+      : { exists: false },
+  };
 }
 
 // assignmentKeys는 과제 키 하나 또는 여러 개다. 여러 반 과제를 묶어 채점할 때 같은 기준을 과제마다 저장한다.
@@ -731,7 +854,8 @@ function uiSaveGradingRubric(assignmentKeys, maxScore, rubric) {
   if (!text) throw new Error('채점 기준을 입력해 주세요.');
   if (!keys.length) throw new Error('과제를 찾을 수 없습니다. 새로고침해 주세요.');
 
-  const submissions = listGradingSubmissions_();
+  const manual = manualGradingSource_();
+  const submissions = listGradingSubmissions_().concat(manual ? [manual.assignment] : []);
   const savedAt = new Date();
   const rows = keys.map(key => {
     const submission = submissions.find(s => `${s.courseId}|${s.courseWorkId}` === key);
@@ -755,7 +879,7 @@ function uiQueueGrades(submissionKeys) {
   return withDocumentLock_(() => {
     ensureGradingSheets_();
 
-    const submissions = listGradingSubmissions_().filter(s => keySet.has(String(s.submissionKey)));
+    const submissions = gradingSubmissions_().filter(s => keySet.has(String(s.submissionKey)));
     if (submissions.length === 0) throw new Error('선택한 제출물을 찾지 못했습니다. 새로고침해 주세요.');
 
     const rubrics = getGradingRubricMap_();
@@ -895,7 +1019,9 @@ function exportGradingResults_() {
     ['score', '점수'], ['maxScore', '만점'], ['reason', '이유'], ['caution', '확인할 점'],
     ['teacherChecked', '확인함'], ['gradeStatus', '상태'], ['gradedAt', '채점 시각']];
   const listed = listedAssignmentKeys_();
-  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]).concat('submissionKey'), 'studentName')
+  const manual = manualGradingSource_();
+  if (manual) listed.add(manual.assignment.key);
+  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]), 'submissionKey')
     .filter(r => isSubmissionFromIncludedAssignment_(r.submissionKey, listed));
 
   return {

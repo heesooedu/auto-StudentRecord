@@ -861,6 +861,7 @@
           <button class="btn" data-action="reload-manual">새로고침</button>
           ${d.formUrl ? `<button class="btn" data-action="refresh-manual-form" ${S.busy || jobRunning('manual') ? 'disabled' : ''} title="${esc(d.formUrl)}">설문 새 응답 가져오기</button>` : ''}
           ${d.rows.length ? downloadButton('manual') : ''}
+          ${d.rows.length ? `<button class="btn" data-action="manual-to-grading" ${S.busy ? 'disabled' : ''}>이 자료 채점하기</button>` : ''}
           ${d.rows.some(r => r.output || r.note) ? toolDeleteButton('clear-manual', '생기부 모두 지우기') : ''}
         </div>
         ${d.truncated ? '<div class="help">행이 많아 앞쪽 500행만 보여줘요.</div>' : ''}
@@ -1104,7 +1105,8 @@
           <div>추출한 학생 <b>${ready}</b>명 <span class="muted small">(내용이 있는 학생만 보내요)</span></div>
           <div class="row">
             ${running ? '' : toolDeleteButton('ocr-clear', '결과 모두 지우기')}
-            <button class="btn primary" data-action="ocr-send" ${!ready || S.busy || running || d.layoutMismatch ? 'disabled' : ''}>수동추가로 보내기 (${ready}명)</button>
+            <button class="btn ${S.ocrNext === 'grading' ? '' : 'primary'}" data-action="ocr-send" ${!ready || S.busy || running || d.layoutMismatch ? 'disabled' : ''}>수동추가로 보내기 (${ready}명)</button>
+            <button class="btn ${S.ocrNext === 'grading' ? 'primary' : ''}" data-action="ocr-send" data-next="grading" ${!ready || S.busy || running || d.layoutMismatch ? 'disabled' : ''}>채점으로 보내기 (${ready}명)</button>
           </div>
         </div>` : ''}
       ${d.rows.length === 0 ? '<div class="card empty">아직 추출한 글이 없어요.</div>' : d.rows.map(ocrRowCard).join('')}`;
@@ -1298,9 +1300,10 @@
   }
 
   function gradingGroupCard(group) {
-    const list = S.grading.assignments;
-    if (list.length < 2) return '';
     const a = group[0];
+    // 수동추가 자료는 반 구분이 없어 다른 과제와 묶지 않는다.
+    const list = S.grading.assignments.filter(x => !x.manual);
+    if (a.manual || list.length < 2) return '';
     const same = gradingSameTitle(a);
     const sameKeys = new Set(same.map(x => x.key));
     const rest = list.filter(x => x.key !== a.key && !sameKeys.has(x.key));
@@ -1378,7 +1381,7 @@
             ${courseName ? `<span class="pill">${esc(courseName)}</span>` : ''}
             ${gradeStatusPill(r)}
           </label>
-          ${done ? `<label class="row small"><input type="checkbox" data-action="check-grade" data-key="${esc(r.key)}" ${r.teacherChecked ? 'checked' : ''}> 확인함 (초안에 반영)</label>` : ''}
+          ${done ? `<label class="row small"><input type="checkbox" data-action="check-grade" data-key="${esc(r.key)}" ${r.teacherChecked ? 'checked' : ''}> ${isManualKey(r.key) ? '확인함' : '확인함 (초안에 반영)'}</label>` : ''}
         </div>
         ${done ? `
           <div class="row" style="margin-top:10px">
@@ -1398,16 +1401,47 @@
       </div>`;
   }
 
+  function isManualKey(key) {
+    return String(key || '').indexOf('manual|') === 0;
+  }
+
+  // 클래스룸 밖의 자료: 파일·설문을 올리면 '수동추가' 시트가 만들어지고, 그 시트가 채점 과제 하나가 된다.
+  function gradingSourceCard(d, open) {
+    const m = d.manual || {};
+    const busyJob = jobRunning('manual');
+    return `
+      <details class="card" id="grading-source" ${open ? 'open' : ''}>
+        <summary><b>클래스룸 밖의 자료로 채점하기</b> <span class="muted small">엑셀·CSV·구글 설문 파일이나 손글씨를 스캔한 PDF로 채점해요.</span></summary>
+        ${m.exists && !m.error ? `<div class="help" style="margin:10px 0">지금 '수동추가' 시트(<b>${esc(m.title)}</b>, ${m.count}명)는 위 과제 목록에 <b>수동추가 · ${esc(m.title)}</b>로 들어 있어요. 아래에서 새 파일을 올리면 '수동추가' 시트를 새로 만들어요.</div>` : ''}
+        ${m.error ? `<div class="help" style="margin:10px 0">'수동추가' 시트가 있지만 AI에게 보낼 열이 정해지지 않아 채점 목록에 넣지 못했어요. ${esc(m.error)}
+          <div style="margin-top:8px"><button class="btn" data-go="manual">수동추가에서 열 설정하기</button></div></div>` : ''}
+        ${busyJob ? '<div class="help">수동추가에서 생기부를 만드는 중이라 지금은 새 파일로 시트를 바꿀 수 없어요.</div>' : ''}
+        ${S.manual ? manualUploadCard(S.manual) : '<div class="loading">불러오는 중…</div>'}
+        <div class="source-pick" style="margin-top:14px">
+          <section class="source">
+            <div class="source-head">
+              <span class="source-badge">3</span>
+              <div><h3>손글씨 스캔 PDF</h3><p>종이로 받은 과제를 손글씨 추출로 읽은 뒤 채점해요</p></div>
+            </div>
+            <div class="row"><button class="btn primary" data-action="grading-ocr" ${S.busy ? 'disabled' : ''}>손글씨 추출로 가기</button></div>
+            <div class="help">추출을 마치고 <b>[채점으로 보내기]</b>를 누르면 이 화면으로 돌아와요.</div>
+          </section>
+        </div>
+      </details>`;
+  }
+
   function viewGrading() {
     const d = S.grading;
     if (!d) return '<div class="loading">불러오는 중…</div>';
 
     const head = `
       <h1>채점</h1>
-      <p class="lead">[과제·제출물 수집]을 마친 과제를 채점할 수 있어요. 입력한 채점 기준으로 AI가 학생별 점수와 이유를 매기고, 점수를 확인해 [확인함]을 체크하면 초안 만들 때 참고돼요.</p>
+      <p class="lead">[과제·제출물 수집]을 마친 과제나, 직접 올린 파일·손글씨 추출 자료를 채점할 수 있어요. 입력한 채점 기준으로 AI가 학생별 점수와 이유를 매기고, 클래스룸 과제는 점수를 확인해 [확인함]을 체크하면 초안 만들 때 참고돼요.</p>
       ${busyNote()}`;
-    if (!d.assignments.length) return `${head}<div class="card empty">아직 채점할 수 있는 과제가 없어요. 먼저 제출물을 수집해 주세요.
-      <div style="margin-top:12px"><button class="btn primary" data-go="collect">과제·제출물 수집으로 이동</button></div></div>`;
+    const sourceOpen = !d.assignments.length || !!S.csv || !!S.csvLoading || !!S.gradingSourceOpen;
+    if (!d.assignments.length) return `${head}<div class="card empty">아직 채점할 수 있는 과제가 없어요. 클래스룸 과제는 먼저 제출물을 수집해 주세요.
+      <div style="margin-top:12px"><button class="btn primary" data-go="collect">과제·제출물 수집으로 이동</button></div></div>
+      ${gradingSourceCard(d, sourceOpen)}`;
 
     const a = gradingAssignment();
     const group = gradingGroup();
@@ -1425,7 +1459,10 @@
       <div class="toolbar">
         <select id="grading-assignment" class="grow">${d.assignments.map(x => `<option value="${esc(x.key)}" ${x.key === a.key ? 'selected' : ''}>${esc(x.courseName)} · ${esc(x.assignmentTitle)}${gradingRubricSaved(x) ? '' : ' (기준 입력 필요)'}</option>`).join('')}</select>
       </div>
-      <div class="help" style="margin-bottom:12px">수집을 마친 과제 <b>${d.assignments.length}</b>개가 위 목록에 있어요. 목록에 없는 과제는 [과제·제출물 수집]을 먼저 해 주세요.</div>
+      <div class="help" style="margin-bottom:12px">${a.manual
+        ? `'수동추가' 시트의 자료예요. AI에게는 수동추가에서 고른 열(${esc(String(d.manual && d.manual.count || 0))}명)만 보내요. 확인한 점수는 생기부 초안에 넘어가지 않아요.`
+        : `수집을 마친 과제 <b>${d.assignments.filter(x => !x.manual).length}</b>개가 위 목록에 있어요. 목록에 없는 과제는 [과제·제출물 수집]을 먼저 해 주세요.`}</div>
+      ${gradingSourceCard(d, sourceOpen)}
       ${gradingGroupCard(group)}
       ${gradingRubricCard(group)}
       ${promptCard('GRADING_GUIDE', '채점 공통 지침 확인')}
@@ -1471,6 +1508,34 @@
         throw err;
       }
     });
+  }
+
+  // 채점 목록을 새로 읽고 '수동추가' 자료를 고른다.
+  async function loadManualGrading() {
+    gradingChanges++;
+    S.grading = await call('uiGetGrading');
+    toolLoadedAt.grading = Date.now();
+    S.gradingSourceOpen = false;
+    S.gradingWith = [];
+    S.selected = new Set();
+    if (S.grading.manual && S.grading.manual.key) S.gradingKey = S.grading.manual.key;
+    render();
+  }
+
+  async function openManualGrading() {
+    let ok = false;
+    await withBusy('채점 목록을 불러오는 중…', async () => {
+      await loadManualGrading();
+      ok = true;
+    });
+    if (!ok) return false;
+    const m = S.grading.manual || {};
+    if (!m.exists || m.error) {
+      banner(m.error ? `'수동추가' 시트의 열 설정을 먼저 해 주세요. ${m.error}` : "'수동추가' 시트가 없어요.", 'err');
+      return false;
+    }
+    if (S.view !== 'grading') await go('grading');
+    return true;
   }
 
   function findGrade(key) {
@@ -1951,7 +2016,8 @@
         S.ocrRun = null;
       });
     },
-    async 'ocr-send'() {
+    async 'ocr-send'(el) {
+      const toGrading = el.dataset.next === 'grading';
       const ready = S.ocr.rows.filter(r => r.filled).length;
       if (Object.keys(S.ocrEdits).length && !await confirmModal('저장하지 않은 내용', '고치고 저장하지 않은 학생이 있어요. 저장하지 않은 내용은 빼고 보낼까요?', '그대로 보내기')) return;
       let mode = 'backup';
@@ -1967,13 +2033,26 @@
       }
       let result;
       await withBusy('수동추가로 보내는 중…', async () => {
-        result = await call('uiOcrSendToManual', mode);
+        result = await call('uiOcrSendToManual', mode, S.ocrPdf ? `손글씨 추출 · ${S.ocrPdf.fileName.replace(/\.pdf$/i, '')}` : '손글씨 추출');
       });
       if (!result) return;
       S.manual = result;
       S.ocr.manualExists = true;
+      const sent = `${result.imported}명을 '수동추가'로 ${result.appended ? '이어 붙였어요' : '보냈어요'}.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''}`;
+      if (toGrading) {
+        S.ocrNext = null;
+        if (await openManualGrading()) banner(`${sent} 채점 기준과 만점을 저장한 뒤 학생을 골라 채점하세요.`, 'ok');
+        return;
+      }
       await go('manual');
-      banner(`${result.imported}명을 '수동추가'로 ${result.appended ? '이어 붙였어요' : '보냈어요'}.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} 프롬프트를 확인한 뒤 [생기부 만들기]를 누르세요.`, 'ok');
+      banner(`${sent} 프롬프트를 확인한 뒤 [생기부 만들기]를 누르세요. 채점하려면 [이 자료 채점하기]를 누르세요.`, 'ok');
+    },
+    async 'grading-ocr'() {
+      S.ocrNext = 'grading';
+      await go('ocr');
+    },
+    async 'manual-to-grading'() {
+      await openManualGrading();
     },
     'cancel-csv'() {
       S.csv = null;
@@ -1996,6 +2075,7 @@
         const result = await call('uiAppendManualRows', { headers: c.headers, rows: c.rows });
         S.csv = null;
         S.manual = result;
+        if (S.view === 'grading') await loadManualGrading();
         banner(result.appended ? `새 응답 ${result.appended}행을 '수동추가' 시트 뒤에 붙였어요. [생기부 만들기]로 이어서 만들 수 있어요.` : '새로 들어온 응답이 없어요. 이미 모두 가져왔어요.', result.appended ? 'ok' : 'info');
       });
     },
@@ -2025,9 +2105,13 @@
         overwrite = choice === 'overwrite';
       }
       await withBusy('시트를 만드는 중…', async () => {
-        const result = await call('uiImportManualCsv', { headers: c.headers, rows: c.rows, inputCols: c.inputCols, overwrite });
+        const result = await call('uiImportManualCsv', { headers: c.headers, rows: c.rows, inputCols: c.inputCols, overwrite, title: c.fileName });
         S.csv = null;
         S.manual = result;
+        if (S.view === 'grading') {
+          await loadManualGrading();
+          return banner(`${result.imported}행으로 '수동추가' 시트를 ${result.overwritten ? '덮어썼어요' : '만들었어요'}.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} 위 목록에서 고른 자료의 채점 기준과 만점을 저장한 뒤 채점하세요.`, 'ok');
+        }
         banner(`${result.imported}행으로 '수동추가' 시트를 ${result.overwritten ? '덮어썼어요' : '만들었어요'}.${result.backupName ? ` 예전 시트는 '${result.backupName}'에 있어요.` : ''} 아래에서 프롬프트를 확인한 뒤 [생기부 만들기]를 누르세요.`, 'ok');
       });
     },
@@ -2245,6 +2329,7 @@
     if (key) S.promptOpen[key] = event.target.open;
     if (event.target.id === 'submissions-details') S.submissionsOpen = event.target.open;
     if (event.target.id === 'hidden-assignments') S.hiddenAssignmentsOpen = event.target.open;
+    if (event.target.id === 'grading-source') S.gradingSourceOpen = event.target.open;
     const exampleKey = event.target.dataset && event.target.dataset.promptExample;
     if (exampleKey) S.promptExampleOpen[exampleKey] = event.target.open;
   }, true);

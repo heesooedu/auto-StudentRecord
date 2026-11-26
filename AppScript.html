@@ -389,7 +389,8 @@
       common: () => loadTool('common'),
       behavior: () => loadTool('behavior'),
       manual: () => loadTool('manual'),
-      grading: () => loadTool('grading'),
+      // 채점 화면에서도 파일을 올려 '수동추가' 시트를 만들 수 있어 수동추가 상태를 함께 읽는다.
+      grading: () => Promise.all([loadTool('grading'), loadTool('manual')]),
       ocr: () => loadFreshTool('ocr'),
     };
     if (!S.boot || !S.boot.isSetup || !loaders[view]) return;

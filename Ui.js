@@ -776,6 +776,21 @@ function uiListSubmissions() {
 // 제출물 하나의 원문만 본다. 키 열로 행을 찾은 뒤 그 행만 읽는다.
 function uiGetSubmissionText(submissionKey) {
   const notFound = () => new Error('제출물을 찾을 수 없습니다. 목록을 새로고침해 주세요.');
+  if (isManualGradingKey_(submissionKey)) {
+    const manual = manualGradingSource_();
+    const s = manual && manual.submissions.find(x => x.submissionKey === String(submissionKey));
+    if (!s) throw notFound();
+    return {
+      row: s.row,
+      submissionKey: s.submissionKey,
+      studentName: [s.studentNo, s.studentName].filter(Boolean).join(' '),
+      assignmentTitle: s.assignmentTitle,
+      extractedText: s.extractedText,
+      fileTitles: `'수동추가' 시트 ${s.row}행 (AI에게 보내는 열만 보여요)`,
+      fileLinks: '',
+      submissionLink: '',
+    };
+  }
   const sh = getSheet_(SHEET_NAMES.submissions);
   const lastRow = sh.getLastRow();
   const lastCol = sh.getLastColumn();

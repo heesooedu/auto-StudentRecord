@@ -448,3 +448,79 @@ test('grading client groups same-title class assignments and needs one shared ru
   S.rubricEdits.k1 = { maxScore: '50', rubric: '바뀐 기준' };
   assert.equal(run('groupRubricDirty(gradingGroup())'), true);
 });
+
+test('manual sheet rows become one gradable assignment with stable student keys', () => {
+  const sh = new Sheet([
+    ['학번', '이름', '느낀 점', '생기부', '바이트'],
+    ['10101', '김가나', '음악을 듣고 리듬의 변화가 인상 깊었다고 자세히 적었습니다.', '', ''],
+    ['10102', '이다라', '짧음', '', ''],
+    ['10101', '김가나', '같은 학생이 한 번 더 낸 감상문으로 충분히 긴 문장입니다.', '', ''],
+    ['', '', '', '', ''],
+  ]);
+  sh.getRange = (orig => (...args) => { const r = orig(...args); r.getDisplayValues = () => r.getValues().map(x => x.map(v => String(v))); return r; })(sh.getRange.bind(sh));
+  const { c, props } = server({ '수동추가': sh });
+  c.getConfigMap_ = () => ({});
+  c.getManualRecordConfig_ = () => ({ startRow: 2, inputCols: [3], outputCol: 4, byteCol: 5, prompt: '' });
+  c.listedAssignmentKeys_ = () => new Set();
+  c.listGradingSubmissions_ = () => [];
+  c.listGradingResults_ = () => [];
+  c.getGradingRubricMap_ = () => ({});
+  c.markNewManualSet_('손글씨 추출 · 3반');
+  const setId = props.get('MANUAL_SET_ID');
+
+  const data = plain(c.uiGetGrading());
+  assert.deepEqual(data.assignments.map(a => [a.key, a.courseName, a.assignmentTitle, a.manual]), [[`manual|${setId}`, '수동추가', '손글씨 추출 · 3반', true]]);
+  assert.deepEqual(data.rows.map(r => r.key), [`manual|${setId}|10101/김가나`, `manual|${setId}|10102/이다라`, `manual|${setId}|10101/김가나#2`]);
+  assert.equal(data.rows[0].studentNo, '10101');
+  assert.equal(data.manual.count, 3);
+
+  // 학번·이름 열은 AI에게 가지 않고, 원문 보기는 시트 행을 알려 준다.
+  const text = c.uiGetSubmissionText(data.rows[0].key);
+  assert.match(text.extractedText, /^\[느낀 점\]/);
+  assert.doesNotMatch(text.extractedText, /10101|김가나/);
+
+  // 행을 지워도 남은 학생의 키는 그대로다.
+  sh.rows.splice(1, 1);
+  assert.equal(plain(c.uiGetGrading()).rows[0].key, `manual|${setId}|10102/이다라`);
+
+  // 새 자료를 올리면 묶음이 바뀌어 예전 결과와 섞이지 않는다.
+  props.set('MANUAL_SET_ID', 'old');
+  c.markNewManualSet_('');
+  assert.notEqual(props.get('MANUAL_SET_ID'), 'old');
+  assert.equal(props.get('MANUAL_SET_TITLE'), '수동추가 자료');
+});
+
+test('pending grades read manual sheet text and write the score', () => {
+  const manual = new Sheet([
+    ['학번', '이름', '느낀 점', '생기부', '바이트'],
+    ['10101', '김가나', '음악을 듣고 리듬의 변화가 인상 깊었다고 자세히 적었습니다.', '', ''],
+  ]);
+  manual.getRange = (orig => (...args) => { const r = orig(...args); r.getDisplayValues = () => r.getValues().map(x => x.map(v => String(v))); return r; })(manual.getRange.bind(manual));
+  const key = 'manual|sheet|10101/김가나';
+  const results = new Sheet([
+    ['submissionKey', 'studentNo', 'studentName', 'gradeStatus', 'score', 'maxScore', 'reason', 'caution', 'gradedAt', 'model', 'usage'],
+    [key, '10101', '김가나', '대기', '', '', '', '', '', '', ''],
+  ]);
+  const { c } = server({ '수동추가': manual });
+  c.getConfigMap_ = () => ({});
+  c.getManualRecordConfig_ = () => ({ startRow: 2, inputCols: [3], outputCol: 4, byteCol: 5, prompt: '' });
+  c.ensureGradingSheets_ = () => results;
+  c.headerMap_ = sh => Object.fromEntries(sh.rows[0].map((name, i) => [name, i + 1]));
+  c.readSheetRecords_ = () => [];
+  c.getGradingRubricMap_ = () => ({ 'manual|sheet': { maxScore: 10, rubric: '리듬 언급 10점' } });
+  c.getAiProviderAndModel_ = () => ({ provider: 'gpt', model: 'test', reasoning: 'none' });
+  c.getConfigPromptTemplate_ = () => 'guide';
+  c.isStopRequestedDuringRun_ = () => false;
+  c.createAiPrefetcher_ = () => ({ prefetch() {}, finish() {} });
+  c.countPendingGrades_ = () => 0;
+  let prompt = '';
+  c.callAi_ = (p, m, g, userPrompt) => { prompt = userPrompt; return { text: '{"score":8,"reason":"리듬을 언급함","caution":""}' }; };
+
+  const result = c.processPendingGradesCore_();
+  assert.equal(result.processed, 1);
+  assert.equal(results.rows[1][3], '완료');
+  assert.equal(results.rows[1][4], 8);
+  assert.match(prompt, /수업명: 수동추가/);
+  assert.match(prompt, /리듬의 변화/);
+  assert.doesNotMatch(prompt, /제출상태:|10101/);
+});

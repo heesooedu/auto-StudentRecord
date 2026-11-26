@@ -576,7 +576,7 @@ function uiOcrClear() {
 
 // 추출 결과를 '수동추가'로 넘긴다. 열은 학번, 이름, 지침의 항목들이고, AI에게 보낼 열은 항목 열 모두다(학번·이름은 보내지 않는다).
 // mode: backup(지금 시트 백업 후 새로) / overwrite / append(열 구성이 같은 시트 뒤에 붙이기)
-function uiOcrSendToManual(mode) {
+function uiOcrSendToManual(mode, title) {
   const items = ocrItems_();
   const sh = getOcrSheet_(false);
   const rows = readOcrRows_(sh).filter(r => r.filled);
@@ -615,7 +615,7 @@ function uiOcrSendToManual(mode) {
   }
 
   const inputCols = items.map((_, i) => i + 3);
-  const result = uiImportManualCsv({ headers, rows: values, inputCols, overwrite: mode === 'overwrite' });
+  const result = uiImportManualCsv({ headers, rows: values, inputCols, overwrite: mode === 'overwrite', title: title || '손글씨 추출' });
   log_('uiOcrSendToManual', 'OK', `손글씨 추출 ${rows.length}행으로 수동추가 시트 생성 (열 ${items.map(it => it.name).join('·')})`);
   return result;
 }
