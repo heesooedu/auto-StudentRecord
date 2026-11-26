@@ -524,3 +524,29 @@ test('pending grades read manual sheet text and write the score', () => {
   assert.match(prompt, /리듬의 변화/);
   assert.doesNotMatch(prompt, /제출상태:|10101/);
 });
+
+test('grading export keeps rows of the chosen assignments, including manual sheet results', () => {
+  const results = new Sheet([
+    ['submissionKey', 'studentNo', 'studentName', 'courseName', 'assignmentTitle', 'score', 'maxScore', 'reason', 'caution', 'teacherChecked', 'gradeStatus', 'gradedAt'],
+    ['c1|w1|s1', '10101', '김가나', '1반', '감상문', 40, 50, '좋음', '', true, '완료', ''],
+    ['c2|w2|s2', '20101', '이다라', '2반', '감상문', 30, 50, '보통', '', false, '완료', ''],
+    ['manual|abc|30101/박마바', '30101', '', '수동추가', '손글씨: 3반', 8, 10, '리듬', '', false, '완료', ''],
+    ['c9|w9|s9', '90101', '숨김', '9반', '빠진 과제', 1, 10, '', '', false, '완료', ''],
+  ]);
+  const { c } = server({ '채점결과': results });
+  c.listedAssignmentKeys_ = () => new Set(['c1|w1', 'c2|w2']);
+  c.manualGradingSource_ = () => ({ assignment: { key: 'manual|abc' }, submissions: [] });
+
+  const all = plain(c.uiExportData('grading'));
+  assert.equal(all.fileName, '채점결과');
+  assert.deepEqual(all.rows.map(r => r[0]), ['10101', '20101', '30101']);
+  assert.equal(all.rows[0][8], 'O');
+
+  const manual = plain(c.uiExportData('grading', { assignmentKeys: ['manual|abc'] }));
+  assert.deepEqual(manual.rows.map(r => r[0]), ['30101']);
+  assert.equal(manual.fileName, '채점결과_손글씨  3반');
+
+  const group = plain(c.uiExportData('grading', { assignmentKeys: ['c1|w1', 'c2|w2', 'c9|w9'] }));
+  assert.deepEqual(group.rows.map(r => r[0]), ['10101', '20101']);
+  assert.equal(group.fileName, '채점결과_감상문');
+});

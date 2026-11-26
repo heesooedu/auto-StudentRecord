@@ -378,7 +378,8 @@
 
   // 서버에서 시트 전체를 받아 엑셀 파일로 저장한다. 엑셀 도구를 못 불러오면 CSV로 저장한다.
   async function downloadExport(kind) {
-    const data = await call('uiExportData', kind);
+    const options = kind === 'grading' ? { assignmentKeys: gradingGroup().map(a => a.key) } : undefined;
+    const data = await call('uiExportData', kind, options);
     if (!data.rows.length) return banner('받을 내용이 아직 없어요.', 'err');
 
     const headers = data.headers.slice();

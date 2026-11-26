@@ -1014,18 +1014,23 @@ function uiDeleteGrades(items) {
   return { deleted, data: uiGetGrading() };
 }
 
-function exportGradingResults_() {
+// assignmentKeys를 주면 그 과제(화면에서 고른 과제·묶음)의 결과만 받는다.
+function exportGradingResults_(assignmentKeys) {
   const columns = [['studentNo', '번호'], ['studentName', '이름'], ['courseName', '수업'], ['assignmentTitle', '과제'],
     ['score', '점수'], ['maxScore', '만점'], ['reason', '이유'], ['caution', '확인할 점'],
     ['teacherChecked', '확인함'], ['gradeStatus', '상태'], ['gradedAt', '채점 시각']];
-  const listed = listedAssignmentKeys_();
+  const allowed = new Set(listedAssignmentKeys_());
   const manual = manualGradingSource_();
-  if (manual) listed.add(manual.assignment.key);
-  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]), 'submissionKey')
-    .filter(r => isSubmissionFromIncludedAssignment_(r.submissionKey, listed));
+  if (manual) allowed.add(manual.assignment.key);
+  const chosen = [].concat(assignmentKeys || []).map(String).filter(key => allowed.has(key));
+  const keys = chosen.length ? new Set(chosen) : allowed;
+  // 과제로 거르려면 submissionKey도 읽어야 한다(필드 목록에 없으면 레코드에 담기지 않는다).
+  const records = readSheetRecords_(SHEET_NAMES.gradingResults, columns.map(c => c[0]).concat('submissionKey'), 'submissionKey')
+    .filter(r => isSubmissionFromIncludedAssignment_(r.submissionKey, keys));
+  const titles = Array.from(new Set(records.map(r => String(r.assignmentTitle || '').trim()).filter(Boolean)));
 
   return {
-    fileName: '채점결과',
+    fileName: titles.length === 1 ? `채점결과_${titles[0].replace(/[\\/:*?"<>|\[\]]/g, ' ').slice(0, 40).trim()}` : '채점결과',
     headers: columns.map(c => c[1]),
     rows: records.map(r => columns.map(c => c[0] === 'teacherChecked' ? (isChecked_(r[c[0]]) ? 'O' : '') : r[c[0]])),
   };

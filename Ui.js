@@ -1190,12 +1190,12 @@ function updateRecordRow_(sheetName, row, key, patch, keyOf) {
 
 // 화면의 [엑셀로 받기]용: 산출물 시트 전체를 { fileName, headers, rows } 표로 돌려준다.
 // textCol이 있으면 화면에서 그 열의 나이스 바이트를 계산해 붙인다.
-function uiExportData(kind) {
+function uiExportData(kind, options) {
   if (kind === 'review' || kind === 'final') return exportRecordSheet_(kind);
   if (kind === 'common') return exportCommonPhrases_();
   if (kind === 'behavior') return exportBehaviorRows_();
   if (kind === 'manual') return exportManualSheet_();
-  if (kind === 'grading') return exportGradingResults_();
+  if (kind === 'grading') return exportGradingResults_(options && options.assignmentKeys);
   throw new Error('알 수 없는 다운로드 종류입니다.');
 }
 
